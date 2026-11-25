@@ -155,6 +155,34 @@ GATEWAY_DIRECT=false bun --preload "./bots/$BOT_NAME/hosted-proxy.cjs" \
   confirms the logout after the button dispatch.
   [Logout component](../server/content/pack/interface.pack#L2459) · [Logout trigger](../server/content/scripts/login_logout/logout.rs2) · [Runner shutdown](../server/webclient/src/lite/runner.ts#L435-L447)
 
+### Verify a resumed training run
+
+After a workspace restart, reuse the existing bot configuration and check the
+lite client and controller logs before starting either process again. Keep one
+client and one controller per bot. If Bun fails to connect through a workspace
+proxy, use the [HTTPS proxy setup](#https-proxy-setup) for both processes.
+
+Verify each of these separately:
+
+1. **Gateway connection.** An HTTP `101 Switching Protocols` response confirms
+   the WebSocket upgrade for that probe. Check the actual runner's connection
+   result before proceeding.
+2. **Live game client.** Check the lite runner log for login and registration,
+   then confirm the SDK receives advancing game ticks.
+   `bun sdk/cli.ts "$BOT_NAME" state --json` can return the gateway's last cached frame. Check
+   its age and compare ticks across reads before treating it as live.
+3. **Training progress.** Check the controller's current output and verify new
+   XP or other task-specific progress in live SDK state. Report the levels from
+   a fresh read. If no fresh state is available, report levels as unverified
+   and say which connection or process check failed.
+
+For staged training, give the target switch and final completion separate
+conditions and log messages. For example, log the switch to goblins only after
+Attack, Strength, and Defence are each at least 40. Report the observed levels
+and exit successfully only after all three reach 99.
+
+[SDK state CLI](../sdk/cli.ts#L21-L66) · [Live-client check](../sdk/runner.ts#L216-L241)
+
 ## Follow-up automation
 
 - Wrap the workflow in one rerunnable launcher and a read-only status command.
