@@ -38,6 +38,20 @@ to Lightsail. An installation without a second argument preserves any
 previous caller digest. To revoke that caller, remove `caller.sha256` from
 the config directory and restart the service.
 
+### If your client can reach the IP but its proxy rejects IP certificates
+
+After the installer succeeds, add an HTTPS hostname with:
+
+```sh
+bash control/add-ip-hostname.sh YOUR_PUBLIC_IPV4
+```
+
+This uses the public [sslip.io](https://sslip.io/) DNS service to resolve the
+IP-derived hostname directly to your instance. It adds a separate Nginx site
+and a certificate for that hostname. Your IP endpoint, API token, and service
+stay in place. The command prints the new HTTPS health URL after validating
+the certificate. If the public IP changes, install again for the new address.
+
 ## Optional bot configuration
 
 Before enabling gameplay, put the bot's existing `bot.env` and scripts in
