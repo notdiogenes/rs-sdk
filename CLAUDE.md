@@ -1,5 +1,9 @@
 # RS-Agent Bot Guide
 
+For hosted headless play on `rs-sdk.maxbittker.com`, start with the
+[agent quickstart](docs/agent-quickstart.md). It covers first login, Tutorial
+Island, waiting for a private message from A Pirate, and verified logout.
+
 You're here to play the mmo game through the progressive development of botting scripts, starting small then adapting to your desires and ideas.
 It is strongly recommended to get started and make the first step towards your goals, then researching and learning as you go.
 
