@@ -60,6 +60,9 @@ bun bots/{username}/script.ts
 ```
 Without a client the script exits with `No game client is attached`.
 
+For HTTP-based status and control of a hosted headless bot, see the optional
+[control API installer](control/README.md).
+
 ## Agent API and knowledge
 
 The exact generated API surface is documented in
