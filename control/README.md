@@ -97,3 +97,12 @@ controller; do not run the same bot through Codex/MCP while the API manages it.
 On reboot or service restart the API comes back, but client/task processes
 are deliberately not resumed. Inspect local logs with
 `journalctl -u rs-sdk-control -n 50`.
+
+### Test with one movement
+
+To configure an existing hosted bot for a single-step interaction test, run
+`bash control/prepare-smoke.sh "BOT_NAME"` as the user that installed the API.
+It reuses the bot's credentials if present and asks for its existing password
+in the terminal otherwise. It adds the `smoke-move` task without starting a
+client or task. When the operator authorizes the test, start the client, read
+a fresh location, run `smoke-move` once, and verify the new coordinates.

@@ -7,6 +7,24 @@ Island, waiting for a private message from A Pirate, and verified logout.
 You're here to play the mmo game through the progressive development of botting scripts, starting small then adapting to your desires and ideas.
 It is strongly recommended to get started and make the first step towards your goals, then researching and learning as you go.
 
+## When using a remote controller
+
+If the operator supplies a deployment endpoint, follow the
+[control API guide](control/README.md). Use the supplied HTTPS hostname and
+keep API tokens and bot credentials out of chat, command output, and Git.
+Always verify TLS before sending credentials.
+
+- Use `GET /health` for reachability and authenticated `GET /v1/status` for
+  configuration, the managed client, and the active task. Use `GET /v1/state`
+  for game state. Check its freshness before reporting a live location or
+  progress. Health alone says nothing about whether a bot is logged in.
+- Preserve a paused bot during status checks. Only send start or stop requests
+  when the user asks for the corresponding action. Use the deployment's
+  allowlisted task names and keep one client and one controller per bot.
+  Don't launch an overlapping MCP or standalone controller.
+- Treat a `202` as process creation. Verify login with fresh game state and
+  confirm task progress from observed game effects or the task's exit result.
+
 ## First Time Setup
 
 **Create a new bot using the setup script:**
