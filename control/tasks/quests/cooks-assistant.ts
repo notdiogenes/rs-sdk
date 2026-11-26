@@ -13,6 +13,10 @@ const bucket = /^bucket$/i;
 const grain = /^grain$/i;
 const mill = { x: 3166, z: 3306 };
 const cookChoices = [/what.s wrong/i, /yes,? i.ll help/i];
+const supplies = [
+    { name: 'Pot of flour', count: 1 }, { name: 'Egg', count: 1 }, { name: 'Bucket of milk', count: 1 },
+    { name: 'Pot', count: 1 }, { name: 'Bucket', count: 1 }, { name: 'Grain', count: 1 },
+];
 
 const result = await runScript(async ctx => {
     const { bot, sdk } = ctx;
@@ -24,13 +28,16 @@ const result = await runScript(async ctx => {
     }
     // A previous run may have stopped inside the mill.
     const player = sdk.getState()?.player;
-    if (player && player.level > 0 && Math.max(Math.abs(player.worldX - mill.x), Math.abs(player.worldZ - mill.z)) < 10) {
+    const atMill = !!player && Math.max(Math.abs(player.worldX - mill.x), Math.abs(player.worldZ - mill.z)) < 10;
+    if (atMill && player.level > 0) {
         while ((sdk.getState()?.player?.level ?? 0) > 0) await changeFloor(ctx, 'down', mill.x, mill.z);
     }
-    await bankForQuest(ctx, [
-        { name: 'Pot of flour', count: 1 }, { name: 'Egg', count: 1 }, { name: 'Bucket of milk', count: 1 },
-        { name: 'Pot', count: 1 }, { name: 'Bucket', count: 1 }, { name: 'Grain', count: 1 },
-    ]);
+    const got = (item: RegExp) => !!sdk.findInventoryItem(item);
+    const kitReady = atMill && readQuest(ctx, journal) === 'in-progress' && (got(pot) || got(flour)) &&
+        (got(bucket) || got(milk)) && sdk.getEquipment().length === 0 && sdk.getInventory().every(item =>
+            supplies.some(supply => supply.name.toLowerCase() === item.name.toLowerCase() &&
+                sdk.countInventoryItems(item.name) <= supply.count));
+    if (!kitReady) await bankForQuest(ctx, supplies);
     const visitCook = async () => {
         await walk(ctx, 3209, 3215, 4);
         await talk(ctx, cook, cookChoices);
@@ -40,7 +47,6 @@ const result = await runScript(async ctx => {
         await visitCook();
         await sdk.waitForCondition(s => s.questJournal?.[journal] !== 'not-started' && !!s.questJournal?.[journal], 8000);
     }
-    const got = (item: RegExp) => !!sdk.findInventoryItem(item);
     if (readQuest(ctx, journal) === 'complete') {
         questLog('quest-complete', { quest: "Cook's Assistant", evidence: 'journal' });
         return;
@@ -49,11 +55,15 @@ const result = await runScript(async ctx => {
         if (!got(pot)) await groundItem(ctx, pot, 3208, 3213);
         // Try the flour bin first, including on resume after earlier milling.
         await walk(ctx, mill.x, mill.z, 4);
+        const millMessages = () => (sdk.getState()?.gameMessages ?? [])
+            .filter(m => /hopper|flour bin|pot of flour|can.t reach/i.test(m.text)).slice(-5).map(m => m.text).join(' | ');
         const takeFlour = async () => {
-            const bin = sdk.findNearbyLoc(/^flour bin$/i);
+            const bin = (await sdk.scanNearbyLocs(8)).find(loc => /^flour bin$/i.test(loc.name));
             if (!bin) throw new Error('No flour bin at the Lumbridge mill');
-            await bot.interactLoc(bin, 1);
-            await sdk.waitForCondition(() => got(flour), 2200).catch(() => null);
+            const action = await bot.interactLoc(bin, /^empty$/i);
+            if (await sdk.waitForCondition(() => got(flour), 3500).catch(() => null)) return action.message;
+            const direct = await bot.useItemOnLoc(pot, bin, { timeout: 4000 });
+            return `${action.message}; ${direct.message}`;
         };
         await takeFlour();
         if (!got(flour)) {
@@ -68,17 +78,18 @@ const result = await runScript(async ctx => {
             while ((sdk.getState()?.player?.level ?? 0) < 2) await changeFloor(ctx, 'up', mill.x, mill.z);
             const hopper = sdk.findNearbyLoc(/^hopper$/i);
             if (!hopper) throw new Error('The upstairs hopper was not found');
-            const first = sdk.getState()?.tick ?? 0;
             await bot.useItemOnLoc(grain, hopper);
-            await sdk.waitForCondition(s => s.gameMessages.some(m => m.tick >= first &&
-                /grain in the hopper/i.test(m.text)), 5500).catch(() => null);
-            const controls = sdk.findNearbyLoc(/^hopper controls?$/i);
+            const controls = (await sdk.scanNearbyLocs(8)).find(loc => /^hopper controls?$/i.test(loc.name) &&
+                loc.optionsWithIndex.some(option => /^operate$/i.test(option.text)));
             if (!controls) throw new Error('The hopper controls were not found');
-            await bot.interactLoc(controls, /operate/i);
-            await sdk.waitForTicks(4);
+            const startTick = sdk.getState()?.tick ?? 0;
+            const operated = await bot.interactLoc(controls, /^operate$/i);
+            const milled = await sdk.waitForCondition(s => s.gameMessages.some(m => m.tick >= startTick &&
+                /grain slides down the chute|flour bin downstairs is full/i.test(m.text)), 4500).catch(() => null);
             while ((sdk.getState()?.player?.level ?? 0) > 0) await changeFloor(ctx, 'down', mill.x, mill.z);
-            await takeFlour();
-            if (!got(flour)) throw new Error('The flour bin did not supply a pot of flour');
+            const collected = await takeFlour();
+            if (!got(flour)) throw new Error(`No flour collected. Hopper ${milled ? 'confirmed' : operated.message}. ` +
+                `Bin ${collected}. Game messages ${millMessages()}`);
         }
         questLog('quest-ingredient', { item: 'Pot of flour' });
     }
