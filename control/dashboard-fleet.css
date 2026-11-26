@@ -33,3 +33,59 @@ button:disabled{opacity:.6;cursor:default}
 dialog form{display:grid;gap:12px}dialog form label{display:grid;gap:4px}
 dialog h3{margin-top:12px}
 #fleet-empty{margin-top:12px}
+
+.quest-scroll { max-height: 76vh; }
+.quest-grid { width: max-content; min-width: 100%; text-align: center; --quest-account-width: 12rem; }
+.quest-grid th, .quest-grid td { padding: 7px 8px; }
+.quest-grid thead th {
+    position: sticky;
+    top: 0;
+    z-index: 2;
+    background: #2b2721;
+}
+.quest-grid thead th:not(.quest-account, .quest-points) {
+    min-width: 1.9rem;
+    padding: 8px 4px;
+    vertical-align: bottom;
+    text-transform: none;
+}
+.quest-column-name {
+    display: inline-block;
+    writing-mode: vertical-rl;
+    transform: rotate(180deg);
+    color: #efeae0;
+    font-size: .78rem;
+    white-space: nowrap;
+}
+.quest-column-name small { font-size: .71rem; }
+.quest-grid .quest-account, .quest-grid .quest-points {
+    position: sticky;
+    z-index: 1;
+    background: var(--paper);
+}
+.quest-grid .quest-account {
+    left: 0;
+    min-width: var(--quest-account-width);
+    width: var(--quest-account-width);
+}
+.quest-grid .quest-points { left: var(--quest-account-width); min-width: 3.4rem; }
+.quest-grid thead :is(.quest-account, .quest-points) { z-index: 3; background: #2b2721; }
+.quest-account small { display: block; }
+.quest-points a { font-weight: 750; text-decoration: none; }
+.quest-points a:hover { text-decoration: underline; }
+.quest-mark { font-weight: 700; }
+.quest-mark.complete { color: var(--green); }
+.quest-mark.in-progress { color: var(--gold); }
+.quest-mark.not-started, .quest-mark.unknown { color: var(--muted); }
+.quest-legend { display: flex; flex-wrap: wrap; gap: 6px 16px; padding: 9px 0; font-size: .75rem; }
+.visually-hidden {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+}
+@media (max-width: 540px) { .quest-grid { --quest-account-width: 8rem; } }

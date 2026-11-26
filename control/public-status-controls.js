@@ -35,7 +35,7 @@
     let setupCode = /^#setup=([a-f0-9]{64})$/.exec(window.location.hash)?.[1];
     if (setupCode) history.replaceState(null, '', window.location.pathname + window.location.search);
 
-    const { rows: roster, skills } = JSON.parse(document.querySelector('#fleet-roster').textContent);
+    const { rows: roster, skills, questCatalog } = JSON.parse(document.querySelector('#fleet-roster').textContent);
     const tabs = [...document.querySelectorAll('[role="tab"]')];
     const search = document.querySelector('#search');
     const statusFilter = document.querySelector('#status-filter');
@@ -61,6 +61,15 @@
         ? Object.values(snapshot.levels).reduce((total, level) => total + level, 0) : null;
     let stats = new Map();
     let quests = {};
+    let journals = {};
+    let questsLoading = false;
+    let questsError = '';
+    const questMarks = {
+        complete: { symbol: '✓', label: 'Complete' },
+        'in-progress': { symbol: '▶', label: 'In progress' },
+        'not-started': { symbol: '·', label: 'Not started' },
+        unknown: { symbol: '—', label: 'Unreported' },
+    };
     let dataError = '';
     let updating = false;
     let dataVersion = 0;
@@ -107,6 +116,46 @@
             ? number(reported.reduce((sum, points) => sum + points, 0)) : '—';
     }
 
+    function renderQuestGrid(visible) {
+        const headers = questCatalog.map(({ id, name }) => {
+            const observed = visible.map(row => journals[row.name]?.progress[id]).filter(Boolean);
+            const complete = observed.filter(status => status === 'complete').length;
+            const count = observed.length ? `${complete}/${observed.length}` : '';
+            return `<th scope="col"><span class="quest-column-name">${escape(name)}
+                ${count ? `<small aria-label="${complete} complete out of ${observed.length} reported">${count}</small>` : ''}
+                </span></th>`;
+        });
+        const rows = visible.map(({ name, hiscore }) => {
+            const journal = journals[name];
+            const statuses = questCatalog.map(({ id }) => journal?.progress[id] || 'unknown');
+            const completed = statuses.filter(status => status === 'complete').length;
+            const underway = statuses.filter(status => status === 'in-progress').length;
+            const summary = journal ? `${completed} done${underway ? ` · ${underway} underway` : ''}`
+                : 'Awaiting journal';
+            const score = quests[name];
+            const points = number(score?.points);
+            const marks = statuses.map(status => {
+                const mark = questMarks[status];
+                return `<td class="quest-mark ${status}" title="${mark.label}"><span class="visually-hidden">${mark.label}</span>
+                    <span aria-hidden="true">${mark.symbol}</span></td>`;
+            });
+            return `<tr><th scope="row" class="quest-account">
+                <button type="button" class="button" data-detail="${escape(name)}">${escape(name)}</button>
+                <small title="${escape(labelTime(journal?.at))}">${summary}</small></th>
+                <td class="quest-points"><a href="${escape(hiscore)}" target="_blank" rel="noopener"
+                    title="Hiscores checked ${escape(labelTime(score?.checkedAt))}">${points}</a></td>${marks.join('')}</tr>`;
+        });
+        const legend = Object.entries(questMarks).map(([status, { symbol, label }]) =>
+            `<span><b class="quest-mark ${status}" aria-hidden="true">${symbol}</b> ${label}</span>`);
+        return `<div class="table-wrap quest-scroll" tabindex="0" role="region" aria-label="Scrollable quest grid">
+          <table class="quest-grid">
+            <thead><tr><th scope="col" class="quest-account">Account</th>
+            <th scope="col" class="quest-points" title="Quest points from hiscores">QP</th>${headers.join('')}</tr></thead>
+            <tbody>${rows.join('')}</tbody>
+          </table>
+        </div><p class="quest-legend">${legend.join('')}</p>`;
+    }
+
     function renderView() {
         updateCards();
         if (view === 'fleet-panel') return;
@@ -116,21 +165,20 @@
             return;
         }
         const visible = matchingRows();
-        if (!visible.length || updating || dataError) {
-            panel.innerHTML = `<p class="empty" role="status">${escape(dataError ||
-                (updating ? 'Loading dashboard data…' : 'No bots match your filters.'))}</p>`;
+        const showQuests = view === 'quests-panel';
+        const loading = showQuests ? questsLoading : updating;
+        const error = showQuests ? questsError : dataError;
+        if (!visible.length || loading || error) {
+            panel.innerHTML = `<p class="empty" role="status">${escape(error ||
+                (loading ? 'Loading dashboard data…' : 'No bots match your filters.'))}</p>`;
+            return;
+        }
+        if (showQuests) {
+            panel.innerHTML = renderQuestGrid(visible);
             return;
         }
         const detail = ({ name, kind }) =>
             `<button type="button" class="button" data-detail="${escape(name)}">${escape(name)}</button><br><small>${kind}</small>`;
-        if (view === 'quests-panel') {
-            panel.innerHTML = table(['Account', 'Quest points', 'Checked', 'Hiscores'], visible.map(row => {
-                const score = quests[row.name];
-                return [detail(row), number(score?.points), escape(labelTime(score?.checkedAt)),
-                    `<a href="${escape(row.hiscore)}" target="_blank" rel="noopener">Hiscores ↗</a>`];
-            }), 'Quest points') + '<p class="table-caption">Points from the game hiscores. A dash means no points were reported.</p>';
-            return;
-        }
         const columns = [['Account', 'Account'], ['QP', 'Quest points'], ['CB', 'Combat level'], ['TOT', 'Total level'],
             ...skills.map(([name, short]) => [short, name]), ['Last sampled', 'Last sampled']];
         const entries = visible.map(row => {
@@ -177,7 +225,9 @@
     function loadFleetData() {
         const version = ++dataVersion;
         updating = true;
+        questsLoading = true;
         dataError = '';
+        questsError = '';
         renderView();
         const snapshotsReady = request('/bots/activity?view=fleet-data').then(snapshots => {
                 if (version !== dataVersion) return;
@@ -189,11 +239,17 @@
                 updating = false;
                 renderView();
             });
-        void request('/bots/activity?view=quests').then(points => {
+        void request('/bots/activity?view=quests').then(result => {
             if (version !== dataVersion) return;
-            quests = points;
+            quests = result.scores;
+            journals = result.journals;
+        }).catch(error => {
+            if (version === dataVersion) questsError = error.message;
+        }).finally(() => {
+            if (version !== dataVersion) return;
+            questsLoading = false;
             renderView();
-        }).catch(() => {});
+        });
         return snapshotsReady;
     }
 
@@ -312,6 +368,8 @@
             updating = false;
             stats.clear();
             quests = {};
+            journals = {};
+            questsLoading = false;
             renderView();
         }
     }

@@ -1,3 +1,4 @@
+import type { QuestJournal } from '../../../../sdk/types.js';
 import type { GEState } from '../../../../sdk/ge-types.js';
 // types.ts - Bot SDK Type Definitions
 // All interfaces, constants, and type definitions for the Bot SDK
@@ -425,6 +426,7 @@ export interface BotState {
     revision: number;
     player: PlayerState | null;
     skills: SkillState[];
+    questJournal?: QuestJournal;
     inventory: InventoryItem[];
     equipment: InventoryItem[];
     combatStyle: CombatStyleState;

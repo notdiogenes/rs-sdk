@@ -1,6 +1,6 @@
 import { Database } from 'bun:sqlite';
 import { join } from 'node:path';
-import type { BotWorldState } from '../sdk/types';
+import type { BotWorldState, QuestJournal } from '../sdk/types';
 
 export const fleetSkills = [
     ['Attack', 'Atk'], ['Strength', 'Str'], ['Defence', 'Def'], ['Hitpoints', 'HP'], ['Ranged', 'Rng'],
@@ -12,7 +12,13 @@ export const fleetSkills = [
 const minute = 60_000;
 type SkillSnapshot = { at: number; combat: number | null; levels: Record<string, number> };
 type BankSnapshot = { at: number; stacks: number; coins: number };
-type FleetStats = { skills: SkillSnapshot | null; bank: BankSnapshot | null; xpGained: number | null };
+type JournalSnapshot = { at: number; progress: QuestJournal };
+type FleetStats = {
+    skills: SkillSnapshot | null;
+    bank: BankSnapshot | null;
+    journal: JournalSnapshot | null;
+    xpGained: number | null;
+};
 
 const nonnegativeInteger = (value: number | undefined): value is number =>
     typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
@@ -24,6 +30,7 @@ export function dashboardFleetStats(directory: string) {
             const db = new Database(join(directory, 'fleet-stats.sqlite'));
             db.exec(`
                 CREATE TABLE IF NOT EXISTS fleet_stats (bot TEXT PRIMARY KEY, skills TEXT, bank TEXT);
+                CREATE TABLE IF NOT EXISTS fleet_journal (bot TEXT PRIMARY KEY, data TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS fleet_xp (
                     bot TEXT, minute INTEGER, at INTEGER, experience TEXT, PRIMARY KEY (bot, minute)
                 );
@@ -35,13 +42,15 @@ export function dashboardFleetStats(directory: string) {
 
     return function observe(bot: string, state?: BotWorldState, at = Date.now()): FleetStats {
         const db = store();
-        const prior = db.query('SELECT skills, bank FROM fleet_stats WHERE bot = ?')
-            .get(bot) as { skills: string | null; bank: string | null } | null;
-        let skills: SkillSnapshot | null = prior?.skills ? JSON.parse(prior.skills) : null;
-        let bank: BankSnapshot | null = prior?.bank ? JSON.parse(prior.bank) : null;
+        const prior = db.query(`SELECT skills, bank, (SELECT data FROM fleet_journal WHERE bot = ?1) AS journal
+            FROM (SELECT 1) LEFT JOIN fleet_stats ON bot = ?1`)
+            .get(bot) as { skills: string | null; bank: string | null; journal: string | null };
+        let skills: SkillSnapshot | null = prior.skills ? JSON.parse(prior.skills) : null;
+        let bank: BankSnapshot | null = prior.bank ? JSON.parse(prior.bank) : null;
+        let journal: JournalSnapshot | null = prior.journal ? JSON.parse(prior.journal) : null;
         let xpGained: number | null = null;
         const player = state?.player;
-        if (!state || !player) return { skills, bank, xpGained };
+        if (!state || !player) return { skills, bank, journal, xpGained };
 
         const levels: Record<string, number> = {};
         const experience: Record<string, number> = {};
@@ -54,7 +63,14 @@ export function dashboardFleetStats(directory: string) {
         const observedBank = state.bank?.isOpen && Array.isArray(state.bank.items)
             ? state.bank.items.filter(item => nonnegativeInteger(item.count) && item.count > 0)
             : undefined;
+        const observedProgress = state.questJournal && Object.entries(state.questJournal)
+            .filter(([id, status]) => /^\d{1,5}$/.test(id) &&
+                (status === 'not-started' || status === 'in-progress' || status === 'complete'));
         db.transaction(() => {
+            if (observedProgress?.length && (!journal || at >= journal.at)) {
+                journal = { at, progress: Object.fromEntries(observedProgress) };
+                db.query('INSERT OR REPLACE INTO fleet_journal (bot, data) VALUES (?, ?)').run(bot, JSON.stringify(journal));
+            }
             if (Object.keys(levels).length) {
                 const combat = nonnegativeInteger(player.combatLevel) ? player.combatLevel : null;
                 skills = { at, combat, levels };
@@ -81,6 +97,6 @@ export function dashboardFleetStats(directory: string) {
                 xpGained = changes.reduce((sum, change) => sum + change, 0);
             }
         })();
-        return { skills, bank, xpGained };
+        return { skills, bank, journal, xpGained };
     };
 }

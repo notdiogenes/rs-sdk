@@ -563,6 +563,11 @@ export interface OpFeedbackState {
     lastOpRejectedTick: number;
 }
 
+export type QuestProgress = 'not-started' | 'in-progress' | 'complete';
+
+/** Observed progress indexed by Quest Journal component ID. Missing entries are unreported. */
+export type QuestJournal = Partial<Record<number, QuestProgress>>;
+
 export interface BotWorldState {
     tick: number;
     /** Version of nearby-player combat-target telemetry emitted by the Lite client. */
@@ -578,6 +583,7 @@ export interface BotWorldState {
     inGame: boolean;
     player: PlayerState | null;
     skills: SkillState[];
+    questJournal?: QuestJournal;
     inventory: InventoryItem[];
     equipment: InventoryItem[];
     nearbyNpcs: NearbyNpc[];

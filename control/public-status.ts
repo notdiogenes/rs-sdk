@@ -8,13 +8,14 @@ import { dashboardLastActivity } from './dashboard-last-activity';
 import type { BotObservation, LastActivity } from './dashboard-last-activity';
 import type { BotWorldState } from '../sdk/types';
 import { dashboardFleetStats } from './dashboard-fleet-stats';
-import { dashboardQuestPoints } from './dashboard-quests';
+import { dashboardQuestPoints, loadQuestCatalog } from './dashboard-quests';
 import { fleetPage } from './dashboard-fleet-page';
 
 const [botsDir, configDir] = process.argv.slice(2);
 if (!botsDir || !configDir) throw new Error('Expected the bot directory and control config directory');
 const token = (await Bun.file(join(configDir, 'token')).text()).trim();
 if (!/^[a-f0-9]{64}$/.test(token)) throw new Error('Invalid control API token');
+const questCatalog = await loadQuestCatalog();
 const fleetStyle = await Bun.file(join(import.meta.dir, 'dashboard-fleet.css')).text();
 const controls = await Bun.file(join(import.meta.dir, 'public-status-controls.js')).text();
 const runtimeDir = join(dirname(configDir), 'rs-sdk-public-status');
@@ -159,8 +160,13 @@ Bun.serve({
                 try {
                     const current = view === 'diagnostics' ? null : await snapshot(botsDir);
                     const payload = current === null ? await diagnostics() : view === 'quests'
-                        ? await dashboardQuestPoints(current.bots.map(bot => bot.name))
-                        : current.bots.map(({ name, stats }) => ({ name, ...stats }));
+                        ? {
+                            scores: await dashboardQuestPoints(current.bots.map(bot => bot.name)),
+                            journals: Object.fromEntries(current.bots.map(({ name, stats }) => [name, stats?.journal ?? null])),
+                        }
+                        : current.bots.map(({ name, stats }) => ({
+                            name, skills: stats?.skills, bank: stats?.bank, xpGained: stats?.xpGained,
+                        }));
                     return Response.json(payload, { headers: { ...headers, 'Set-Cookie': session } });
                 } catch {
                     return Response.json({ error: 'Dashboard data is temporarily unavailable.' }, { status: 503, headers });
@@ -177,7 +183,7 @@ Bun.serve({
         let data: Snapshot | undefined;
         try { data = await snapshot(botsDir); } catch { /* display the unavailable page */ }
         const nonce = crypto.randomUUID();
-        return new Response(request.method === 'HEAD' ? null : fleetPage({ nonce, data, fleetStyle, controls, refreshSeconds, displayTimeZone }), {
+        return new Response(request.method === 'HEAD' ? null : fleetPage({ nonce, data, questCatalog, fleetStyle, controls, refreshSeconds, displayTimeZone }), {
             status: data ? 200 : 503,
             headers: {
                 'Content-Type': 'text/html; charset=utf-8',

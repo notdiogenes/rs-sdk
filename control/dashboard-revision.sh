@@ -7,7 +7,8 @@ revision=$(sha256sum -- "$source_dir/public-status.ts" "$source_dir/public-statu
     "$source_dir/dashboard-activity.ts" "$source_dir/dashboard-session.ts" \
     "$source_dir/dashboard-diagnostics.ts" "$source_dir/dashboard-last-activity.ts" "$source_dir/hosted-bot.ts" \
     "$source_dir/dashboard-fleet-page.ts" "$source_dir/dashboard-fleet.css" \
-    "$source_dir/dashboard-fleet-stats.ts" "$source_dir/dashboard-quests.ts")
+    "$source_dir/dashboard-fleet-stats.ts" "$source_dir/dashboard-quests.ts" \
+    "$source_dir/../server/content/scripts/player/interfaces/questlist.if" "$source_dir/../server/content/pack/interface.pack")
 
 case "$3" in
     changed)

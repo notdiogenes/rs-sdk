@@ -1,5 +1,5 @@
 import { fleetSkills } from './dashboard-fleet-stats';
-import { questHiscore } from './dashboard-quests';
+import { questHiscore, type QuestColumn } from './dashboard-quests';
 import type { Bot, ControlActivity, Snapshot } from './public-status';
 
 const escape = (value: string) => value.replaceAll('&', '&amp;').replaceAll('<', '&lt;')
@@ -80,9 +80,9 @@ function card(bot: Bot, category: Group, reason: string, managed: ControlActivit
     </article>`;
 }
 
-type Page = { nonce: string; data?: Snapshot; fleetStyle: string; controls: string; refreshSeconds: number; displayTimeZone: string };
+type Page = { nonce: string; data?: Snapshot; questCatalog: QuestColumn[]; fleetStyle: string; controls: string; refreshSeconds: number; displayTimeZone: string };
 
-export function fleetPage({ nonce, data, fleetStyle, controls, refreshSeconds, displayTimeZone }: Page) {
+export function fleetPage({ nonce, data, questCatalog, fleetStyle, controls, refreshSeconds, displayTimeZone }: Page) {
     const now = data ? Date.parse(data.checkedAt) : Date.now();
     const roster = (data?.bots ?? []).map(bot => {
         const managed = data?.managed?.bot === bot.name ? data.managed : undefined;
@@ -180,7 +180,7 @@ export function fleetPage({ nonce, data, fleetStyle, controls, refreshSeconds, d
   <button type="button" id="diagnostics-refresh">Refresh</button>
   <button type="button" id="diagnostics-close">Close</button>
 </div></dialog>
-<script nonce="${nonce}" type="application/json" id="fleet-roster">${JSON.stringify({ rows: rowList, skills: fleetSkills })}</script>
+<script nonce="${nonce}" type="application/json" id="fleet-roster">${JSON.stringify({ rows: rowList, skills: fleetSkills, questCatalog }).replaceAll('<', '\\u003c')}</script>
 <script nonce="${nonce}" data-refresh="${refreshSeconds}" data-time-zone="${displayTimeZone}">${controls}</script>
 </body></html>`;
 }

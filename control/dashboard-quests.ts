@@ -1,3 +1,28 @@
+import { join } from 'node:path';
+
+export type QuestColumn = { id: number; name: string };
+
+export async function loadQuestCatalog(): Promise<QuestColumn[]> {
+    const content = join(import.meta.dir, '../server/content');
+    const [journal, pack] = await Promise.all([
+        Bun.file(join(content, 'scripts/player/interfaces/questlist.if')).text(),
+        Bun.file(join(content, 'pack/interface.pack')).text(),
+    ]);
+    const ids = new Map([...pack.matchAll(/^(\d+)=questlist:([^\s]+)\s*$/gm)]
+        .map(([, id, name]) => [name, Number(id)]));
+    const quests = [...journal.matchAll(/^\[([^\]\r\n]+)\][^\S\r\n]*\r?\n([^[]*)/gm)].flatMap(([, key, block]) => {
+        const id = ids.get(key);
+        if (id === undefined || !block) return [];
+        const field = (pattern: RegExp) => pattern.exec(block)?.[1]?.trim();
+        const name = field(/^text=(.+)$/m);
+        const position = Number(field(/^y=(\d+)$/m));
+        if (!name || !Number.isFinite(position) || field(/^layer=(.+)$/m) !== 'com_0' ||
+            field(/^type=(.+)$/m) !== 'text' || field(/^buttontype=(.+)$/m) !== 'normal') return [];
+        return [{ id, name, position }];
+    });
+    return quests.sort((a, b) => a.position - b.position).map(({ id, name }) => ({ id, name }));
+}
+
 const lifetime = 5 * 60_000;
 type QuestSnapshot = { points: number | null; checkedAt: number };
 const cache = new Map<string, { expires: number; result: Promise<QuestSnapshot> }>();

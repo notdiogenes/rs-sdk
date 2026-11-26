@@ -103,8 +103,15 @@ issues. **Producing** means combat is in progress or movement, XP gain, or
 a combat change was observed in the last two minutes. A running managed task
 without an observed effect for five minutes appears under **Needs attention**.
 
-With a dashboard session, **Stats** shows last observed base levels and combat
-level, **Quests** reads points from the hosted game's hiscores, and **Check
+With a dashboard session, **Quests** shows one row per bot, one column per
+Quest Journal entry, and total points from the hosted game's hiscores. Each
+column counts completed quests among the visible bots that reported that
+entry. The dashboard keeps each account's most recent observed journal,
+including while the account is offline. **Unreported** means no journal state
+was observed for that quest. Per-quest markers require a bot client running
+code that publishes Quest Journal telemetry.
+
+**Stats** shows last observed base levels and combat level. **Check
 banks** shows coin balances and item stacks from the latest open bank observed
 for each account. Checking the dashboard never opens a bank in-game. XP on a
 Fleet card is the gain between samples taken within the last hour. Timestamps
