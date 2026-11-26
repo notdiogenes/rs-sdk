@@ -90,10 +90,10 @@ const result = await runScript(async ctx => {
         if (!got(bucket)) await groundItem(ctx, bucket, 3225, 3294);
         await walk(ctx, 3255, 3288, 5);
         const dairy = sdk.findNearbyLoc(/dairy cow/i);
-        const cow = sdk.findNearbyNpc(/dairy cow/i);
+        const cow = sdk.findNearbyNpc(/^(?:dairy )?cow$/i);
         if (dairy) await bot.useItemOnLoc(bucket, dairy);
         else if (cow) await bot.useItemOnNpc(bucket, cow);
-        else throw new Error('No dairy cow found inside the cow field');
+        else throw new Error('No cow found inside the Lumbridge cow field');
         await sdk.waitForCondition(() => got(milk), 10_000);
         questLog('quest-ingredient', { item: 'Bucket of milk' });
     }

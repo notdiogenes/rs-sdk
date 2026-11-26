@@ -56,7 +56,8 @@ export async function continueDialog({ sdk }: QuestContext, choices: RegExp[] = 
             continue;
         }
         if (dialog.options.length) {
-            const match = choices.find(choice => dialog.options.some(option => choice.test(option.text)));
+            const match = [/^click here to continue$/i, ...choices]
+                .find(choice => dialog.options.some(option => choice.test(option.text)));
             if (!match) throw new Error('Unexpected quest choices: ' + dialog.options.map(option => option.text).join(' | '));
             const chosen = await sdk.clickDialogByText(match);
             if (!chosen.success) throw new Error(chosen.message);
