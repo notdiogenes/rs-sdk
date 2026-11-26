@@ -11,7 +11,7 @@ function sessionCookie(value: string) {
     return `${cookieName}=${value}; Path=/bots; Secure; HttpOnly; SameSite=Strict; Max-Age=${value ? cookieLifetime : 0}`;
 }
 
-export function dashboardSessions(directory: string, token: string, getOrigin: () => Promise<string>) {
+export function dashboardSessions(directory: string, getOrigin: () => Promise<string>, enrollmentPath: string) {
     const settingsPath = join(directory, 'password.json');
     let database: Database | undefined;
     let nextAttempt = 0;
@@ -69,11 +69,15 @@ export function dashboardSessions(directory: string, token: string, getOrigin: (
                 if (config) return reply({ error: 'The dashboard password has already been set.' }, 409);
                 const origin = await getOrigin();
                 if (request.headers.get('Origin') !== origin) return reply({ error: 'Open the HTTPS dashboard to set the password.' }, 403);
-                const bearer = request.headers.get('Authorization') ?? '';
-                if (!timingSafeEqual(Buffer.from(digest(bearer)), Buffer.from(digest(`Bearer ${token}`)))) {
-                    return reply({ error: 'The dashboard did not accept that API token.' }, 401);
-                }
                 const body = await request.json().catch(() => null);
+                const enrollmentFile = Bun.file(enrollmentPath);
+                const enrollment = await enrollmentFile.exists() ? await enrollmentFile.json() : null;
+                if (typeof body?.code !== 'string' || !/^[a-f0-9]{64}$/.test(body.code) ||
+                    typeof enrollment?.digest !== 'string' || !/^[a-f0-9]{64}$/.test(enrollment.digest) ||
+                    typeof enrollment.expiresAt !== 'number' || Date.now() >= enrollment.expiresAt ||
+                    !timingSafeEqual(Buffer.from(digest(body.code), 'hex'), Buffer.from(enrollment.digest, 'hex'))) {
+                    return reply({ error: 'Open a valid dashboard setup link.' }, 401);
+                }
                 if (typeof body?.password !== 'string' || body.password.length < 12 || body.password.length > 128) {
                     return reply({ error: 'Choose a password with 12–128 characters.' }, 400);
                 }

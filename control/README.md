@@ -97,9 +97,9 @@ The service runs from `~/rs-sdk-sync` and reloads when the webhook updates
 its source files. Run the installer once to switch an existing dashboard to
 this setup. Future dashboard source updates are picked up after the sync.
 
-Select **Sign in** on the HTTPS dashboard. For the first sign-in, enter the
-existing control API token and choose a password of at least 12 characters.
-To reset the password later, run this from your Lightsail terminal:
+Open the one-time setup link to choose a password of at least 12 characters.
+After setup, use **Sign in** with your dashboard password. You can also set or
+reset the password from your Lightsail terminal:
 
 ```sh
 bash ~/rs-sdk-sync/control/set-dashboard-password.sh

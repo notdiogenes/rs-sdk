@@ -9,12 +9,12 @@ if (!botsDir || !configDir) throw new Error('Expected the bot directory and cont
 const token = (await Bun.file(join(configDir, 'token')).text()).trim();
 if (!/^[a-f0-9]{64}$/.test(token)) throw new Error('Invalid control API token');
 const controls = await Bun.file(join(import.meta.dir, 'public-status-controls.js')).text();
-const sessions = dashboardSessions(join(dirname(configDir), 'rs-sdk-public-status'), token, async () => {
+const sessions = dashboardSessions(join(dirname(configDir), 'rs-sdk-public-status'), async () => {
     const site = await Bun.file('/etc/nginx/sites-enabled/rs-sdk-control-hostname').text();
     const host = /^\s*server_name\s+([0-9]+-[0-9]+-[0-9]+-[0-9]+\.sslip\.io);/m.exec(site)?.[1];
     if (!host) throw new Error('The managed HTTPS hostname is unavailable.');
     return `https://${host}`;
-});
+}, join(import.meta.dir, 'dashboard-enrollment.json'));
 
 type Bot = { name: string; status: 'Online' | 'Offline' | 'Unknown'; activity: string; location?: string };
 type ControlActivity = { bot: string; label?: string; running: boolean };
@@ -138,7 +138,6 @@ ${rows ? `<table aria-label="Bot status"><thead><tr><th scope="col">Bot</th><th 
 </form></dialog>
 <dialog id="dashboard-sign-in" aria-labelledby="sign-in-title"><form>
   <h2 id="sign-in-title">Dashboard sign-in</h2>
-  <label id="dashboard-setup-token" hidden>Control API token <input type="password" autocomplete="off" disabled></label>
   <label>Dashboard password <input id="dashboard-password" type="password" autocomplete="current-password" required autofocus></label>
   <p role="status" aria-live="polite"></p>
   <div><button type="submit">Sign in</button> <button type="button">Close</button></div>

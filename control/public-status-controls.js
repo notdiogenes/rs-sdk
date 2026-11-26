@@ -6,8 +6,6 @@
     const signIn = document.querySelector('#dashboard-sign-in');
     const signInForm = signIn.querySelector('form');
     const password = signInForm.querySelector('#dashboard-password');
-    const setupField = signInForm.querySelector('#dashboard-setup-token');
-    const setupToken = setupField.querySelector('input');
     const signInMessage = signInForm.querySelector('[role="status"]');
     const signInSubmit = signInForm.querySelector('[type="submit"]');
     const tasks = form.querySelector('select');
@@ -23,6 +21,8 @@
     let signedIn = false;
     let configured = true;
     let pendingButton;
+    let setupCode = /^#setup=([a-f0-9]{64})$/.exec(window.location.hash)?.[1];
+    if (setupCode) history.replaceState(null, '', window.location.pathname + window.location.search);
 
     function scheduleRefresh() {
         refresh = setTimeout(() => window.location.reload(), refreshMs);
@@ -37,13 +37,13 @@
     function openSignIn(button) {
         clearTimeout(refresh);
         pendingButton = button;
-        setupField.hidden = configured;
-        setupToken.disabled = configured;
-        setupToken.required = !configured;
         password.autocomplete = configured ? 'current-password' : 'new-password';
         password.minLength = configured ? 0 : 12;
         signInSubmit.textContent = configured ? 'Sign in' : 'Set password and sign in';
-        signInMessage.textContent = '';
+        const needsLink = !configured && !setupCode;
+        signInSubmit.disabled = needsLink;
+        password.disabled = needsLink;
+        signInMessage.textContent = needsLink ? 'Open your one-time dashboard setup link.' : '';
         signIn.showModal();
     }
 
@@ -51,6 +51,7 @@
         .then(state => {
             configured = state.configured;
             setSignedIn(state.signedIn);
+            if (!configured && setupCode && !signIn.open) openSignIn();
         }).catch(() => {});
     account.addEventListener('click', async () => {
         await sessionReady;
@@ -70,10 +71,10 @@
         }
     });
     signInForm.querySelector('[type="button"]').addEventListener('click', () => {
-        if (!signInSubmit.disabled) signIn.close();
+        if (!signInSubmit.disabled || password.disabled) signIn.close();
     });
     signIn.addEventListener('cancel', event => {
-        if (signInSubmit.disabled) event.preventDefault();
+        if (signInSubmit.disabled && !password.disabled) event.preventDefault();
     });
     signIn.addEventListener('close', () => {
         signInForm.reset();
@@ -86,8 +87,9 @@
         signInSubmit.disabled = true;
         try {
             await request(configured ? '/bots/activity?session=login' : '/bots/activity?session=setup',
-                { password: password.value }, configured ? undefined : setupToken.value.trim());
+                configured ? { password: password.value } : { password: password.value, code: setupCode });
             configured = true;
+            setupCode = undefined;
             setSignedIn(true);
             const button = pendingButton;
             signIn.close();
@@ -96,7 +98,6 @@
             signInMessage.textContent = error.message;
         } finally {
             password.value = '';
-            setupToken.value = '';
             signInSubmit.disabled = false;
         }
     });
@@ -131,9 +132,8 @@
         if (!signIn.open && !dialog.open) scheduleRefresh();
     });
 
-    async function request(path, payload, bearer) {
+    async function request(path, payload) {
         const headers = {};
-        if (bearer) headers.Authorization = 'Bearer ' + bearer;
         const options = {
             headers, credentials: 'same-origin', cache: 'no-store', redirect: 'error',
             signal: AbortSignal.timeout(payload?.action === 'stop' ? 38000 : 15000),
