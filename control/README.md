@@ -98,6 +98,18 @@ The page refreshes every 15 seconds while open. It serves only the public
 fields and runs in a separate service from the control API and gameplay
 processes.
 
+The Fleet desk groups bots by recent game activity and connection or task
+issues. **Producing** means combat is in progress or movement, XP gain, or
+a combat change was observed in the last two minutes. A running managed task
+without an observed effect for five minutes appears under **Needs attention**.
+
+With a dashboard session, **Stats** shows last observed base levels and combat
+level, **Quests** reads points from the hosted game's hiscores, and **Check
+banks** shows coin balances and item stacks from the latest open bank observed
+for each account. Checking the dashboard never opens a bank in-game. XP on a
+Fleet card is the gain between samples taken within the last hour. Timestamps
+on the dashboard use US Eastern time.
+
 The service runs from `~/rs-sdk-sync` and reloads when the webhook updates
 its source files. Run the installer once to switch an existing dashboard to
 this setup. Future dashboard source updates are picked up after the sync.

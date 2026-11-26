@@ -35,14 +35,285 @@
     let setupCode = /^#setup=([a-f0-9]{64})$/.exec(window.location.hash)?.[1];
     if (setupCode) history.replaceState(null, '', window.location.pathname + window.location.search);
 
-    function scheduleRefresh() {
-        refresh = setTimeout(() => window.location.reload(), refreshMs);
+    const { rows: roster, skills } = JSON.parse(document.querySelector('#fleet-roster').textContent);
+    const tabs = [...document.querySelectorAll('[role="tab"]')];
+    const search = document.querySelector('#search');
+    const statusFilter = document.querySelector('#status-filter');
+    const kindFilter = document.querySelector('#kind-filter');
+    const filterFields = [search, statusFilter, kindFilter];
+    const auto = document.querySelector('#auto');
+    const banks = document.querySelector('#banks');
+    const banksDialog = document.querySelector('#banks-dialog');
+    const detailsDialog = document.querySelector('#fleet-details');
+    const cards = [...document.querySelectorAll('[data-bot-row]')];
+    const groupElements = [...document.querySelectorAll('[data-group]')];
+    const fleetEmpty = document.querySelector('#fleet-empty');
+    const num = new Intl.NumberFormat('en-US');
+    const escape = value => String(value).replace(/[&<>"']/g, character => (
+        { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[character]
+    ));
+    const number = value => Number.isFinite(value) ? num.format(value) : '—';
+    const table = (headers, rows, label) => `<div class="table-wrap" tabindex="0" aria-label="${label}">
+      <table><thead><tr>${headers.map(header => `<th scope="col">${header}</th>`).join('')}</tr></thead>
+      <tbody>${rows.map(row => '<tr>' + `<th scope="row">${row[0]}</th>` +
+        row.slice(1).map(cell => `<td>${cell}</td>`).join('') + '</tr>').join('')}</tbody></table></div>`;
+    const skillTotal = snapshot => snapshot && skills.every(([name]) => Number.isFinite(snapshot.levels[name]))
+        ? Object.values(snapshot.levels).reduce((total, level) => total + level, 0) : null;
+    let stats = new Map();
+    let quests = {};
+    let dataError = '';
+    let updating = false;
+    let dataVersion = 0;
+    let fleetDataReady = Promise.resolve();
+    let sort = { key: 0, direction: 1 };
+    let view = 'fleet-panel';
+
+    function matches(name, status, kind) {
+        return (statusFilter.value === 'all' || statusFilter.value === status) &&
+            (kindFilter.value === 'all' || kindFilter.value === kind) &&
+            name.toLowerCase().includes(search.value.trim().toLowerCase());
     }
-    scheduleRefresh();
+
+    function matchingRows() {
+        return roster.filter(({ name, category, kind }) => matches(name, category, kind));
+    }
+
+    function updateCards() {
+        for (const card of cards) {
+            const { name, status, kind } = card.dataset;
+            card.hidden = !matches(name, status, kind);
+            const stored = stats.get(name);
+            const levels = card.querySelector('[data-card-levels]');
+            const badges = card.querySelector('[data-card-skills]');
+            const xp = card.querySelector('[data-card-xp]');
+            const points = quests[name]?.points;
+            levels.textContent = [Number.isFinite(points) && `${number(points)} QP`, stored?.skills?.combat != null &&
+                `Cb ${number(stored.skills.combat)}`].filter(Boolean).join(' · ');
+            levels.hidden = !levels.textContent;
+            badges.innerHTML = skills.slice(0, 7).filter(([skill]) => stored?.skills?.levels[skill] != null)
+                .map(([skill, short]) => `<span title="${skill}">${short} ${number(stored.skills.levels[skill])}</span>`).join('');
+            badges.hidden = !badges.textContent;
+            xp.hidden = stored?.xpGained == null;
+            xp.textContent = xp.hidden ? '' : `${number(stored.xpGained)} XP · last hour`;
+        }
+        for (const group of groupElements) {
+            const count = group.querySelectorAll('[data-bot-row]:not([hidden])').length;
+            group.hidden = count === 0;
+            group.querySelector('.count').textContent = count;
+        }
+        fleetEmpty.hidden = cards.some(card => !card.hidden);
+        const reported = Object.values(quests).map(entry => entry.points).filter(Number.isFinite);
+        document.querySelector('#quest-total').textContent = reported.length
+            ? number(reported.reduce((sum, points) => sum + points, 0)) : '—';
+    }
+
+    function renderView() {
+        updateCards();
+        if (view === 'fleet-panel') return;
+        const panel = document.getElementById(view);
+        if (!signedIn) {
+            panel.innerHTML = '<p class="empty"><button type="button" data-unlock>Sign in</button></p>';
+            return;
+        }
+        const visible = matchingRows();
+        if (!visible.length || updating || dataError) {
+            panel.innerHTML = `<p class="empty" role="status">${escape(dataError ||
+                (updating ? 'Loading dashboard data…' : 'No bots match your filters.'))}</p>`;
+            return;
+        }
+        const detail = ({ name, kind }) =>
+            `<button type="button" class="button" data-detail="${escape(name)}">${escape(name)}</button><br><small>${kind}</small>`;
+        if (view === 'quests-panel') {
+            panel.innerHTML = table(['Account', 'Quest points', 'Checked', 'Hiscores'], visible.map(row => {
+                const score = quests[row.name];
+                return [detail(row), number(score?.points), escape(labelTime(score?.checkedAt)),
+                    `<a href="${escape(row.hiscore)}" target="_blank" rel="noopener">Hiscores ↗</a>`];
+            }), 'Quest points') + '<p class="table-caption">Points from the game hiscores. A dash means no points were reported.</p>';
+            return;
+        }
+        const columns = [['Account', 'Account'], ['QP', 'Quest points'], ['CB', 'Combat level'], ['TOT', 'Total level'],
+            ...skills.map(([name, short]) => [short, name]), ['Last sampled', 'Last sampled']];
+        const entries = visible.map(row => {
+            const snapshot = stats.get(row.name)?.skills;
+            return { row, values: [row.name, quests[row.name]?.points, snapshot?.combat, skillTotal(snapshot),
+                ...skills.map(([name]) => snapshot?.levels[name]), snapshot?.at] };
+        });
+        const { key, direction } = sort;
+        entries.sort((a, b) => {
+            const x = a.values[key], y = b.values[key];
+            if (x == null) return y == null ? 0 : 1;
+            if (y == null) return -1;
+            return direction * (typeof x === 'string' ? x.localeCompare(y) : x - y);
+        });
+        panel.innerHTML = table(columns.map(([short, long], index) => `<button type="button" data-sort="${index}"
+            title="${long}">${short}${index === key ? (direction === 1 ? ' ↑' : ' ↓') : ''}</button>`),
+            entries.map(({ row, values }) => [detail(row), ...values.slice(1, -1).map(value => value === 99
+                ? '<strong class="points">99</strong>' : number(value)), escape(labelTime(values.at(-1)))]),
+            'Scrollable skill levels') + '<p class="table-caption">Last observed base levels. Offline bots retain their latest snapshot.</p>';
+        panel.querySelectorAll('thead th')[key].setAttribute('aria-sort', direction === 1 ? 'ascending' : 'descending');
+    }
+
+    function selectTab(tab, focus = false) {
+        view = tab.getAttribute('aria-controls');
+        for (const button of tabs) {
+            const selected = button === tab;
+            button.setAttribute('aria-selected', selected);
+            button.tabIndex = selected ? 0 : -1;
+            document.getElementById(button.getAttribute('aria-controls')).hidden = !selected;
+        }
+        if (focus) tab.focus();
+        saveView();
+        renderView();
+    }
+
+    function saveView() {
+        try {
+            sessionStorage.setItem('fleet-view', JSON.stringify({
+                view, filters: filterFields.map(field => field.value), auto: auto.getAttribute('aria-pressed'), sort,
+            }));
+        } catch { /* The dashboard also works when browser storage is disabled. */ }
+    }
+
+    function loadFleetData() {
+        const version = ++dataVersion;
+        updating = true;
+        dataError = '';
+        renderView();
+        const snapshotsReady = request('/bots/activity?view=fleet-data').then(snapshots => {
+                if (version !== dataVersion) return;
+                stats = new Map(snapshots.map(entry => [entry.name, entry]));
+            }).catch(error => {
+                if (version === dataVersion) dataError = error.message;
+            }).finally(() => {
+                if (version !== dataVersion) return;
+                updating = false;
+                renderView();
+            });
+        void request('/bots/activity?view=quests').then(points => {
+            if (version !== dataVersion) return;
+            quests = points;
+            renderView();
+        }).catch(() => {});
+        return snapshotsReady;
+    }
+
+    function openBanks(name) {
+        const visible = matchingRows().filter(row => name === undefined || row.name === name);
+        document.querySelector('#bank-panel').innerHTML = dataError
+            ? `<p class="empty" role="status">${escape(dataError)}</p>` : visible.length
+            ? table(['Account', 'Coins', 'Stacks', 'Last observed'], visible.map(row => {
+                const bank = stats.get(row.name)?.bank;
+                return [escape(row.name), number(bank?.coins), number(bank?.stacks), escape(labelTime(bank?.at))];
+            }), 'Last observed bank balances') : '<p class="empty">No bots match your filters.</p>';
+        document.querySelector('#bank-title').textContent = name ? 'Bank snapshot for ' + name : 'Bank snapshots';
+        clearTimeout(refresh);
+        banksDialog.showModal();
+    }
+
+    function openDetails(name) {
+        const card = cards.find(element => element.dataset.name === name);
+        if (!card) return;
+        const row = stats.get(name);
+        const snapshot = row?.skills;
+        document.querySelector('#fleet-details-title').textContent = name;
+        document.querySelector('#fleet-details-status').textContent = card.querySelector('.reason').textContent.trim();
+        const report = document.querySelector('#fleet-details-content');
+        report.replaceChildren();
+        for (const element of card.querySelectorAll('.task-line, .log, .facts, .location-line, .skills')) {
+            report.append(element.cloneNode(true));
+        }
+        const summary = document.createElement('p');
+        summary.className = 'table-caption';
+        summary.textContent = snapshot ? `Total level ${number(skillTotal(snapshot))} · Sampled ${labelTime(snapshot.at)}`
+            : 'No skill snapshot has been reported.';
+        report.append(summary);
+        clearTimeout(refresh);
+        detailsDialog.showModal();
+    }
+
+    function installFleet() {
+        let saved;
+        try { saved = JSON.parse(sessionStorage.getItem('fleet-view')); } catch { /* Reset stored preferences. */ }
+        if (saved?.filters?.length === filterFields.length) {
+            filterFields.forEach((field, index) => { field.value = saved.filters[index]; });
+        }
+        if (saved?.auto === 'false') auto.setAttribute('aria-pressed', 'false');
+        if (Number.isInteger(saved?.sort?.key) && saved.sort.key >= 0 && saved.sort.key < skills.length + 5) sort = saved.sort;
+        selectTab(tabs.find(tab => tab.getAttribute('aria-controls') === saved?.view) || tabs[0]);
+        document.querySelector('#refresh').addEventListener('click', () => window.location.reload());
+        auto.addEventListener('click', () => {
+            auto.setAttribute('aria-pressed', auto.getAttribute('aria-pressed') === 'true' ? 'false' : 'true');
+            saveView();
+            scheduleRefresh();
+        });
+        for (const field of filterFields) {
+            field.addEventListener('input', () => { saveView(); renderView(); });
+        }
+        for (const tab of tabs) {
+            tab.addEventListener('click', () => selectTab(tab));
+            tab.addEventListener('keydown', event => {
+                const index = tabs.indexOf(tab);
+                const next = { ArrowLeft: (index + tabs.length - 1) % tabs.length,
+                    ArrowRight: (index + 1) % tabs.length, Home: 0, End: tabs.length - 1 }[event.key];
+                if (next === undefined) return;
+                event.preventDefault();
+                selectTab(tabs[next], true);
+            });
+        }
+        for (const modal of [banksDialog, detailsDialog]) {
+            modal.querySelector('[data-close]').addEventListener('click', () => modal.close());
+            modal.addEventListener('close', scheduleRefresh);
+        }
+        document.addEventListener('click', async event => {
+            const button = event.target.closest('button');
+            if (!button) return;
+            if (button.hasAttribute('data-sort')) {
+                const key = Number(button.dataset.sort);
+                sort = { key, direction: key === sort.key ? -sort.direction : 1 };
+                saveView();
+                renderView();
+                document.querySelector(`[data-sort="${key}"]`)?.focus();
+                return;
+            }
+            if (button !== banks && !button.matches('[data-bank], [data-detail], [data-unlock]')) return;
+            await sessionReady;
+            if (!signedIn) {
+                openSignIn(button.hasAttribute('data-unlock') ? undefined : button);
+                return;
+            }
+            await fleetDataReady;
+            if (!signedIn) return;
+            if (button.dataset.detail) {
+                openDetails(button.dataset.detail);
+            } else if (button === banks || button.dataset.bank) {
+                openBanks(button.dataset.bank);
+            }
+        });
+        scheduleRefresh();
+    }
+
+    function scheduleRefresh() {
+        clearTimeout(refresh);
+        if (auto.getAttribute('aria-pressed') === 'true') {
+            refresh = setTimeout(() => {
+                if (document.querySelector('dialog[open]') || document.activeElement === search) scheduleRefresh();
+                else window.location.reload();
+            }, refreshMs);
+        }
+    }
 
     function setSignedIn(value) {
         signedIn = value;
         account.textContent = value ? 'Sign out' : 'Sign in';
+        if (value) {
+            fleetDataReady = loadFleetData();
+        } else {
+            dataVersion++;
+            updating = false;
+            stats.clear();
+            quests = {};
+            renderView();
+        }
     }
 
     function openSignIn(button) {
@@ -257,7 +528,7 @@
         selected.dataset.action = running ? 'stop' : 'start';
         selected.textContent = running ? 'Stop activity' : 'Start activity';
         const activity = state.task?.name?.replaceAll('-', ' ');
-        selected.closest('tr').querySelector('[data-activity]').textContent =
+        selected.closest('[data-bot-row]').querySelector('[data-activity]').textContent =
             activity ? (state.task.stopping ? 'Stopping ' + activity : activity)
                 : state.starting ? 'Starting ' + state.starting.replaceAll('-', ' ')
                     : state.startError ? 'Activity could not start' : '—';
@@ -342,4 +613,5 @@
             close.disabled = false;
         }
     });
+    installFleet();
 })();
