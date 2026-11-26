@@ -1,5 +1,10 @@
 (() => {
     const refreshMs = Number(document.currentScript.dataset.refresh) * 1000;
+    const diagnosticClock = new Intl.DateTimeFormat('en-US', {
+        timeZone: document.currentScript.dataset.timeZone,
+        year: 'numeric', month: 'short', day: 'numeric',
+        hour: 'numeric', minute: '2-digit', second: '2-digit', timeZoneName: 'short',
+    });
     const dialog = document.querySelector('[aria-labelledby="activity-title"]');
     const form = dialog.querySelector('form');
     const account = document.querySelector('#dashboard-account');
@@ -165,7 +170,7 @@
     }
 
     function labelTime(value) {
-        return value ? new Date(value).toLocaleString() : '—';
+        return value ? diagnosticClock.format(new Date(value)) : '—';
     }
 
     async function loadDiagnostics() {

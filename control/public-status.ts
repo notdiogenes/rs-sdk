@@ -23,6 +23,10 @@ type Bot = { name: string; status: 'Online' | 'Offline' | 'Unknown'; activity: s
 type ControlActivity = { bot: string; label?: string; running: boolean };
 type Snapshot = { bots: Bot[]; checkedAt: string; managed?: ControlActivity };
 const refreshSeconds = 15;
+const displayTimeZone = 'America/New_York';
+const dashboardClock = new Intl.DateTimeFormat('en-US', {
+    timeZone: displayTimeZone, hour: 'numeric', minute: '2-digit', second: '2-digit', timeZoneName: 'short',
+});
 let cached: Snapshot | undefined;
 let expiresAt = 0;
 let refreshing: Promise<Snapshot> | undefined;
@@ -136,7 +140,7 @@ function render(nonce: string, data?: Snapshot) {
 <h1>Bot status</h1>
 <button type="button" id="dashboard-account">Sign in</button>
 <button type="button" id="dashboard-diagnostics-open">Diagnostics</button>
-${data ? `<p>Checked <time datetime="${data.checkedAt}">${data.checkedAt.slice(11, 19)} UTC</time></p>` : ''}
+${data ? `<p>Checked <time datetime="${data.checkedAt}">${dashboardClock.format(new Date(data.checkedAt))}</time></p>` : ''}
 ${rows ? `<table aria-label="Bot status"><thead><tr><th scope="col">Bot</th><th scope="col">Status</th><th scope="col">Activity</th><th scope="col">Location</th><th scope="col">Controls</th></tr></thead><tbody>${rows}</tbody></table>`
     : `<p>${data ? 'No bots configured.' : 'Bot status is temporarily unavailable.'}</p>`}
 </main>
@@ -161,7 +165,7 @@ ${rows ? `<table aria-label="Bot status"><thead><tr><th scope="col">Bot</th><th 
   <button type="button" id="diagnostics-refresh">Refresh</button>
   <button type="button" id="diagnostics-close">Close</button>
 </dialog>
-<script nonce="${nonce}" data-refresh="${refreshSeconds}">${controls}</script>
+<script nonce="${nonce}" data-refresh="${refreshSeconds}" data-time-zone="${displayTimeZone}">${controls}</script>
 </body></html>`;
 }
 
