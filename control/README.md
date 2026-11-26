@@ -93,6 +93,12 @@ The page refreshes every 15 seconds while open. It serves only the public
 fields and runs in a separate service from the control API and gameplay
 processes.
 
+The managed bot row has a **Start activity** or **Stop activity** button.
+Enter the control API token when prompted. Start uses the configured activity
+list and requires the managed game client to be running. Stop ends the task
+and keeps the managed game client logged in. The token is cleared when the
+action finishes or you close the dialog.
+
 ## Optional bot configuration
 
 Before enabling gameplay, put the bot's existing `bot.env` and scripts in

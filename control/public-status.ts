@@ -6,16 +6,17 @@ const [botsDir, configDir] = process.argv.slice(2);
 if (!botsDir || !configDir) throw new Error('Expected the bot directory and control config directory');
 const token = (await Bun.file(join(configDir, 'token')).text()).trim();
 if (!/^[a-f0-9]{64}$/.test(token)) throw new Error('Invalid control API token');
+const controls = await Bun.file(join(import.meta.dir, 'public-status-controls.js')).text();
 
 type Bot = { name: string; status: 'Online' | 'Offline' | 'Unknown'; activity: string; location?: string };
-type ControlActivity = { bot: string; label: string } | undefined;
-type Snapshot = { bots: Bot[]; checkedAt: string };
+type ControlActivity = { bot: string; label?: string; running: boolean };
+type Snapshot = { bots: Bot[]; checkedAt: string; managed?: ControlActivity };
 const refreshSeconds = 15;
 let cached: Snapshot | undefined;
 let expiresAt = 0;
 let refreshing: Promise<Snapshot> | undefined;
 
-async function controlActivity(): Promise<ControlActivity> {
+async function controlActivity(): Promise<ControlActivity | undefined> {
     try {
         const response = await fetch('http://127.0.0.1:3719/v1/status', {
             headers: { Authorization: `Bearer ${token}` },
@@ -23,14 +24,15 @@ async function controlActivity(): Promise<ControlActivity> {
             redirect: 'error',
         });
         if (!response.ok) return;
-        const { bot, task, client } = await response.json() as {
-            bot?: unknown; task?: { name?: unknown; stopping?: boolean }; client?: { stopping?: boolean };
+        const { bot, task } = await response.json() as {
+            bot?: unknown; task?: { name?: unknown; stopping?: boolean };
         };
-        if (typeof bot !== 'string' || !hostedBotName.test(bot) || !client) return;
+        if (typeof bot !== 'string' || !hostedBotName.test(bot)) return;
         if (typeof task?.name === 'string' && /^[a-z][a-z0-9-]{0,63}$/.test(task.name)) {
             const label = task.name.replaceAll('-', ' ');
-            return { bot, label: task.stopping ? `Stopping ${label}` : label };
+            return { bot, label: task.stopping ? `Stopping ${label}` : label, running: true };
         }
+        return { bot, running: false };
     } catch {
         // Game status remains available if the control API is unavailable.
     }
@@ -43,7 +45,7 @@ async function listBots(directory: string) {
     return names.filter(name => name !== undefined).sort((a, b) => a.localeCompare(b));
 }
 
-async function botStatus(name: string, directory: string, managed: ControlActivity): Promise<Bot> {
+async function botStatus(name: string, directory: string, managed?: ControlActivity): Promise<Bot> {
     const task = managed?.bot === name ? managed.label : undefined;
     try {
         const result = await hostedBotState(name, join(directory, name));
@@ -69,7 +71,7 @@ async function botStatus(name: string, directory: string, managed: ControlActivi
 async function collect(directory: string): Promise<Snapshot> {
     const [names, activity] = await Promise.all([listBots(directory), controlActivity()]);
     const bots = await Promise.all(names.map(name => botStatus(name, directory, activity)));
-    return { bots, checkedAt: new Date().toISOString() };
+    return { bots, checkedAt: new Date().toISOString(), managed: activity };
 }
 
 async function snapshot(directory: string) {
@@ -84,16 +86,16 @@ async function snapshot(directory: string) {
 const escape = (value: string) => value.replaceAll('&', '&amp;').replaceAll('<', '&lt;')
     .replaceAll('>', '&gt;').replaceAll('"', '&quot;').replaceAll("'", '&#39;');
 
-function render(data?: Snapshot) {
+function render(nonce: string, data?: Snapshot) {
     const rows = data?.bots.map(({ name, status, activity, location }) => `<tr><th scope="row">${escape(name)}</th>
-        <td><span class="${status.toLowerCase()}">${status}</span></td><td>${escape(activity)}</td>
-        <td>${escape(location ?? '—')}</td></tr>`).join('');
+        <td><span class="${status.toLowerCase()}">${status}</span></td><td data-activity>${escape(activity)}</td>
+        <td>${escape(location ?? '—')}</td>
+        <td>${data.managed?.bot === name ? `<button type="button" data-bot="${escape(name)}" data-action="${data.managed.running ? 'stop' : 'start'}">${data.managed.running ? 'Stop activity' : 'Start activity'}</button>` : '—'}</td></tr>`).join('');
     return `<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta http-equiv="refresh" content="${refreshSeconds}">
 <title>Bot status</title>
 <style>
   :root { color-scheme: light dark; font: 1rem/1.5 system-ui, sans-serif; }
@@ -107,14 +109,31 @@ function render(data?: Snapshot) {
   .online { background: #d9f4e4; color: #164a2b; }
   .offline { background: #e9e9ea; color: #35373b; }
   .unknown { background: #fff0c8; color: #644306; }
+  button, input, select { font: inherit; }
+  button { padding: .35rem .55rem; cursor: pointer; }
+  dialog { max-width: min(26rem, 85vw); border: 1px solid GrayText; border-radius: .5rem; }
+  dialog::backdrop { background: #0008; }
+  form { display: grid; gap: .75rem; }
+  form label { display: grid; gap: .25rem; }
+  form [hidden] { display: none; }
+  form h2, form p { margin: 0; }
 </style>
 </head>
 <body><main>
 <h1>Bot status</h1>
 ${data ? `<p>Checked <time datetime="${data.checkedAt}">${data.checkedAt.slice(11, 19)} UTC</time></p>` : ''}
-${rows ? `<table aria-label="Bot status"><thead><tr><th scope="col">Bot</th><th scope="col">Status</th><th scope="col">Activity</th><th scope="col">Location</th></tr></thead><tbody>${rows}</tbody></table>`
+${rows ? `<table aria-label="Bot status"><thead><tr><th scope="col">Bot</th><th scope="col">Status</th><th scope="col">Activity</th><th scope="col">Location</th><th scope="col">Controls</th></tr></thead><tbody>${rows}</tbody></table>`
     : `<p>${data ? 'No bots configured.' : 'Bot status is temporarily unavailable.'}</p>`}
-</main></body></html>`;
+</main>
+<dialog aria-labelledby="activity-title"><form>
+  <h2 id="activity-title"></h2>
+  <label>Control API token <input type="password" autocomplete="off" required autofocus></label>
+  <label id="activity-task" hidden>Activity <select></select></label>
+  <p role="status" aria-live="polite"></p>
+  <div><button type="submit"></button> <button type="button" id="activity-close">Close</button></div>
+</form></dialog>
+<script nonce="${nonce}" data-refresh="${refreshSeconds}">${controls}</script>
+</body></html>`;
 }
 
 Bun.serve({
@@ -128,12 +147,13 @@ Bun.serve({
         }
         let data: Snapshot | undefined;
         try { data = await snapshot(botsDir); } catch { /* display the unavailable page */ }
-        return new Response(request.method === 'HEAD' ? null : render(data), {
+        const nonce = crypto.randomUUID();
+        return new Response(request.method === 'HEAD' ? null : render(nonce, data), {
             status: data ? 200 : 503,
             headers: {
                 'Content-Type': 'text/html; charset=utf-8',
                 'Cache-Control': 'no-store',
-                'Content-Security-Policy': "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'",
+                'Content-Security-Policy': `default-src 'none'; style-src 'unsafe-inline'; script-src 'nonce-${nonce}'; connect-src 'self'; form-action 'none'; base-uri 'none'; frame-ancestors 'none'`,
                 'X-Content-Type-Options': 'nosniff',
                 'X-Robots-Tag': 'noindex',
             },

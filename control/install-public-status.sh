@@ -40,7 +40,8 @@ sudo -v
 scratch=$(mktemp -d)
 trap 'rm -rf -- "$scratch"' EXIT
 install -d -m 0700 "$runtime"
-install -m 0600 "$source_dir/hosted-bot.ts" "$source_dir/public-status.ts" "$runtime/"
+install -m 0600 "$source_dir/hosted-bot.ts" "$source_dir/public-status.ts" \
+    "$source_dir/public-status-controls.js" "$runtime/"
 cat > "$scratch/$service.service" <<EOF
 [Unit]
 Description=RS-SDK public bot status page
