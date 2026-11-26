@@ -204,7 +204,7 @@ a fresh location, run `smoke-move` once, and verify the new coordinates.
 ### Separate Lumbridge pickpocket demo
 
 The HTTPS dashboard also exposes a second, isolated client and task for the
-bundled `pickpocket-men` demo. This uses the existing owner or delegated control
+bundled demo tasks. This uses the existing owner or delegated control
 Bearer credential. The primary `/v1` controller keeps its own bot and task.
 Use the dashboard hostname with the following requests.
 
@@ -213,12 +213,15 @@ Use the dashboard hostname with the following requests.
 | `GET /bots/activity?demo=status` | Demo character, process IDs, start times and last exit codes |
 | `POST /bots/activity?demo=client/start` | Create the demo character on first use and start its headless client |
 | `GET /bots/activity?demo=state` | Snapshot freshness, tile/plane, HP, Thieving XP, coins, nearby Men and their action options, matching system messages and operation feedback |
-| `POST /bots/activity?demo=task/start` | Start the bundled script with `{"task":"pickpocket-men"}` after the client reports live state |
+| `POST /bots/activity?demo=task/start` | Start an allowlisted task with `{"task":"pickpocket-men"}` or `{"task":"train-hp-pickpocket"}` after the client reports live state |
 | `GET /bots/activity?demo=events` | Latest 200 lifecycle and structured script events, including tutorial exit and pickpocket outcomes |
 | `POST /bots/activity?demo=task/stop` | Stop the script and keep the demo character logged in |
 | `POST /bots/activity?demo=client/stop` | Stop the script and log the demo character out |
 
-The task skips Tutorial Island if needed and stays in Lumbridge. The
+The `pickpocket-men` task skips Tutorial Island if needed and stays in
+Lumbridge. The `train-hp-pickpocket` task trains base Hitpoints to 60, then
+travels to East Ardougne, confirms a Guard pickpocket, and looks for the
+highest available tier of Knight or Hero. The
 attached client and task run on the dashboard host. Once provisioned, the
 demo appears in the Fleet desk roster, including while offline. A dashboard
 service restart ends both processes and clears the event buffer. The demo's

@@ -4,6 +4,22 @@ import { dirname, join } from 'node:path';
 import { botCredentials, hostedBotState, isFreshBotState } from './hosted-bot';
 
 const taskName = 'pickpocket-men';
+const taskLabels = {
+    'pickpocket-men': 'Pickpocketing Men',
+    'train-hp-pickpocket': 'Training Hitpoints to 60',
+} as const;
+type DemoTaskName = keyof typeof taskLabels;
+const activityLabels: Record<string, string> = {
+    'training-hitpoints': 'Training Hitpoints to 60',
+    'travelling-to-ardougne': 'Travelling to East Ardougne',
+    'pickpocketing-guards': 'Pickpocketing Guards',
+    'guard-pickpocket-confirmed': 'Finding an Ardougne Knight or Hero',
+};
+const targetLabels: Record<string, string> = {
+    Guard: 'Pickpocketing Guards',
+    'Knight of Ardougne': 'Pickpocketing Ardougne Knights',
+    Hero: 'Pickpocketing Heroes',
+};
 const digest = (value: string) => createHash('sha256').update(value).digest();
 const json = (body: unknown, status = 200) => Response.json(body, { status, headers: { 'Cache-Control': 'no-store' } });
 
@@ -28,7 +44,7 @@ export function dashboardDemo(runtimeDir: string, botsDir: string, configDir: st
     const events: Event[] = [];
     let nextEventId = 1;
     let client: Process | undefined;
-    let task: Process | undefined;
+    let task: (Process & { name: DemoTaskName; activity: string }) | undefined;
     let clientExit: Exit | null = null;
     let taskExit: Exit | null = null;
     let busy = false;
@@ -38,7 +54,7 @@ export function dashboardDemo(runtimeDir: string, botsDir: string, configDir: st
         if (events.length > 200) events.shift();
     }
 
-    async function consumeTaskEvents(stream: ReadableStream<Uint8Array>) {
+    async function consumeTaskEvents(stream: ReadableStream<Uint8Array>, running: NonNullable<typeof task>) {
         const prefix = '[pickpocket-demo] ';
         let buffer = '';
         const reader = stream.pipeThrough(new TextDecoderStream()).getReader();
@@ -51,7 +67,11 @@ export function dashboardDemo(runtimeDir: string, botsDir: string, configDir: st
                 if (!line.startsWith(prefix)) continue;
                 try {
                     const { stage, ...fields } = JSON.parse(line.slice(prefix.length));
-                    if (typeof stage === 'string' && /^[a-z-]+$/.test(stage)) event(stage, fields);
+                    if (typeof stage !== 'string' || !/^[a-z-]+$/.test(stage)) continue;
+                    const label = stage === 'pickpocket-target' && typeof fields.npc === 'string'
+                        ? targetLabels[fields.npc] : activityLabels[stage];
+                    if (label) running.activity = label;
+                    event(stage, fields);
                 } catch { /* Only the bundled task's structured messages are returned. */ }
             }
         }
@@ -107,9 +127,9 @@ export function dashboardDemo(runtimeDir: string, botsDir: string, configDir: st
         }).catch(() => { event('client-observer-failed'); });
     }
 
-    async function startTask(bot: string) {
+    async function startTask(bot: string, name: DemoTaskName) {
         const credentials = await botCredentials(bot, workingDir);
-        const child = Bun.spawn([process.execPath, '--no-env-file', join(import.meta.dir, 'tasks/pickpocket-men.ts')], {
+        const child = Bun.spawn([process.execPath, '--no-env-file', join(import.meta.dir, 'tasks', name + '.ts')], {
             cwd: workingDir,
             stdin: 'ignore', stdout: 'pipe', stderr: 'inherit',
             env: {
@@ -117,11 +137,11 @@ export function dashboardDemo(runtimeDir: string, botsDir: string, configDir: st
                 SERVER: 'rs-sdk.maxbittker.com', SHOW_CHAT: 'false', GATEWAY_DIRECT: 'false',
             },
         });
-        const running = { process: child, startedAt: new Date().toISOString() };
+        const running = { process: child, startedAt: new Date().toISOString(), name, activity: taskLabels[name] };
         task = running;
         taskExit = null;
-        event('task-started', { task: taskName, pid: child.pid });
-        const readEvents = consumeTaskEvents(child.stdout).catch(() => { event('task-event-reader-failed'); });
+        event('task-started', { task: name, pid: child.pid });
+        const readEvents = consumeTaskEvents(child.stdout, running).catch(() => { event('task-event-reader-failed'); });
         void child.exited.then(async exitCode => {
             await readEvents;
             taskExit = { exitCode, at: new Date().toISOString() };
@@ -141,6 +161,11 @@ export function dashboardDemo(runtimeDir: string, botsDir: string, configDir: st
             stateAgeMs: sample.stateAge, tick, revision,
             player: { x: player.worldX, z: player.worldZ, plane: player.level, hp: player.hp, maxHp: player.maxHp, dead: player.isDead },
             thieving: skills.find(skill => skill.name === 'Thieving') ?? null,
+            hitpoints: skills.find(skill => skill.name === 'Hitpoints') ?? null,
+            melee: skills.filter(skill => /^(Attack|Strength|Defence)$/.test(skill.name)),
+            targets: nearbyNpcs.filter(npc => /^(Chicken|Cow(?: Calf)?|Guard|Knight of Ardougne|Hero)$/i.test(npc.name))
+                .slice(0, 12).map(({ name, index, x, z, distance, reachable, inCombat }) =>
+                    ({ name, index, x, z, distance, reachable, inCombat })),
             coins: inventory.filter(item => item.id === 995).reduce((count, item) => count + item.count, 0),
             men: nearbyNpcs.filter(npc => /^man$/i.test(npc.name)).slice(0, 12).map(npc => ({
                 index: npc.index, x: npc.x, z: npc.z, distance: npc.distance,
@@ -169,7 +194,9 @@ export function dashboardDemo(runtimeDir: string, botsDir: string, configDir: st
                 const describe = (handle: Process | undefined) =>
                     handle && { pid: handle.process.pid, startedAt: handle.startedAt };
                 return json({
-                    bot, taskName, client: describe(client) ?? null, task: describe(task) ?? null, clientExit, taskExit,
+                    bot, taskName, tasks: Object.keys(taskLabels), client: describe(client) ?? null,
+                    task: task ? { ...describe(task), name: task.name, activity: task.activity } : null,
+                    clientExit, taskExit,
                 });
             } catch {
                 return json({ error: 'Demo credentials or game gateway state are unavailable' }, 503);
@@ -186,15 +213,18 @@ export function dashboardDemo(runtimeDir: string, botsDir: string, configDir: st
             }
             if (route === 'task/start') {
                 const body = await request.json().catch(() => null);
-                if (body?.task !== taskName) return json({ error: 'Unknown demo task' }, 400);
+                const name = body?.task;
+                if (typeof name !== 'string' || !Object.hasOwn(taskLabels, name)) {
+                    return json({ error: 'Unknown demo task' }, 400);
+                }
                 const bot = await storedBot();
                 const activeClient = client;
                 if (!bot || !activeClient || task || (await state(bot)).availability !== 'live' ||
                     client !== activeClient || activeClient.process.exitCode !== null) {
                     return json({ error: 'Start the demo client and wait for live state before starting a task' }, 409);
                 }
-                await startTask(bot);
-                return json({ bot, task: taskName, phase: 'starting' }, 202);
+                await startTask(bot, name as DemoTaskName);
+                return json({ bot, task: name, phase: 'starting' }, 202);
             }
             await stopProcess(task, 'SIGTERM');
             if (route === 'client/stop') await stopProcess(client, 'SIGINT');
@@ -212,7 +242,7 @@ export function dashboardDemo(runtimeDir: string, botsDir: string, configDir: st
         return name ? {
             name,
             directory: workingDir,
-            activity: task?.process.exitCode === null ? 'Pickpocketing Men' : undefined,
+            activity: task?.process.exitCode === null ? task.activity : undefined,
         } : null;
     }
 
