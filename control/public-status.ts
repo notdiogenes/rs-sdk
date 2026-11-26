@@ -1,7 +1,7 @@
 import { readdir } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { hostedBotName, hostedBotState, isFreshBotState } from './hosted-bot';
-import { controllerRequest, dashboardActivity, handleActivity } from './dashboard-activity';
+import { controllerRequest, dashboardActivity, handleActivity, type ControllerStatus } from './dashboard-activity';
 import { dashboardSessions } from './dashboard-session';
 import { dashboardDiagnostics } from './dashboard-diagnostics';
 import { dashboardLastActivity } from './dashboard-last-activity';
@@ -12,8 +12,10 @@ import { dashboardQuestPoints, loadQuestCatalog } from './dashboard-quests';
 import { fleetPage } from './dashboard-fleet-page';
 import { dashboardDemo } from './dashboard-demo';
 
-const [botsDir, configDir] = process.argv.slice(2);
-if (!botsDir || !configDir) throw new Error('Expected the bot directory and control config directory');
+const [botDirectory, controlConfig] = process.argv.slice(2);
+if (!botDirectory || !controlConfig) throw new Error('Expected the bot directory and control config directory');
+const botsDir = botDirectory;
+const configDir = controlConfig;
 const token = (await Bun.file(join(configDir, 'token')).text()).trim();
 if (!/^[a-f0-9]{64}$/.test(token)) throw new Error('Invalid control API token');
 const questCatalog = await loadQuestCatalog();
@@ -22,6 +24,7 @@ const controls = await Bun.file(join(import.meta.dir, 'public-status-controls.js
 const runtimeDir = join(dirname(configDir), 'rs-sdk-public-status');
 const diagnostics = dashboardDiagnostics(runtimeDir, token);
 const demo = dashboardDemo(runtimeDir, botsDir, configDir, token);
+const rosterControllers = new Map<string, ReturnType<typeof dashboardDemo>>();
 const recordActivity = dashboardLastActivity(runtimeDir);
 const recordStats = dashboardFleetStats(runtimeDir);
 const sessions = dashboardSessions(runtimeDir, async () => {
@@ -40,6 +43,7 @@ export type Bot = {
     stats?: ReturnType<typeof recordStats>;
     heartbeat?: number;
     inCombat?: boolean;
+    control?: ControlActivity;
 };
 export type ControlActivity = {
     bot: string;
@@ -49,32 +53,77 @@ export type ControlActivity = {
     transitioning?: boolean;
     failed?: boolean;
 };
-export type Snapshot = { bots: Bot[]; checkedAt: string; managed?: ControlActivity };
+export type Snapshot = { bots: Bot[]; checkedAt: string };
 const refreshSeconds = 15;
 const displayTimeZone = 'America/New_York';
 let cached: Snapshot | undefined;
 let expiresAt = 0;
 let refreshing: Promise<Snapshot> | undefined;
 
-async function controlActivity(): Promise<ControlActivity | undefined> {
-    try {
-        const response = await controllerRequest('/v1/status', `Bearer ${token}`, undefined, AbortSignal.timeout(3000));
-        if (!response.ok) return;
-        const { bot, task, starting, startError, lastTask } = dashboardActivity(await response.json());
-        if (typeof bot !== 'string' || !hostedBotName.test(bot)) return;
-        if (typeof task?.name === 'string' && /^[a-z][a-z0-9-]{0,63}$/.test(task.name)) {
-            const label = task.name.replaceAll('-', ' ');
-            return { bot, label: task.stopping ? `Stopping ${label}` : label, running: true, startedAt: task.startedAt, transitioning: task.stopping };
-        }
-        if (starting) return { bot, label: `Starting ${starting.replaceAll('-', ' ')}`, running: true, transitioning: true };
-        if (startError) return { bot, label: 'Activity could not start', running: false, failed: true };
-        if (lastTask && lastTask.exitCode !== 0) {
-            return { bot, label: 'Last activity exited with an error', running: false, failed: true };
-        }
-        return { bot, running: false };
-    } catch {
-        // Game status remains available if the control API is unavailable.
+async function primaryStatus(): Promise<ControllerStatus> {
+    const response = await controllerRequest('/v1/status', `Bearer ${token}`, undefined, AbortSignal.timeout(3000));
+    if (!response.ok) throw new Error('The primary controller is unavailable');
+    return response.json() as Promise<ControllerStatus>;
+}
+
+function controlActivity({ bot, task, starting, startError, lastTask }: ReturnType<typeof dashboardActivity>): ControlActivity | undefined {
+    if (typeof bot !== 'string' || !hostedBotName.test(bot)) return;
+    if (typeof task?.name === 'string' && /^[a-z][a-z0-9-]{0,63}$/.test(task.name)) {
+        const label = task.activity ?? task.name.replaceAll('-', ' ');
+        return { bot, label: task.stopping ? `Stopping ${label}` : label, running: true, startedAt: task.startedAt, transitioning: task.stopping };
     }
+    if (starting) return { bot, label: `Starting ${starting.replaceAll('-', ' ')}`, running: true, transitioning: true };
+    if (startError) return { bot, label: 'Activity could not start', running: false, failed: true };
+    if (lastTask && lastTask.exitCode !== 0) {
+        return { bot, label: 'Last activity exited with an error', running: false, failed: true };
+    }
+    return { bot, running: false };
+}
+
+async function botProfile(name: string) {
+    if (!hostedBotName.test(name)) return null;
+    const demoProfile = await demo.profile().catch(() => null);
+    if (demoProfile?.name.toLowerCase() === name.toLowerCase()) {
+        return { name: demoProfile.name, directory: demoProfile.directory, worker: demo };
+    }
+    const directory = join(botsDir, name);
+    if (!await Bun.file(join(directory, 'bot.env')).exists()) return null;
+    return { name, directory, worker: rosterControllers.get(name.toLowerCase()) };
+}
+
+async function handleBotActivity(request: Request, name: string, session?: string) {
+    const reply = (body: object, status: number) => Response.json(body, { status, headers: { 'Cache-Control': 'no-store' } });
+    if (!session && !await demo.allowed(request)) return reply({ error: 'Unauthorized' }, 401);
+    try {
+        const profile = await botProfile(name);
+        if (!profile) return reply({ error: 'Bot profile not found.' }, 404);
+        const primary = await primaryStatus();
+        if (primary.bot?.toLowerCase() === profile.name.toLowerCase()) {
+            return handleActivity(request, token, session, primary.bot);
+        }
+        let worker = profile.worker;
+        if (!worker) {
+            worker = dashboardDemo(runtimeDir, botsDir, configDir, token, profile);
+            rosterControllers.set(profile.name.toLowerCase(), worker);
+        }
+        return worker.handleActivity(request, token, session, profile.name);
+    } catch {
+        return reply({ error: 'The bot controller is temporarily unavailable.' }, 503);
+    }
+}
+
+async function inventory(name: string) {
+    const profile = await botProfile(name);
+    if (!profile) return null;
+    const result = await hostedBotState(profile.name, profile.directory);
+    const empty = { bot: profile.name, items: [] };
+    if (result?.botStatus === 'stale') return { ...empty, availability: 'stale' };
+    if (!result || result.botStatus === 'dead' || !result.state?.inGame) return { ...empty, availability: 'offline' };
+    if (!isFreshBotState(result.stateAge)) return { ...empty, availability: 'stale' };
+    return {
+        bot: profile.name, availability: 'live', capturedAt: Date.now() - result.stateAge,
+        items: result.state.inventory.map(({ slot, name, count }) => ({ slot, name, count })).sort((a, b) => a.slot - b.slot),
+    };
 }
 
 async function listBots(directory: string) {
@@ -84,14 +133,15 @@ async function listBots(directory: string) {
     return names.filter(name => name !== undefined).sort((a, b) => a.localeCompare(b));
 }
 
-async function botStatus(name: string, directory: string, task?: string): Promise<Bot> {
+async function botStatus(name: string, directory: string, control?: ControlActivity): Promise<Bot> {
+    const task = control?.label;
     const row = (fields: Omit<Bot, 'name' | 'lastActivity' | 'stats'>, observation?: BotObservation,
         state?: BotWorldState): Bot => {
         let lastActivity = null;
         let stats;
         try { lastActivity = recordActivity(name, observation); } catch { /* Show the other status fields. */ }
         try { stats = recordStats(name, state, fields.heartbeat); } catch { /* Show the other status fields. */ }
-        return { name, ...fields, lastActivity, stats };
+        return { name, ...fields, lastActivity, stats, control };
     };
     try {
         const result = await hostedBotState(name, directory);
@@ -121,16 +171,19 @@ async function botStatus(name: string, directory: string, task?: string): Promis
 }
 
 async function collect(directory: string): Promise<Snapshot> {
-    const [names, activity, demoProfile] = await Promise.all([
-        listBots(directory), controlActivity(), demo.profile().catch(() => null),
+    const [names, primary, demoProfile] = await Promise.all([
+        listBots(directory), primaryStatus().catch(() => null), demo.profile().catch(() => null),
     ]);
-    const roster = new Map(names.map(name => [name, {
-        name, directory: join(directory, name), activity: activity?.bot === name ? activity.label : undefined,
-    }]));
-    if (demoProfile) roster.set(demoProfile.name, demoProfile);
+    const roster = new Map(names.map(name => [name.toLowerCase(), { name, directory: join(directory, name) }]));
+    if (demoProfile) roster.set(demoProfile.name.toLowerCase(), demoProfile);
     const profiles = [...roster.values()].sort((a, b) => a.name.localeCompare(b.name));
-    const bots = await Promise.all(profiles.map(profile => botStatus(profile.name, profile.directory, profile.activity)));
-    return { bots, checkedAt: new Date().toISOString(), managed: activity };
+    const bots = await Promise.all(profiles.map(profile => {
+        const worker = demoProfile?.name === profile.name ? demo : rosterControllers.get(profile.name.toLowerCase());
+        const controller = primary?.bot?.toLowerCase() === profile.name.toLowerCase() ? dashboardActivity(primary)
+            : worker?.dashboardActivity(worker.status(profile.name));
+        return botStatus(profile.name, profile.directory, controller && controlActivity(controller));
+    }));
+    return { bots, checkedAt: new Date().toISOString() };
 }
 
 async function snapshot(directory: string) {
@@ -158,11 +211,29 @@ Bun.serve({
         const { pathname, searchParams } = new URL(request.url);
         if (pathname === '/bots/activity') {
             const demoRoute = searchParams.get('demo');
-            if (demoRoute !== null) return demo.handle(request, demoRoute);
+            if (demoRoute !== null) {
+                if (request.method === 'POST' && (demoRoute === 'task/stop' || demoRoute === 'client/stop') &&
+                    await demo.allowed(request)) await demo.cancelStart();
+                return demo.handle(request, demoRoute);
+            }
             const action = searchParams.get('session');
             if (action) return sessions.handle(request, action);
             const session = await sessions.authenticate(request).catch(() => undefined);
             const view = searchParams.get('view');
+            const bot = searchParams.get('bot');
+            if (view === 'inventory') {
+                const headers: Record<string, string> = { 'Cache-Control': 'no-store' };
+                if (request.method !== 'GET') return new Response(null, { status: 405, headers: { ...headers, Allow: 'GET' } });
+                if (!session) return Response.json({ error: 'Sign in to view inventory.' }, { status: 401, headers });
+                headers['Set-Cookie'] = session;
+                try {
+                    const result = bot && await inventory(bot);
+                    return result ? Response.json(result, { headers })
+                        : Response.json({ error: 'Bot profile not found.' }, { status: 404, headers });
+                } catch {
+                    return Response.json({ error: 'Current inventory is temporarily unavailable.' }, { status: 503, headers });
+                }
+            }
             if (view === 'diagnostics' || view === 'fleet-data' || view === 'quests') {
                 const headers = { 'Cache-Control': 'no-store' };
                 if (request.method !== 'GET') return new Response(null, { status: 405, headers: { ...headers, Allow: 'GET' } });
@@ -182,7 +253,8 @@ Bun.serve({
                     return Response.json({ error: 'Dashboard data is temporarily unavailable.' }, { status: 503, headers });
                 }
             }
-            const response = await handleActivity(request, token, session);
+            const response = bot === null ? await handleActivity(request, token, session)
+                : await handleBotActivity(request, bot, session);
             if (session) response.headers.set('Set-Cookie', session);
             return response;
         }

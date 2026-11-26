@@ -39,12 +39,17 @@
     const tabs = [...document.querySelectorAll('[role="tab"]')];
     const search = document.querySelector('#search');
     const statusFilter = document.querySelector('#status-filter');
-    const kindFilter = document.querySelector('#kind-filter');
-    const filterFields = [search, statusFilter, kindFilter];
+    const filterFields = [search, statusFilter];
     const auto = document.querySelector('#auto');
     const banks = document.querySelector('#banks');
     const banksDialog = document.querySelector('#banks-dialog');
     const detailsDialog = document.querySelector('#fleet-details');
+    const inventoryDialog = document.querySelector('#inventory-dialog');
+    const inventoryStatus = document.querySelector('#inventory-status');
+    const inventoryItems = document.querySelector('#inventory-items');
+    const inventoryRefresh = document.querySelector('#inventory-refresh');
+    let inventoryBot;
+    let inventoryVersion = 0;
     const cards = [...document.querySelectorAll('[data-bot-row]')];
     const groupElements = [...document.querySelectorAll('[data-group]')];
     const fleetEmpty = document.querySelector('#fleet-empty');
@@ -78,20 +83,19 @@
     let view = 'fleet-panel';
     let shownQuestColumns = 0;
 
-    function matches(name, status, kind) {
+    function matches(name, status) {
         return (statusFilter.value === 'all' || statusFilter.value === status) &&
-            (kindFilter.value === 'all' || kindFilter.value === kind) &&
             name.toLowerCase().includes(search.value.trim().toLowerCase());
     }
 
     function matchingRows() {
-        return roster.filter(({ name, category, kind }) => matches(name, category, kind));
+        return roster.filter(({ name, category }) => matches(name, category));
     }
 
     function updateCards() {
         for (const card of cards) {
-            const { name, status, kind } = card.dataset;
-            card.hidden = !matches(name, status, kind);
+            const { name, status } = card.dataset;
+            card.hidden = !matches(name, status);
             const stored = stats.get(name);
             const levels = card.querySelector('[data-card-levels]');
             const badges = card.querySelector('[data-card-skills]');
@@ -192,8 +196,8 @@
             panel.innerHTML = renderQuestGrid(visible, shownQuestColumns);
             return;
         }
-        const detail = ({ name, kind }) =>
-            `<button type="button" class="button" data-detail="${escape(name)}">${escape(name)}</button><br><small>${kind}</small>`;
+        const detail = ({ name }) =>
+            `<button type="button" class="button" data-detail="${escape(name)}">${escape(name)}</button>`;
         const columns = [['Account', 'Account'], ['QP', 'Quest points'], ['CB', 'Combat level'], ['TOT', 'Total level'],
             ...skills.map(([name, short]) => [short, name]), ['Last sampled', 'Last sampled']];
         const entries = visible.map(row => {
@@ -281,6 +285,40 @@
         banksDialog.showModal();
     }
 
+    async function loadInventory() {
+        const version = ++inventoryVersion;
+        inventoryRefresh.disabled = true;
+        inventoryStatus.textContent = 'Reading inventory…';
+        inventoryItems.replaceChildren();
+        try {
+            const snapshot = await request('/bots/activity?view=inventory&bot=' + encodeURIComponent(inventoryBot));
+            if (version !== inventoryVersion || !inventoryDialog.open) return;
+            if (snapshot.availability !== 'live') {
+                inventoryStatus.textContent = snapshot.availability === 'offline'
+                    ? 'This bot is offline.' : 'The game has not published a fresh inventory.';
+                return;
+            }
+            inventoryStatus.textContent = snapshot.items.length
+                ? `Snapshot ${labelTime(snapshot.capturedAt)}` : 'The backpack is empty.';
+            if (snapshot.items.length) {
+                inventoryItems.innerHTML = table(['Slot', 'Item', 'Quantity'], snapshot.items.map(item =>
+                    [number(item.slot + 1), escape(item.name), number(item.count)]), 'Current backpack inventory');
+            }
+        } catch (error) {
+            if (version === inventoryVersion && inventoryDialog.open) inventoryStatus.textContent = error.message;
+        } finally {
+            if (version === inventoryVersion) inventoryRefresh.disabled = false;
+        }
+    }
+
+    function openInventory(name) {
+        inventoryBot = name;
+        document.querySelector('#inventory-title').textContent = `Current inventory · ${name}`;
+        clearTimeout(refresh);
+        inventoryDialog.showModal();
+        void loadInventory();
+    }
+
     function openDetails(name) {
         const card = cards.find(element => element.dataset.name === name);
         if (!card) return;
@@ -305,7 +343,7 @@
     function installFleet() {
         let saved;
         try { saved = JSON.parse(sessionStorage.getItem('fleet-view')); } catch { /* Reset stored preferences. */ }
-        if (saved?.filters?.length === filterFields.length) {
+        if (saved?.filters?.length >= filterFields.length) {
             filterFields.forEach((field, index) => { field.value = saved.filters[index]; });
         }
         if (saved?.auto === 'false') auto.setAttribute('aria-pressed', 'false');
@@ -336,10 +374,12 @@
                 selectTab(tabs[next], true);
             });
         }
-        for (const modal of [banksDialog, detailsDialog]) {
+        for (const modal of [banksDialog, detailsDialog, inventoryDialog]) {
             modal.querySelector('[data-close]').addEventListener('click', () => modal.close());
             modal.addEventListener('close', scheduleRefresh);
         }
+        inventoryRefresh.addEventListener('click', loadInventory);
+        inventoryDialog.addEventListener('close', () => { inventoryVersion++; });
         document.addEventListener('click', async event => {
             const button = event.target.closest('button');
             if (!button) return;
@@ -351,10 +391,14 @@
                 document.querySelector(`[data-sort="${key}"]`)?.focus();
                 return;
             }
-            if (button !== banks && !button.matches('[data-bank], [data-detail], [data-unlock]')) return;
+            if (button !== banks && !button.matches('[data-bank], [data-detail], [data-inventory], [data-unlock]')) return;
             await sessionReady;
             if (!signedIn) {
                 openSignIn(button.hasAttribute('data-unlock') ? undefined : button);
+                return;
+            }
+            if (button.dataset.inventory) {
+                openInventory(button.dataset.inventory);
                 return;
             }
             await fleetDataReady;
@@ -605,17 +649,21 @@
         const running = state.task || state.starting;
         selected.dataset.action = running ? 'stop' : 'start';
         selected.textContent = running ? 'Stop activity' : 'Start activity';
-        const activity = state.task?.name?.replaceAll('-', ' ');
+        const activity = state.task?.activity ?? state.task?.name?.replaceAll('-', ' ');
         selected.closest('[data-bot-row]').querySelector('[data-activity]').textContent =
             activity ? (state.task.stopping ? 'Stopping ' + activity : activity)
                 : state.starting ? 'Starting ' + state.starting.replaceAll('-', ' ')
                     : state.startError ? 'Activity could not start' : '—';
     }
 
+    function activityPath(bot) {
+        return '/bots/activity?bot=' + encodeURIComponent(bot);
+    }
+
     async function watchStart(version, bot) {
         try {
             while (dialog.open && dialogVersion === version) {
-                const state = await request('/bots/activity');
+                const state = await request(activityPath(bot));
                 if (dialogVersion !== version) return;
                 if (state.bot !== bot) throw new Error('The configured bot changed.');
                 updateRow(state);
@@ -639,14 +687,15 @@
         let completed = false;
         let watching = false;
         try {
-            const state = await request('/bots/activity');
+            const path = activityPath(selected.dataset.bot);
+            const state = await request(path);
             if (state.bot !== selected.dataset.bot) {
                 throw new Error('The configured bot changed. Close this dialog and refresh the dashboard.');
             }
             if (action === 'stop') {
                 if (state.task || state.starting) {
                     message.textContent = 'Stopping activity…';
-                    await request('/bots/activity', { bot: state.bot, action: 'stop' });
+                    await request(path, { bot: state.bot, action: 'stop' });
                 }
                 message.textContent = state.task || state.starting ? 'Activity stopped.' : 'There is no activity to stop.';
                 updateRow({ ...state, task: null, starting: null, startError: null });
@@ -670,7 +719,7 @@
                     return;
                 }
                 const task = tasks.value;
-                await request('/bots/activity', { bot: state.bot, action: 'start', task });
+                await request(path, { bot: state.bot, action: 'start', task });
                 message.textContent = state.client ? 'Starting activity…' : 'Starting the game client and activity…';
                 updateRow({ ...state, starting: task, startError: null });
                 watching = true;

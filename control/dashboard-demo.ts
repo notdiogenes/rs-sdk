@@ -1,10 +1,12 @@
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
+import { createDashboardActivity, type ControllerStatus } from './dashboard-activity';
 import { botCredentials, hostedBotState, isFreshBotState } from './hosted-bot';
 
 const taskName = 'pickpocket-men';
 const taskLabels = {
+    'train-cows': 'Training melee on cows',
     'pickpocket-men': 'Pickpocketing Men',
     'train-hp-pickpocket': 'Training Hitpoints to 60',
 } as const;
@@ -12,8 +14,6 @@ type DemoTaskName = keyof typeof taskLabels;
 const activityLabels: Record<string, string> = {
     'training-hitpoints': 'Training Hitpoints to 60',
     'travelling-to-ardougne': 'Travelling to East Ardougne',
-    'pickpocketing-guards': 'Pickpocketing Guards',
-    'guard-pickpocket-confirmed': 'Finding an Ardougne Knight or Hero',
 };
 const targetLabels: Record<string, string> = {
     Guard: 'Pickpocketing Guards',
@@ -23,19 +23,22 @@ const targetLabels: Record<string, string> = {
 const digest = (value: string) => createHash('sha256').update(value).digest();
 const json = (body: unknown, status = 200) => Response.json(body, { status, headers: { 'Cache-Control': 'no-store' } });
 
-type Process = { process: Bun.Subprocess; startedAt: string };
+type Process = { process: Bun.Subprocess; startedAt: string; stopping?: boolean };
 type Event = { id: number; at: string; stage: string; [key: string]: unknown };
 type Exit = { at: string; exitCode: number };
+type RosterProfile = { name: string; directory: string };
 
 async function stopProcess(handle: Process | undefined, signal: 'SIGINT' | 'SIGTERM') {
     if (!handle || handle.process.exitCode !== null) return;
+    handle.stopping = true;
     handle.process.kill(signal);
     const deadline = setTimeout(() => handle.process.kill('SIGKILL'), 4000);
     try { await handle.process.exited; } finally { clearTimeout(deadline); }
 }
 
-export function dashboardDemo(runtimeDir: string, botsDir: string, configDir: string, token: string) {
-    const workingDir = join(runtimeDir, 'pickpocket-demo');
+export function dashboardDemo(runtimeDir: string, botsDir: string, configDir: string, token: string, roster?: RosterProfile) {
+    const writableDir = roster ? join(runtimeDir, 'managed-bots', roster.name) : join(runtimeDir, 'pickpocket-demo');
+    const workingDir = roster?.directory ?? writableDir;
     const envFile = join(workingDir, 'bot.env');
     const webclient = join(import.meta.dir, '../server/webclient');
     const dependencies = join(dirname(botsDir), 'server/webclient/node_modules');
@@ -46,8 +49,9 @@ export function dashboardDemo(runtimeDir: string, botsDir: string, configDir: st
     let client: Process | undefined;
     let task: (Process & { name: DemoTaskName; activity: string }) | undefined;
     let clientExit: Exit | null = null;
-    let taskExit: Exit | null = null;
+    let taskExit: (Exit & { name: DemoTaskName }) | null = null;
     let busy = false;
+    let taskStopped = false;
 
     function event(stage: string, data: Record<string, unknown> = {}) {
         events.push({ ...data, stage, id: nextEventId++, at: new Date().toISOString() });
@@ -88,6 +92,7 @@ export function dashboardDemo(runtimeDir: string, botsDir: string, configDir: st
 
     async function storedBot() {
         if (!await Bun.file(envFile).exists()) return null;
+        if (roster) return roster.name;
         const name = /^BOT_USERNAME=(Lumb[a-f0-9]{7})$/m.exec(await Bun.file(envFile).text())?.[1];
         if (!name) throw new Error('Invalid demo bot configuration');
         return name;
@@ -96,6 +101,7 @@ export function dashboardDemo(runtimeDir: string, botsDir: string, configDir: st
     async function provisionBot() {
         const existing = await storedBot();
         if (existing) return existing;
+        if (roster) throw new Error('The bot profile is missing');
         const name = 'Lumb' + randomBytes(4).toString('hex').slice(0, 7);
         const password = randomBytes(6).toString('hex');
         await mkdir(workingDir, { recursive: true, mode: 0o700 });
@@ -112,7 +118,7 @@ export function dashboardDemo(runtimeDir: string, botsDir: string, configDir: st
             stdin: 'ignore', stdout: 'inherit', stderr: 'inherit',
             env: {
                 ...process.env, GATEWAY_DIRECT: 'false', NODE_PATH: dependencies, RS_LITE_BOT_ENV: envFile,
-                RS_LITE_CACHE_DIR: join(workingDir, 'cache'),
+                RS_LITE_CACHE_DIR: join(writableDir, 'cache'),
             },
         });
         const running = { process: child, startedAt: new Date().toISOString() };
@@ -130,21 +136,22 @@ export function dashboardDemo(runtimeDir: string, botsDir: string, configDir: st
     async function startTask(bot: string, name: DemoTaskName) {
         const credentials = await botCredentials(bot, workingDir);
         const child = Bun.spawn([process.execPath, '--no-env-file', join(import.meta.dir, 'tasks', name + '.ts')], {
-            cwd: workingDir,
+            cwd: writableDir,
             stdin: 'ignore', stdout: 'pipe', stderr: 'inherit',
             env: {
                 ...process.env, BOT_USERNAME: credentials.username, PASSWORD: credentials.password,
                 SERVER: 'rs-sdk.maxbittker.com', SHOW_CHAT: 'false', GATEWAY_DIRECT: 'false',
             },
         });
-        const running = { process: child, startedAt: new Date().toISOString(), name, activity: taskLabels[name] };
+        const running: NonNullable<typeof task> = { process: child, startedAt: new Date().toISOString(), name, activity: taskLabels[name] };
         task = running;
         taskExit = null;
+        taskStopped = false;
         event('task-started', { task: name, pid: child.pid });
         const readEvents = consumeTaskEvents(child.stdout, running).catch(() => { event('task-event-reader-failed'); });
         void child.exited.then(async exitCode => {
             await readEvents;
-            taskExit = { exitCode, at: new Date().toISOString() };
+            taskExit = { name, exitCode, at: new Date().toISOString() };
             if (task === running) task = undefined;
             event('task-exited', { exitCode });
         }).catch(() => { event('task-observer-failed'); });
@@ -178,7 +185,16 @@ export function dashboardDemo(runtimeDir: string, botsDir: string, configDir: st
         };
     }
 
-    async function handle(request: Request, route: string) {
+    function status(bot: string | null): ControllerStatus {
+        return {
+            bot, tasks: Object.keys(taskLabels),
+            client: client ? { startedAt: client.startedAt, stopping: Boolean(client.stopping) } : null,
+            task: task ? { name: task.name, startedAt: task.startedAt, stopping: Boolean(task.stopping), activity: task.activity } : null,
+            lastTask: taskExit && !taskStopped ? { name: taskExit.name, exitCode: taskExit.exitCode, finishedAt: taskExit.at } : null,
+        };
+    }
+
+    async function handle(request: Request, route: string, forDashboard = false) {
         const reading = route === 'status' || route === 'state' || route === 'events';
         if (!reading && !['client/start', 'client/stop', 'task/start', 'task/stop'].includes(route)) {
             return json({ error: 'Unknown demo route' }, 404);
@@ -191,11 +207,12 @@ export function dashboardDemo(runtimeDir: string, botsDir: string, configDir: st
                 const bot = await storedBot();
                 if (route === 'events') return json({ bot, events });
                 if (route === 'state') return json(await state(bot));
-                const describe = (handle: Process | undefined) =>
-                    handle && { pid: handle.process.pid, startedAt: handle.startedAt };
+                const current = status(bot);
+                if (forDashboard) return json(current);
                 return json({
-                    bot, taskName, tasks: Object.keys(taskLabels), client: describe(client) ?? null,
-                    task: task ? { ...describe(task), name: task.name, activity: task.activity } : null,
+                    ...current, taskName,
+                    client: client ? { ...current.client, pid: client.process.pid } : null,
+                    task: task ? { ...current.task, pid: task.process.pid } : null,
                     clientExit, taskExit,
                 });
             } catch {
@@ -208,6 +225,11 @@ export function dashboardDemo(runtimeDir: string, botsDir: string, configDir: st
             if (route === 'client/start') {
                 if (client || task) return json({ error: 'The demo client or task is already running' }, 409);
                 const bot = await provisionBot();
+                await botCredentials(bot, workingDir);
+                if (roster && (await state(bot)).availability === 'live') {
+                    return json({ error: 'This bot already has a live game client outside Fleet desk.' }, 409);
+                }
+                await mkdir(writableDir, { recursive: true, mode: 0o700 });
                 startClient(bot);
                 return json({ bot, phase: 'starting' }, 202);
             }
@@ -220,12 +242,13 @@ export function dashboardDemo(runtimeDir: string, botsDir: string, configDir: st
                 const bot = await storedBot();
                 const activeClient = client;
                 if (!bot || !activeClient || task || (await state(bot)).availability !== 'live' ||
-                    client !== activeClient || activeClient.process.exitCode !== null) {
+                    client !== activeClient || activeClient.stopping || activeClient.process.exitCode !== null) {
                     return json({ error: 'Start the demo client and wait for live state before starting a task' }, 409);
                 }
                 await startTask(bot, name as DemoTaskName);
                 return json({ bot, task: name, phase: 'starting' }, 202);
             }
+            if (task) taskStopped = true;
             await stopProcess(task, 'SIGTERM');
             if (route === 'client/stop') await stopProcess(client, 'SIGINT');
             return json({ ok: true });
@@ -246,5 +269,13 @@ export function dashboardDemo(runtimeDir: string, botsDir: string, configDir: st
         } : null;
     }
 
-    return { handle, profile };
+    const actions = createDashboardActivity((path, authorization, payload, signal) =>
+        handle(new Request('http://127.0.0.1' + path, {
+            headers: { Authorization: authorization },
+            method: payload ? 'POST' : 'GET',
+            body: payload && JSON.stringify(payload),
+            signal,
+        }), path.slice('/v1/'.length), true));
+
+    return { handle, profile, status, allowed, ...actions };
 }

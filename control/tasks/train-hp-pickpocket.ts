@@ -189,13 +189,12 @@ const result = await runScript(async ({ bot, sdk }) => {
             await bot.closeBank();
         }
     };
-    let guardDone = false;
     let nextScan = 0;
     let nextFood = 0;
     let successes = 0;
     let lastTarget = '';
     await goToArdougne();
-    log('pickpocketing-guards', metrics());
+    if (level('Thieving') < 40) throw new Error('This activity needs at least 40 Thieving after Hitpoints training');
     for (;;) {
         await waitAlive();
         await goToArdougne();
@@ -210,14 +209,14 @@ const result = await runScript(async ({ bot, sdk }) => {
         if (p.hp <= low) await rest(Math.max(low + 4, Math.ceil(p.maxHp / 2)));
 
         const thieving = level('Thieving');
-        const hero = guardDone && thieving >= 80 ? closest(heroes, pocket) : undefined;
-        const knight = guardDone && thieving >= 55 ? closest(knights, pocket) : undefined;
-        const target = hero ?? knight ?? (guardDone && thieving >= 55 ? undefined : closest(guards, pocket));
-        if (!target || (guardDone && thieving >= 80 && !hero && nextScan % 12 === 0)) {
-            const locations = guardDone && thieving >= 55 ? heroSpots : guardSpots;
+        const hero = thieving >= 80 ? closest(heroes, pocket) : undefined;
+        const knight = thieving >= 55 ? closest(knights, pocket) : undefined;
+        const target = hero ?? knight ?? (thieving < 55 ? closest(guards, pocket) : undefined);
+        if (!target || (thieving >= 80 && !hero && nextScan % 12 === 0)) {
+            const locations = thieving >= 55 ? heroSpots : guardSpots;
             const spot = locations[nextScan % locations.length] ?? locations[0];
             nextScan++;
-            if (guardDone && thieving >= 80 && knight && !hero && distance(2630, 3288) > 8) {
+            if (thieving >= 80 && knight && !hero && distance(2630, 3288) > 8) {
                 await travel(2630, 3288, 6, 35_000);
             } else if (!target) {
                 await travel(spot[0], spot[1], 4, 30_000);
@@ -242,11 +241,6 @@ const result = await runScript(async ({ bot, sdk }) => {
             (sdk.getState()?.gameMessages ?? []).some(message => message.type === 0 &&
                 (/^You pick the .*pocket/i.test(message.text)) && (message.observationId != null && revision != null
                     ? message.observationId > revision : message.tick > (before.tick ?? -1)));
-        if (success && !guardDone) {
-            guardDone = true;
-            nextScan = 0;
-            log('guard-pickpocket-confirmed', { npc: target.name, ...after });
-        }
         if (success) successes++;
         log('pickpocket', { npc: target.name, success, reason: action.reason, successes, ...after });
         await sdk.waitForTicks(action.reason === 'stunned' ? 11 : success ? 1 : 3);

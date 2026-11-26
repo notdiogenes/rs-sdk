@@ -51,15 +51,13 @@ function fact(label: string, value: string, className = '') {
 
 function card(bot: Bot, category: Group, reason: string, managed: ControlActivity | undefined, now: number) {
     const name = escape(bot.name);
-    const kind = managed ? 'Managed' : 'Observed';
     const last = bot.lastActivity;
     const effect = last ? `<time datetime="${escape(last.at)}">${activityClock.format(new Date(last.at))}</time>` : '—';
     const watch = bot.status === 'Online'
         ? `<a href="https://maxbittker.github.io/rs-world/?follow=${encodeURIComponent(bot.name)}" target="_blank" rel="noopener">Watch ↗</a>` : '';
-    const activityButton = managed
-        ? `<button type="button" data-bot="${name}" data-action="${managed.running ? 'stop' : 'start'}">${managed.running ? 'Stop activity' : 'Start activity'}</button>` : '';
-    return `<article class="bot" data-bot-row data-name="${name}" data-status="${category}" data-kind="${kind}">
-    <div class="bot-header"><h3>${name} <span class="badge">${kind}</span></h3>
+    const activityButton = `<button type="button" data-bot="${name}" data-action="${managed?.running ? 'stop' : 'start'}">${managed?.running ? 'Stop activity' : 'Start activity'}</button>`;
+    return `<article class="bot" data-bot-row data-name="${name}" data-status="${category}">
+    <div class="bot-header"><h3>${name} <span class="badge">Managed</span></h3>
       <span class="quest-count" data-card-levels hidden></span></div>
     <p class="reason" title="${escape(reason)}"><span class="badge ${category}">${groups[category]}</span> ${escape(reason)}</p>
     <p class="task-line" data-activity>${escape(bot.activity)}</p>
@@ -74,6 +72,7 @@ function card(bot: Bot, category: Group, reason: string, managed: ControlActivit
     <div class="skills" data-card-skills hidden></div>
     <div class="card-footer">
       <button type="button" data-detail="${name}">Details</button>
+      <button type="button" data-inventory="${name}">Current inventory</button>
       <button type="button" data-bank="${name}">Bank</button>
       ${activityButton}${watch}
     </div>
@@ -85,7 +84,7 @@ type Page = { nonce: string; data?: Snapshot; questCatalog: QuestColumn[]; fleet
 export function fleetPage({ nonce, data, questCatalog, fleetStyle, controls, refreshSeconds, displayTimeZone }: Page) {
     const now = data ? Date.parse(data.checkedAt) : Date.now();
     const roster = (data?.bots ?? []).map(bot => {
-        const managed = data?.managed?.bot === bot.name ? data.managed : undefined;
+        const managed = bot.control;
         return { bot, managed, ...classify(bot, managed, now) };
     });
     const counts = { attention: 0, active: 0, idle: 0, offline: 0 };
@@ -104,8 +103,8 @@ export function fleetPage({ nonce, data, questCatalog, fleetStyle, controls, ref
           ${id === 'attention' ? '<small>Review activity and connection status</small>' : ''}
           </div><div class="grid">${members.map(({ bot, category, reason, managed }) => card(bot, category, reason, managed, now)).join('')}</div></section>`;
     }).join('');
-    const rowList = roster.map(({ bot, category, managed }) => ({
-        name: bot.name, category, kind: managed ? 'Managed' : 'Observed', hiscore: questHiscore(bot.name),
+    const rowList = roster.map(({ bot, category }) => ({
+        name: bot.name, category, hiscore: questHiscore(bot.name),
     }));
     // Bot names and skill names are allowlisted without markup characters.
     return `<!doctype html>
@@ -126,7 +125,6 @@ export function fleetPage({ nonce, data, questCatalog, fleetStyle, controls, ref
     <nav role="tablist" aria-label="Dashboard views">${tab('fleet', 'Fleet')}${tab('stats', 'Stats')}${tab('quests', 'Quests')}</nav>
     <input id="search" type="search" aria-label="Search accounts" placeholder="Search accounts" autocomplete="off">
     <select id="status-filter" aria-label="Filter by status"><option value="all">All views</option>${groupOptions}</select>
-    <select id="kind-filter" aria-label="Filter by kind"><option value="all">All kinds</option><option>Managed</option><option>Observed</option></select>
     <button type="button" id="banks">Check banks</button>
     <button type="button" id="refresh">Refresh</button>
     <button type="button" id="auto" aria-pressed="true">Auto</button>
@@ -153,6 +151,12 @@ export function fleetPage({ nonce, data, questCatalog, fleetStyle, controls, ref
   <div class="dialog-header"><h2 id="fleet-details-title"></h2><button type="button" data-close>Close</button></div>
   <p id="fleet-details-status" role="status"></p>
   <div id="fleet-details-content"></div>
+</div></dialog>
+<dialog id="inventory-dialog" aria-labelledby="inventory-title"><div class="dialog-body">
+  <div class="dialog-header"><h2 id="inventory-title">Current inventory</h2><button type="button" data-close>Close</button></div>
+  <p id="inventory-status" role="status"></p>
+  <div id="inventory-items"></div>
+  <button type="button" id="inventory-refresh">Refresh inventory</button>
 </div></dialog>
 <dialog id="banks-dialog" aria-labelledby="bank-title"><div class="dialog-body">
   <div class="dialog-header"><h2 id="bank-title">Bank snapshots</h2><button type="button" data-close>Close</button></div>

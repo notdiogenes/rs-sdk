@@ -201,6 +201,22 @@ in the terminal otherwise. It adds the `smoke-move` task without starting a
 client or task. When the operator authorizes the test, start the client, read
 a fresh location, run `smoke-move` once, and verify the new coordinates.
 
+### Fleet desk activity and inventory controls
+
+Every roster card has its own activity picker, stop button, and **Current
+inventory** button. A signed-in operator can start an allowlisted activity and
+Fleet desk will start that bot's game client if needed. Stopping an activity
+keeps its client logged in. A roster bot with a game client running outside
+Fleet desk must sign out of that client before Fleet desk can launch one.
+
+The inventory dialog reads the selected bot's fresh backpack contents from
+game state. It reports offline or stale state when a current snapshot is
+unavailable. Use `GET /bots/activity?view=inventory&bot=NAME` with a dashboard
+session, or use `/bots/activity?bot=NAME` for bot-specific task controls. The
+primary controller's existing task list continues to apply to its configured
+bot. Other roster bots can use the bundled activities and maintain separate
+client and task processes.
+
 ### Separate Lumbridge pickpocket demo
 
 The HTTPS dashboard also exposes a second, isolated client and task for the
@@ -220,8 +236,9 @@ Use the dashboard hostname with the following requests.
 
 The `pickpocket-men` task skips Tutorial Island if needed and stays in
 Lumbridge. The `train-hp-pickpocket` task trains base Hitpoints to 60, then
-travels to East Ardougne, confirms a Guard pickpocket, and looks for the
-highest available tier of Knight or Hero. The
+travels to East Ardougne and picks an available target based on Thieving
+level, with Heroes ahead of Knights. Guards are the training target from
+40 to 54 Thieving. The
 attached client and task run on the dashboard host. Once provisioned, the
 demo appears in the Fleet desk roster, including while offline. A dashboard
 service restart ends both processes and clears the event buffer. The demo's

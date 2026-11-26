@@ -74,3 +74,7 @@ dialog h3{margin-top:12px}
     clip-path: inset(50%);
     white-space: nowrap;
 }
+
+#inventory-items { margin: 10px 0; }
+#inventory-items th, #inventory-items td { white-space: normal; overflow-wrap: anywhere; }
+#inventory-items td:nth-child(2) { text-align: left; }
