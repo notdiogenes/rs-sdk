@@ -78,12 +78,12 @@ async function startActivity(job: Start, auth: string, state: ControllerStatus) 
     }
 }
 
-export async function handleActivity(request: Request, token: string) {
+export async function handleActivity(request: Request, token: string, session?: string) {
     const reply = (data: unknown, status = 200) => Response.json(data, { status, headers: { 'Cache-Control': 'no-store' } });
     if (request.method !== 'GET' && request.method !== 'POST') {
         return new Response(null, { status: 405, headers: { Allow: 'GET, POST' } });
     }
-    const auth = request.headers.get('Authorization');
+    const auth = request.headers.get('Authorization') ?? (session ? `Bearer ${token}` : null);
     if (!auth?.startsWith('Bearer ')) return reply({ error: 'Unauthorized' }, 401);
     try {
         const response = await controllerRequest('/v1/status', auth);

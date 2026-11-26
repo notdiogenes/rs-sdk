@@ -1,8 +1,13 @@
 (() => {
     const refreshMs = Number(document.currentScript.dataset.refresh) * 1000;
-    const dialog = document.querySelector('dialog');
+    const dialog = document.querySelector('[aria-labelledby="activity-title"]');
     const form = dialog.querySelector('form');
-    const token = form.querySelector('input[type="password"]');
+    const account = document.querySelector('#dashboard-account');
+    const signIn = document.querySelector('#dashboard-sign-in');
+    const signInForm = signIn.querySelector('form');
+    const password = signInForm.querySelector('input');
+    const signInMessage = signInForm.querySelector('[role="status"]');
+    const signInSubmit = signInForm.querySelector('[type="submit"]');
     const tasks = form.querySelector('select');
     const taskField = form.querySelector('#activity-task');
     const title = form.querySelector('h2');
@@ -13,14 +18,81 @@
     let selected;
     let action;
     let dialogVersion = 0;
+    let signedIn = false;
+    let pendingButton;
 
     function scheduleRefresh() {
         refresh = setTimeout(() => window.location.reload(), refreshMs);
     }
     scheduleRefresh();
 
+    function setSignedIn(value) {
+        signedIn = value;
+        account.textContent = value ? 'Sign out' : 'Sign in';
+    }
+
+    function openSignIn(button) {
+        clearTimeout(refresh);
+        pendingButton = button;
+        signInMessage.textContent = '';
+        signIn.showModal();
+    }
+
+    const sessionReady = request('/bots/activity?session=status')
+        .then(state => setSignedIn(state.signedIn)).catch(() => {});
+    account.addEventListener('click', async () => {
+        await sessionReady;
+        if (!signedIn) {
+            openSignIn();
+            return;
+        }
+        account.disabled = true;
+        try {
+            await request('/bots/activity?session=logout', {});
+            setSignedIn(false);
+        } catch (error) {
+            openSignIn();
+            signInMessage.textContent = error.message;
+        } finally {
+            account.disabled = false;
+        }
+    });
+    signInForm.querySelector('[type="button"]').addEventListener('click', () => {
+        if (!signInSubmit.disabled) signIn.close();
+    });
+    signIn.addEventListener('cancel', event => {
+        if (signInSubmit.disabled) event.preventDefault();
+    });
+    signIn.addEventListener('close', () => {
+        signInForm.reset();
+        pendingButton = undefined;
+        if (!dialog.open) scheduleRefresh();
+    });
+    signInForm.addEventListener('submit', async event => {
+        event.preventDefault();
+        if (signInSubmit.disabled) return;
+        signInSubmit.disabled = true;
+        try {
+            await request('/bots/activity?session=login', { password: password.value });
+            setSignedIn(true);
+            const button = pendingButton;
+            signIn.close();
+            if (button) button.click();
+        } catch (error) {
+            signInMessage.textContent = error.message;
+        } finally {
+            password.value = '';
+            signInSubmit.disabled = false;
+        }
+    });
+
     for (const button of document.querySelectorAll('[data-bot][data-action]')) {
-        button.addEventListener('click', () => {
+        button.addEventListener('click', async () => {
+            await sessionReady;
+            if (!signedIn) {
+                openSignIn(button);
+                return;
+            }
             clearTimeout(refresh);
             selected = button;
             action = button.dataset.action;
@@ -30,6 +102,7 @@
             taskField.hidden = true;
             message.textContent = '';
             dialog.showModal();
+            if (action === 'start') form.requestSubmit();
         });
     }
     close.addEventListener('click', () => dialog.close());
@@ -39,15 +112,14 @@
     dialog.addEventListener('close', () => {
         dialogVersion++;
         form.reset();
-        token.value = '';
         tasks.replaceChildren();
-        scheduleRefresh();
+        if (!signIn.open && !dialog.open) scheduleRefresh();
     });
 
     async function request(path, payload) {
-        const headers = { Authorization: 'Bearer ' + token.value.trim() };
+        const headers = {};
         const options = {
-            headers, credentials: 'omit', cache: 'no-store', redirect: 'error',
+            headers, credentials: 'same-origin', cache: 'no-store', redirect: 'error',
             signal: AbortSignal.timeout(payload?.action === 'stop' ? 38000 : 15000),
         };
         if (payload !== undefined) {
@@ -61,9 +133,12 @@
         } catch {
             throw new Error('The control API did not respond. Check the activity before retrying.');
         }
-        if (response.status === 401) throw new Error('The control API did not accept that token.');
         const result = await response.json().catch(() => ({}));
-        if (!response.ok) throw new Error(result.error || 'The control API could not complete the request.');
+        if (!response.ok) {
+            const error = new Error(result.error || 'The control API could not complete the request.');
+            error.status = response.status;
+            throw error;
+        }
         return result;
     }
 
@@ -94,8 +169,6 @@
             }
         } catch (error) {
             if (dialogVersion === version) message.textContent = error.message;
-        } finally {
-            if (dialogVersion === version) token.value = '';
         }
     }
 
@@ -148,9 +221,14 @@
             }
             completed = true;
         } catch (error) {
+            if (error.status === 401) {
+                setSignedIn(false);
+                dialog.close();
+                openSignIn(selected);
+                return;
+            }
             message.textContent = error.message;
         } finally {
-            if (completed) token.value = '';
             submit.disabled = completed || watching;
             close.disabled = false;
         }

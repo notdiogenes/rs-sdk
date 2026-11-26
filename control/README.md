@@ -97,13 +97,23 @@ The service runs from `~/rs-sdk-sync` and reloads when the webhook updates
 its source files. Run the installer once to switch an existing dashboard to
 this setup. Future dashboard source updates are picked up after the sync.
 
+Set or change the browser password from your Lightsail terminal:
+
+```sh
+bash ~/rs-sdk-sync/control/set-dashboard-password.sh
+```
+
+Choose a password of at least 12 characters. Open the HTTPS dashboard and
+sign in once per browser. The server session has no expiration date, and
+the browser cookie is renewed when you use the dashboard. Signing out
+revokes that session. Changing the password revokes every dashboard session.
+Programmatic callers can continue to use the bearer token.
+
 The managed bot row has a **Start activity** or **Stop activity** button.
-Enter the control API token, select **Load activities**, then choose a task
-and select **Start activity**. The dashboard service starts the managed game
-client if needed, waits for live game state, and launches the task. You can
-close the dialog while it is starting. **Stop activity** cancels a pending
-start or ends the task and keeps the managed game client logged in. The token
-is cleared when the action finishes or you close the dialog.
+Choose a task and select **Start activity**. The dashboard service starts the
+managed game client if needed, waits for live game state, and launches the
+task. You can close the dialog while it is starting. **Stop activity**
+cancels a pending start or ends the task and keeps the client logged in.
 
 ## Optional bot configuration
 

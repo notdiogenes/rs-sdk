@@ -1,13 +1,15 @@
 import { readdir } from 'node:fs/promises';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { hostedBotName, hostedBotState, isFreshBotState } from './hosted-bot';
 import { controllerRequest, dashboardActivity, handleActivity } from './dashboard-activity';
+import { dashboardSessions } from './dashboard-session';
 
 const [botsDir, configDir] = process.argv.slice(2);
 if (!botsDir || !configDir) throw new Error('Expected the bot directory and control config directory');
 const token = (await Bun.file(join(configDir, 'token')).text()).trim();
 if (!/^[a-f0-9]{64}$/.test(token)) throw new Error('Invalid control API token');
 const controls = await Bun.file(join(import.meta.dir, 'public-status-controls.js')).text();
+const sessions = dashboardSessions(join(dirname(configDir), 'rs-sdk-public-status'));
 
 type Bot = { name: string; status: 'Online' | 'Offline' | 'Unknown'; activity: string; location?: string };
 type ControlActivity = { bot: string; label?: string; running: boolean };
@@ -118,16 +120,22 @@ function render(nonce: string, data?: Snapshot) {
 </head>
 <body><main>
 <h1>Bot status</h1>
+<button type="button" id="dashboard-account">Sign in</button>
 ${data ? `<p>Checked <time datetime="${data.checkedAt}">${data.checkedAt.slice(11, 19)} UTC</time></p>` : ''}
 ${rows ? `<table aria-label="Bot status"><thead><tr><th scope="col">Bot</th><th scope="col">Status</th><th scope="col">Activity</th><th scope="col">Location</th><th scope="col">Controls</th></tr></thead><tbody>${rows}</tbody></table>`
     : `<p>${data ? 'No bots configured.' : 'Bot status is temporarily unavailable.'}</p>`}
 </main>
 <dialog aria-labelledby="activity-title"><form>
   <h2 id="activity-title"></h2>
-  <label>Control API token <input type="password" autocomplete="off" required autofocus></label>
   <label id="activity-task" hidden>Activity <select></select></label>
   <p role="status" aria-live="polite"></p>
   <div><button type="submit"></button> <button type="button" id="activity-close">Close</button></div>
+</form></dialog>
+<dialog id="dashboard-sign-in" aria-labelledby="sign-in-title"><form>
+  <h2 id="sign-in-title">Dashboard sign-in</h2>
+  <label>Dashboard password <input type="password" autocomplete="current-password" required autofocus></label>
+  <p role="status" aria-live="polite"></p>
+  <div><button type="submit">Sign in</button> <button type="button">Close</button></div>
 </form></dialog>
 <script nonce="${nonce}" data-refresh="${refreshSeconds}">${controls}</script>
 </body></html>`;
@@ -138,8 +146,15 @@ Bun.serve({
     port: 3721,
     maxRequestBodySize: 1024,
     async fetch(request) {
-        const { pathname } = new URL(request.url);
-        if (pathname === '/bots/activity') return handleActivity(request, token);
+        const { pathname, searchParams } = new URL(request.url);
+        if (pathname === '/bots/activity') {
+            const action = searchParams.get('session');
+            if (action) return sessions.handle(request, action);
+            const session = await sessions.authenticate(request).catch(() => undefined);
+            const response = await handleActivity(request, token, session);
+            if (session) response.headers.set('Set-Cookie', session);
+            return response;
+        }
         if (pathname !== '/bots') return new Response(null, { status: 404 });
         if (request.method !== 'GET' && request.method !== 'HEAD') {
             return new Response(null, { status: 405, headers: { Allow: 'GET, HEAD' } });
