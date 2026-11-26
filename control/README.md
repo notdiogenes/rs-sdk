@@ -89,6 +89,11 @@ the map plane when available. It shows a dash for offline bots, stale data,
 or missing coordinates. Activity comes from a running task managed by the
 control API or from combat reported by the game gateway. If neither is
 available, the page says so. Stale or failed game checks appear as **Unknown**.
+**Last activity** shows when the dashboard last observed a change in position
+or floor, an XP gain, or a bot entering or leaving combat. The service checks
+every 15 seconds, even when the page is closed. It keeps the observation
+time across dashboard restarts and logouts and displays it in US Eastern time.
+A dash means no activity has been observed since tracking started.
 The page refreshes every 15 seconds while open. It serves only the public
 fields and runs in a separate service from the control API and gameplay
 processes.

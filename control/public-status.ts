@@ -4,6 +4,8 @@ import { hostedBotName, hostedBotState, isFreshBotState } from './hosted-bot';
 import { controllerRequest, dashboardActivity, handleActivity } from './dashboard-activity';
 import { dashboardSessions } from './dashboard-session';
 import { dashboardDiagnostics } from './dashboard-diagnostics';
+import { dashboardLastActivity } from './dashboard-last-activity';
+import type { BotObservation, LastActivity } from './dashboard-last-activity';
 
 const [botsDir, configDir] = process.argv.slice(2);
 if (!botsDir || !configDir) throw new Error('Expected the bot directory and control config directory');
@@ -12,6 +14,7 @@ if (!/^[a-f0-9]{64}$/.test(token)) throw new Error('Invalid control API token');
 const controls = await Bun.file(join(import.meta.dir, 'public-status-controls.js')).text();
 const runtimeDir = join(dirname(configDir), 'rs-sdk-public-status');
 const diagnostics = dashboardDiagnostics(runtimeDir, token);
+const recordActivity = dashboardLastActivity(runtimeDir);
 const sessions = dashboardSessions(runtimeDir, async () => {
     const site = await Bun.file('/etc/nginx/sites-enabled/rs-sdk-control-hostname').text();
     const host = /^\s*server_name\s+([0-9]+-[0-9]+-[0-9]+-[0-9]+\.sslip\.io);/m.exec(site)?.[1];
@@ -19,13 +22,17 @@ const sessions = dashboardSessions(runtimeDir, async () => {
     return `https://${host}`;
 }, join(import.meta.dir, 'dashboard-enrollment.json'));
 
-type Bot = { name: string; status: 'Online' | 'Offline' | 'Unknown'; activity: string; location?: string };
+type Bot = { name: string; status: 'Online' | 'Offline' | 'Unknown'; activity: string; location?: string; lastActivity: LastActivity | null };
 type ControlActivity = { bot: string; label?: string; running: boolean };
 type Snapshot = { bots: Bot[]; checkedAt: string; managed?: ControlActivity };
 const refreshSeconds = 15;
 const displayTimeZone = 'America/New_York';
 const dashboardClock = new Intl.DateTimeFormat('en-US', {
     timeZone: displayTimeZone, hour: 'numeric', minute: '2-digit', second: '2-digit', timeZoneName: 'short',
+});
+const activityClock = new Intl.DateTimeFormat('en-US', {
+    timeZone: displayTimeZone, month: 'short', day: 'numeric', year: 'numeric',
+    hour: 'numeric', minute: '2-digit', timeZoneName: 'short',
 });
 let cached: Snapshot | undefined;
 let expiresAt = 0;
@@ -58,25 +65,35 @@ async function listBots(directory: string) {
 
 async function botStatus(name: string, directory: string, managed?: ControlActivity): Promise<Bot> {
     const task = managed?.bot === name ? managed.label : undefined;
+    const row = (fields: Omit<Bot, 'name' | 'lastActivity'>, observation?: BotObservation): Bot => {
+        let lastActivity = null;
+        try { lastActivity = recordActivity(name, observation); } catch { /* show the other status fields */ }
+        return { name, ...fields, lastActivity };
+    };
     try {
         const result = await hostedBotState(name, join(directory, name));
-        if (!result || result.botStatus === 'dead') return { name, status: 'Offline', activity: task ?? '—' };
+        if (!result || result.botStatus === 'dead') return row({ status: 'Offline', activity: task ?? '—' });
         if (result.botStatus !== 'stale' && isFreshBotState(result.stateAge)) {
             const player = result.state?.player;
-            if (!result.state?.inGame || !player) return { name, status: 'Offline', activity: task ?? '—' };
+            if (!result.state?.inGame || !player) return row({ status: 'Offline', activity: task ?? '—' });
             const { worldX, worldZ, level } = player;
-            const plane = Number.isInteger(level) && level >= 0 && level <= 3 ? ` · Plane ${level}` : '';
-            const location = Number.isSafeInteger(worldX) && Number.isSafeInteger(worldZ)
-                ? `X ${worldX}, Z ${worldZ}${plane}` : undefined;
-            return {
-                name, status: 'Online', location,
+            const plane = Number.isInteger(level) && level >= 0 && level <= 3 ? level : null;
+            const hasPosition = Number.isSafeInteger(worldX) && Number.isSafeInteger(worldZ);
+            const location = hasPosition
+                ? `X ${worldX}, Z ${worldZ}${plane === null ? '' : ` · Plane ${plane}`}` : undefined;
+            return row({
+                status: 'Online', location,
                 activity: task ?? (player.combat?.inCombat ? 'In combat' : 'No activity reported'),
-            };
+            }, {
+                position: hasPosition ? [worldX, worldZ, plane] : undefined,
+                xp: Object.fromEntries((result.state.skills ?? []).map(skill => [skill.name, skill.experience])),
+                inCombat: player.combat?.inCombat,
+            });
         }
     } catch {
         // Credentials and gateway errors are private. Render an unknown status.
     }
-    return { name, status: 'Unknown', activity: task ?? '—' };
+    return row({ status: 'Unknown', activity: task ?? '—' });
 }
 
 async function collect(directory: string): Promise<Snapshot> {
@@ -87,6 +104,10 @@ async function collect(directory: string): Promise<Snapshot> {
 
 async function snapshot(directory: string) {
     if (cached && Date.now() < expiresAt) return cached;
+    return refreshSnapshot(directory);
+}
+
+function refreshSnapshot(directory: string) {
     return refreshing ??= collect(directory).then(result => {
         cached = result;
         expiresAt = Date.now() + refreshSeconds * 1000;
@@ -94,12 +115,17 @@ async function snapshot(directory: string) {
     }).finally(() => { refreshing = undefined; });
 }
 
+const collectInBackground = () => void refreshSnapshot(botsDir).catch(() => console.error('Dashboard bot sample failed'));
+collectInBackground();
+setInterval(collectInBackground, refreshSeconds * 1000).unref();
+
 const escape = (value: string) => value.replaceAll('&', '&amp;').replaceAll('<', '&lt;')
     .replaceAll('>', '&gt;').replaceAll('"', '&quot;').replaceAll("'", '&#39;');
 
 function render(nonce: string, data?: Snapshot) {
-    const rows = data?.bots.map(({ name, status, activity, location }) => `<tr><th scope="row">${escape(name)}</th>
+    const rows = data?.bots.map(({ name, status, activity, location, lastActivity }) => `<tr><th scope="row">${escape(name)}</th>
         <td><span class="${status.toLowerCase()}">${status}</span></td><td data-activity>${escape(activity)}</td>
+        <td>${lastActivity ? `<time datetime="${escape(lastActivity.at)}">${activityClock.format(new Date(lastActivity.at))}</time><small>${escape(lastActivity.reason)}</small>` : '—'}</td>
         <td>${escape(location ?? '—')}</td>
         <td>${data.managed?.bot === name ? `<button type="button" data-bot="${escape(name)}" data-action="${data.managed.running ? 'stop' : 'start'}">${data.managed.running ? 'Stop activity' : 'Start activity'}</button>` : '—'}</td></tr>`).join('');
     return `<!doctype html>
@@ -111,12 +137,13 @@ function render(nonce: string, data?: Snapshot) {
 <style>
   :root { color-scheme: light dark; font: 1rem/1.5 system-ui, sans-serif; }
   body { margin: 0; }
-  main { max-width: 44rem; padding: 2rem 1rem; margin: 0 auto; }
+  main { max-width: 54rem; padding: 2rem 1rem; margin: 0 auto; }
   h1 { margin: 0 0 .25rem; }
   p { color: GrayText; }
   table { width: 100%; border-collapse: collapse; }
   th, td { text-align: left; padding: .7rem .4rem; border-bottom: 1px solid color-mix(in srgb, CanvasText 20%, Canvas); overflow-wrap: anywhere; }
   td span { display: inline-block; font-weight: 600; padding: .1rem .55rem; border-radius: 1rem; }
+  td small { display: block; color: GrayText; }
   .online { background: #d9f4e4; color: #164a2b; }
   .offline { background: #e9e9ea; color: #35373b; }
   .unknown { background: #fff0c8; color: #644306; }
@@ -141,7 +168,7 @@ function render(nonce: string, data?: Snapshot) {
 <button type="button" id="dashboard-account">Sign in</button>
 <button type="button" id="dashboard-diagnostics-open">Diagnostics</button>
 ${data ? `<p>Checked <time datetime="${data.checkedAt}">${dashboardClock.format(new Date(data.checkedAt))}</time></p>` : ''}
-${rows ? `<table aria-label="Bot status"><thead><tr><th scope="col">Bot</th><th scope="col">Status</th><th scope="col">Activity</th><th scope="col">Location</th><th scope="col">Controls</th></tr></thead><tbody>${rows}</tbody></table>`
+${rows ? `<table aria-label="Bot status"><thead><tr><th scope="col">Bot</th><th scope="col">Status</th><th scope="col">Activity</th><th scope="col">Last activity</th><th scope="col">Location</th><th scope="col">Controls</th></tr></thead><tbody>${rows}</tbody></table>`
     : `<p>${data ? 'No bots configured.' : 'Bot status is temporarily unavailable.'}</p>`}
 </main>
 <dialog aria-labelledby="activity-title"><form>
