@@ -1,5 +1,6 @@
 import { Database } from 'bun:sqlite';
-import { createHash, randomBytes } from 'node:crypto';
+import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
+import { link, unlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
 const cookieName = '__Secure-rs-sdk-dashboard';
@@ -10,7 +11,7 @@ function sessionCookie(value: string) {
     return `${cookieName}=${value}; Path=/bots; Secure; HttpOnly; SameSite=Strict; Max-Age=${value ? cookieLifetime : 0}`;
 }
 
-export function dashboardSessions(directory: string) {
+export function dashboardSessions(directory: string, token: string, getOrigin: () => Promise<string>) {
     const settingsPath = join(directory, 'password.json');
     let database: Database | undefined;
     let nextAttempt = 0;
@@ -61,8 +62,33 @@ export function dashboardSessions(directory: string) {
                 const cookie = await authenticate(request);
                 return reply({ configured: Boolean(config), signedIn: Boolean(cookie) }, 200, cookie ? { 'Set-Cookie': cookie } : undefined);
             }
-            if (request.method !== 'POST' || !['login', 'logout'].includes(action)) {
+            if (request.method !== 'POST' || !['setup', 'login', 'logout'].includes(action)) {
                 return reply({ error: 'Unsupported session request.' }, 405);
+            }
+            if (action === 'setup') {
+                if (config) return reply({ error: 'The dashboard password has already been set.' }, 409);
+                const origin = await getOrigin();
+                if (request.headers.get('Origin') !== origin) return reply({ error: 'Open the HTTPS dashboard to set the password.' }, 403);
+                const bearer = request.headers.get('Authorization') ?? '';
+                if (!timingSafeEqual(Buffer.from(digest(bearer)), Buffer.from(digest(`Bearer ${token}`)))) {
+                    return reply({ error: 'The dashboard did not accept that API token.' }, 401);
+                }
+                const body = await request.json().catch(() => null);
+                if (typeof body?.password !== 'string' || body.password.length < 12 || body.password.length > 128) {
+                    return reply({ error: 'Choose a password with 12–128 characters.' }, 400);
+                }
+                const hash = await Bun.password.hash(body.password, { algorithm: 'argon2id' });
+                const temporary = settingsPath + '.' + randomBytes(12).toString('hex');
+                await writeFile(temporary, JSON.stringify({ hash, origin }), { mode: 0o600, flag: 'wx' });
+                try {
+                    await link(temporary, settingsPath);
+                } catch (error) {
+                    if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+                    return reply({ error: 'The dashboard password has already been set.' }, 409);
+                } finally {
+                    await unlink(temporary);
+                }
+                return signedIn(hash, request, reply);
             }
             if (!config) return reply({ error: 'Set the dashboard password on Lightsail first.' }, 409);
             if (request.headers.get('Origin') !== config.origin ||
@@ -85,22 +111,25 @@ export function dashboardSessions(directory: string) {
             verifying = true;
             try {
                 if (!await Bun.password.verify(password, config.hash)) return reply({ error: 'Incorrect dashboard password.' }, 401);
-                const db = store();
-                const id = randomBytes(32).toString('hex');
-                const version = digest(config.hash);
-                const previous = sessionId(request);
-                db.transaction(() => {
-                    db.query('DELETE FROM sessions WHERE version <> ?').run(version);
-                    if (previous) db.query('DELETE FROM sessions WHERE id = ?').run(digest(previous));
-                    db.query('INSERT INTO sessions (id, version) VALUES (?, ?)').run(digest(id), version);
-                })();
-                return reply({ signedIn: true }, 200, { 'Set-Cookie': sessionCookie(id) });
+                return signedIn(config.hash, request, reply);
             } finally {
                 verifying = false;
             }
         } catch {
             return reply({ error: 'Dashboard sign-in is unavailable.' }, 503);
         }
+    }
+
+    function signedIn(hash: string, request: Request, reply: (data: object, status: number, headers: Record<string, string>) => Response) {
+        const db = store();
+        const id = randomBytes(32).toString('hex');
+        const version = digest(hash);
+        const previous = sessionId(request);
+        db.transaction(() => {
+            if (previous) db.query('DELETE FROM sessions WHERE id = ?').run(digest(previous));
+            db.query('INSERT INTO sessions (id, version) VALUES (?, ?)').run(digest(id), version);
+        })();
+        return reply({ signedIn: true }, 200, { 'Set-Cookie': sessionCookie(id) });
     }
 
     return { authenticate, handle };

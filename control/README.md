@@ -97,14 +97,15 @@ The service runs from `~/rs-sdk-sync` and reloads when the webhook updates
 its source files. Run the installer once to switch an existing dashboard to
 this setup. Future dashboard source updates are picked up after the sync.
 
-Set or change the browser password from your Lightsail terminal:
+Select **Sign in** on the HTTPS dashboard. For the first sign-in, enter the
+existing control API token and choose a password of at least 12 characters.
+To reset the password later, run this from your Lightsail terminal:
 
 ```sh
 bash ~/rs-sdk-sync/control/set-dashboard-password.sh
 ```
 
-Choose a password of at least 12 characters. Open the HTTPS dashboard and
-sign in once per browser. The server session has no expiration date, and
+Sign in once per browser. The server session has no expiration date, and
 the browser cookie is renewed when you use the dashboard. Signing out
 revokes that session. Changing the password revokes every dashboard session.
 Programmatic callers can continue to use the bearer token.
