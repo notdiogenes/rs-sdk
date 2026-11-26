@@ -1,6 +1,7 @@
 import { readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { hostedBotName, hostedBotState, isFreshBotState } from './hosted-bot';
+import { controllerRequest, dashboardActivity, handleActivity } from './dashboard-activity';
 
 const [botsDir, configDir] = process.argv.slice(2);
 if (!botsDir || !configDir) throw new Error('Expected the bot directory and control config directory');
@@ -18,20 +19,16 @@ let refreshing: Promise<Snapshot> | undefined;
 
 async function controlActivity(): Promise<ControlActivity | undefined> {
     try {
-        const response = await fetch('http://127.0.0.1:3719/v1/status', {
-            headers: { Authorization: `Bearer ${token}` },
-            signal: AbortSignal.timeout(3000),
-            redirect: 'error',
-        });
+        const response = await controllerRequest('/v1/status', `Bearer ${token}`, undefined, AbortSignal.timeout(3000));
         if (!response.ok) return;
-        const { bot, task } = await response.json() as {
-            bot?: unknown; task?: { name?: unknown; stopping?: boolean };
-        };
+        const { bot, task, starting, startError } = dashboardActivity(await response.json());
         if (typeof bot !== 'string' || !hostedBotName.test(bot)) return;
         if (typeof task?.name === 'string' && /^[a-z][a-z0-9-]{0,63}$/.test(task.name)) {
             const label = task.name.replaceAll('-', ' ');
             return { bot, label: task.stopping ? `Stopping ${label}` : label, running: true };
         }
+        if (starting) return { bot, label: `Starting ${starting.replaceAll('-', ' ')}`, running: true };
+        if (startError) return { bot, label: 'Activity could not start', running: false };
         return { bot, running: false };
     } catch {
         // Game status remains available if the control API is unavailable.
@@ -141,7 +138,9 @@ Bun.serve({
     port: 3721,
     maxRequestBodySize: 1024,
     async fetch(request) {
-        if (new URL(request.url).pathname !== '/bots') return new Response(null, { status: 404 });
+        const { pathname } = new URL(request.url);
+        if (pathname === '/bots/activity') return handleActivity(request, token);
+        if (pathname !== '/bots') return new Response(null, { status: 404 });
         if (request.method !== 'GET' && request.method !== 'HEAD') {
             return new Response(null, { status: 405, headers: { Allow: 'GET, HEAD' } });
         }

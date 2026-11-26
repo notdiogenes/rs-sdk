@@ -7,6 +7,7 @@ runtime="$HOME/.config/rs-sdk-public-status"
 bun=$(command -v bun || true)
 bun=${bun:-"$HOME/.bun/bin/bun"}
 service=rs-sdk-public-status
+refresh=rs-sdk-public-status-refresh
 site=/etc/nginx/sites-enabled/rs-sdk-control-hostname
 include_dir=/etc/nginx/rs-sdk-control/https
 snippet="$include_dir/public-status.conf"
@@ -32,16 +33,20 @@ if [[ "$active_owner" != "$owner" || -z "$active_repo" || ! -d "$active_repo/bot
     echo 'Run as the control service user. Its working directory must contain the bots directory.' >&2
     exit 1
 fi
-for path in "$bun" "$config" "$runtime" "$active_repo"; do
+for path in "$bun" "$config" "$source_dir" "$active_repo" "$runtime"; do
     [[ "$path" =~ ^/[a-zA-Z0-9_./-]+$ ]] || { echo "Unsupported service path: $path" >&2; exit 1; }
 done
+reflog="$(dirname -- "$source_dir")/.git/logs/HEAD"
+if [[ ! -r "$reflog" ]]; then
+    echo 'Run this installer from the GitHub webhook sync checkout.' >&2
+    exit 1
+fi
 sudo -v
 
 scratch=$(mktemp -d)
 trap 'rm -rf -- "$scratch"' EXIT
 install -d -m 0700 "$runtime"
-install -m 0600 "$source_dir/hosted-bot.ts" "$source_dir/public-status.ts" \
-    "$source_dir/public-status-controls.js" "$runtime/"
+revision="$runtime/source.sha256"
 cat > "$scratch/$service.service" <<EOF
 [Unit]
 Description=RS-SDK public bot status page
@@ -50,19 +55,42 @@ After=network-online.target rs-sdk-control.service
 
 [Service]
 User=$owner
-ExecStart=$bun --no-env-file $runtime/public-status.ts $active_repo/bots $config
+ExecStart=$bun --no-env-file $source_dir/public-status.ts $active_repo/bots $config
+ExecStartPost=/bin/bash $source_dir/dashboard-revision.sh $source_dir $revision record
 Restart=on-failure
 RestartSec=5
 UMask=0077
 NoNewPrivileges=yes
 ProtectSystem=full
 ProtectHome=read-only
+ReadWritePaths=$runtime
 PrivateTmp=yes
 
 [Install]
 WantedBy=multi-user.target
 EOF
+cat > "$scratch/$refresh.service" <<EOF
+[Unit]
+Description=Reload the RS-SDK public dashboard after a source update
+
+[Service]
+Type=oneshot
+User=$owner
+ExecCondition=/bin/bash $source_dir/dashboard-revision.sh $source_dir $revision changed
+ExecStart=+/usr/bin/systemctl restart $service.service
+EOF
+cat > "$scratch/$refresh.path" <<EOF
+[Unit]
+Description=Watch the RS-SDK sync checkout for dashboard updates
+
+[Path]
+PathChanged=$reflog
+
+[Install]
+WantedBy=multi-user.target
+EOF
 sudo install -m 0644 "$scratch/$service.service" "/etc/systemd/system/$service.service"
+sudo install -m 0644 "$scratch/$refresh.service" "$scratch/$refresh.path" /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl restart "$service"
 curl --fail --silent --show-error --retry 4 --retry-connrefused --max-time 15 \
@@ -74,6 +102,11 @@ cat > "$scratch/public-status.conf" <<'EOF'
         proxy_http_version 1.1;
         proxy_set_header Authorization "";
         proxy_read_timeout 15s;
+    }
+    location = /bots/activity {
+        proxy_pass http://127.0.0.1:3721;
+        proxy_http_version 1.1;
+        proxy_read_timeout 40s;
     }
 EOF
 if [[ -f "$snippet" ]]; then
@@ -93,4 +126,7 @@ sudo systemctl enable "$service"
 
 url="https://$hostname/bots"
 curl --fail --silent --show-error --max-time 15 --resolve "$hostname:443:127.0.0.1" "$url" >/dev/null
+[[ $(curl --silent --show-error --max-time 15 --resolve "$hostname:443:127.0.0.1" \
+    --output /dev/null --write-out '%{http_code}' "$url/activity") == 401 ]]
+sudo systemctl enable --now "$refresh.path"
 printf '\nPublic bot status page: %s\n' "$url"

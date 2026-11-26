@@ -93,11 +93,17 @@ The page refreshes every 15 seconds while open. It serves only the public
 fields and runs in a separate service from the control API and gameplay
 processes.
 
+The service runs from `~/rs-sdk-sync` and reloads when the webhook updates
+its source files. Run the installer once to switch an existing dashboard to
+this setup. Future dashboard source updates are picked up after the sync.
+
 The managed bot row has a **Start activity** or **Stop activity** button.
-Enter the control API token when prompted. Start uses the configured activity
-list and requires the managed game client to be running. Stop ends the task
-and keeps the managed game client logged in. The token is cleared when the
-action finishes or you close the dialog.
+Enter the control API token, select **Load activities**, then choose a task
+and select **Start activity**. The dashboard service starts the managed game
+client if needed, waits for live game state, and launches the task. You can
+close the dialog while it is starting. **Stop activity** cancels a pending
+start or ends the task and keeps the managed game client logged in. The token
+is cleared when the action finishes or you close the dialog.
 
 ## Optional bot configuration
 

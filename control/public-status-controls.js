@@ -12,6 +12,7 @@
     let refresh;
     let selected;
     let action;
+    let dialogVersion = 0;
 
     function scheduleRefresh() {
         refresh = setTimeout(() => window.location.reload(), refreshMs);
@@ -24,7 +25,7 @@
             selected = button;
             action = button.dataset.action;
             title.textContent = button.textContent + ' for ' + button.dataset.bot;
-            submit.textContent = button.textContent;
+            submit.textContent = action === 'start' ? 'Load activities' : 'Stop activity';
             submit.disabled = false;
             taskField.hidden = true;
             message.textContent = '';
@@ -36,6 +37,7 @@
         if (close.disabled) event.preventDefault();
     });
     dialog.addEventListener('close', () => {
+        dialogVersion++;
         form.reset();
         token.value = '';
         tasks.replaceChildren();
@@ -46,7 +48,7 @@
         const headers = { Authorization: 'Bearer ' + token.value.trim() };
         const options = {
             headers, credentials: 'omit', cache: 'no-store', redirect: 'error',
-            signal: AbortSignal.timeout(12000),
+            signal: AbortSignal.timeout(payload?.action === 'stop' ? 38000 : 15000),
         };
         if (payload !== undefined) {
             headers['Content-Type'] = 'application/json';
@@ -67,11 +69,34 @@
 
     function updateRow(state) {
         if (state.bot !== selected.dataset.bot) return;
-        selected.dataset.action = state.task ? 'stop' : 'start';
-        selected.textContent = state.task ? 'Stop activity' : 'Start activity';
+        const running = state.task || state.starting;
+        selected.dataset.action = running ? 'stop' : 'start';
+        selected.textContent = running ? 'Stop activity' : 'Start activity';
         const activity = state.task?.name?.replaceAll('-', ' ');
         selected.closest('tr').querySelector('[data-activity]').textContent =
-            activity ? (state.task.stopping ? 'Stopping ' + activity : activity) : '—';
+            activity ? (state.task.stopping ? 'Stopping ' + activity : activity)
+                : state.starting ? 'Starting ' + state.starting.replaceAll('-', ' ')
+                    : state.startError ? 'Activity could not start' : '—';
+    }
+
+    async function watchStart(version, bot) {
+        try {
+            while (dialog.open && dialogVersion === version) {
+                const state = await request('/bots/activity');
+                if (dialogVersion !== version) return;
+                if (state.bot !== bot) throw new Error('The configured bot changed.');
+                updateRow(state);
+                if (!state.starting) {
+                    message.textContent = state.startError || (state.task ? 'Activity started.' : 'The activity is no longer running.');
+                    return;
+                }
+                await new Promise(resolve => setTimeout(resolve, 1600));
+            }
+        } catch (error) {
+            if (dialogVersion === version) message.textContent = error.message;
+        } finally {
+            if (dialogVersion === version) token.value = '';
+        }
     }
 
     form.addEventListener('submit', async event => {
@@ -81,52 +106,52 @@
         close.disabled = true;
         message.textContent = 'Checking controller status…';
         let completed = false;
+        let watching = false;
         try {
-            const state = await request('/v1/status');
+            const state = await request('/bots/activity');
             if (state.bot !== selected.dataset.bot) {
                 throw new Error('The configured bot changed. Close this dialog and refresh the dashboard.');
             }
             if (action === 'stop') {
-                if (state.task) {
+                if (state.task || state.starting) {
                     message.textContent = 'Stopping activity…';
-                    await request('/v1/task/stop', {});
+                    await request('/bots/activity', { bot: state.bot, action: 'stop' });
                 }
-                message.textContent = state.task ? 'Activity stopped.' : 'There is no activity to stop.';
-                updateRow({ ...state, task: null });
+                message.textContent = state.task || state.starting ? 'Activity stopped.' : 'There is no activity to stop.';
+                updateRow({ ...state, task: null, starting: null, startError: null });
             } else {
-                if (state.task) {
+                if (state.task || state.starting) {
                     updateRow(state);
                     completed = true;
                     message.textContent = 'An activity is already running.';
                     return;
                 }
-                if (!state.client || state.client.stopping) {
-                    throw new Error('Start the managed game client before starting an activity.');
-                }
                 const names = Array.isArray(state.tasks)
                     ? state.tasks.filter(name => typeof name === 'string' && /^[a-z][a-z0-9-]{0,63}$/.test(name))
                     : [];
                 if (names.length === 0) throw new Error('No activities are configured for this bot.');
-                if (names.length > 1 && (taskField.hidden || !names.includes(tasks.value))) {
+                if (taskField.hidden || !names.includes(tasks.value)) {
                     tasks.replaceChildren(...names.map(name => new Option(name.replaceAll('-', ' '), name)));
                     taskField.hidden = false;
+                    submit.textContent = 'Start activity';
                     message.textContent = 'Choose an activity, then select Start activity.';
                     tasks.focus();
                     return;
                 }
-                const task = names.length === 1 ? names[0] : tasks.value;
-                message.textContent = 'Starting activity…';
-                await request('/v1/task/start', { task });
-                message.textContent = 'Start requested for ' + task.replaceAll('-', ' ') + '.';
-                const latest = await request('/v1/status').catch(() => null);
-                if (latest) updateRow(latest);
+                const task = tasks.value;
+                await request('/bots/activity', { bot: state.bot, action: 'start', task });
+                message.textContent = state.client ? 'Starting activity…' : 'Starting the game client and activity…';
+                updateRow({ ...state, starting: task, startError: null });
+                watching = true;
+                void watchStart(dialogVersion, state.bot);
+                return;
             }
             completed = true;
         } catch (error) {
             message.textContent = error.message;
         } finally {
             if (completed) token.value = '';
-            submit.disabled = completed;
+            submit.disabled = completed || watching;
             close.disabled = false;
         }
     });
