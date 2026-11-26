@@ -74,6 +74,22 @@ after a push, or to finish a pending sync at service startup. Keep the sync
 checkout clean. After a push, check `git -C ~/rs-sdk-sync rev-parse HEAD` and
 `journalctl -u rs-sdk-github-sync -n 30` for the synced revision.
 
+## Optional public bot status page
+
+With the HTTPS hostname and GitHub sync installed, run on Lightsail:
+
+```sh
+bash ~/rs-sdk-sync/control/install-public-status.sh
+```
+
+The installer prints the public `/bots` URL. The page shows the names of bots
+with a `bot.env` in the controller's `bots/` directory, their game status, and
+activity. Activity comes from a running task managed by the control API or
+from combat reported by the game gateway. If neither is available, the page
+says so. Stale or failed game checks appear as **Unknown**. The page refreshes
+every 15 seconds while open. It serves only the public fields and runs in a
+separate service from the control API and gameplay processes.
+
 ## Optional bot configuration
 
 Before enabling gameplay, put the bot's existing `bot.env` and scripts in

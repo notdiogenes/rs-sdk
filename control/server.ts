@@ -1,7 +1,7 @@
 import { createHash, timingSafeEqual } from 'node:crypto';
 import { realpath } from 'node:fs/promises';
 import { join } from 'node:path';
-import type { BotWorldState } from '../sdk/types';
+import { botCredentials, hostedBotName, hostedBotState, isFreshBotState } from './hosted-bot';
 
 const root = join(import.meta.dir, '..');
 const configDir = process.env.RS_CONTROL_CONFIG_DIR;
@@ -31,7 +31,7 @@ async function readProfile(): Promise<Profile | null> {
     const config = Bun.file(join(configDir!, 'control.json'));
     if (!await config.exists()) return null;
     const value = await config.json();
-    if (typeof value?.bot !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9 ]{0,11}$/.test(value.bot) ||
+    if (typeof value?.bot !== 'string' || !hostedBotName.test(value.bot) ||
         !value.tasks || typeof value.tasks !== 'object' || Array.isArray(value.tasks)) {
         throw new Error('Invalid control.json');
     }
@@ -47,43 +47,18 @@ async function readProfile(): Promise<Profile | null> {
     };
 }
 
-async function botCredentials(profile: Profile) {
-    const contents = await Bun.file(join(profile.directory, 'bot.env')).text();
-    const values = new Map<string, string>();
-    for (const raw of contents.split('\n')) {
-        const line = raw.trim();
-        const separator = line.indexOf('=');
-        if (line.startsWith('#') || separator < 1) continue;
-        values.set(line.slice(0, separator).trim(), line.slice(separator + 1).trim());
-    }
-    const username = values.get('BOT_USERNAME');
-    const password = values.get('PASSWORD');
-    const server = values.get('SERVER');
-    if (username !== profile.bot || !password || server !== 'rs-sdk.maxbittker.com' ||
-        values.has('GATEWAY_URL')) {
-        throw new Error('Expected a matching bot.env for the hosted demo server, with no GATEWAY_URL override');
-    }
-    return { username, password };
-}
-
 async function gameState(profile: Profile) {
-    const { username, password } = await botCredentials(profile);
-    const url = new URL(`/state/${encodeURIComponent(username)}`, 'https://rs-sdk.maxbittker.com');
-    // The hosted engine relays the query string to the gateway. Never log this URL.
-    url.searchParams.set('password', password);
-    const response = await fetch(url, { signal: AbortSignal.timeout(7000), redirect: 'error' });
-    if (response.status === 404) return { availability: 'offline' as const };
-    if (!response.ok) throw new Error('Game gateway request failed');
-    const body = await response.json() as { state: BotWorldState; stateAge: number };
-    const { state, stateAge } = body;
-    if (!state?.player || !state.inGame) return { availability: 'offline' as const };
+    const result = await hostedBotState(profile.bot, profile.directory);
+    if (!result?.state?.player || !result.state.inGame) return { availability: 'offline' as const };
+    const { stateAge, state } = result;
+    const { player } = result.state;
     return {
-        availability: Number.isFinite(stateAge) && stateAge >= 0 && stateAge <= 10_000 ? 'live' as const : 'stale' as const,
+        availability: isFreshBotState(stateAge) ? 'live' as const : 'stale' as const,
         stateAgeMs: Number.isFinite(stateAge) ? stateAge : null,
         tick: state.tick,
         player: {
-            name: state.player.name, x: state.player.worldX, z: state.player.worldZ,
-            hp: state.player.hp, maxHp: state.player.maxHp, inCombat: state.player.combat.inCombat,
+            name: player.name, x: player.worldX, z: player.worldZ,
+            hp: player.hp, maxHp: player.maxHp, inCombat: player.combat.inCombat,
         },
         skills: state.skills.map(({ name, baseLevel, experience }) => ({ name, baseLevel, experience })),
         inventory: state.inventory.map(({ name, count }) => ({ name, count })),
@@ -160,7 +135,7 @@ const server = Bun.serve({
                 if (client || task) return error('A client or task is already active', 409);
                 const profile = await readProfile();
                 if (!profile) return error('Bot not configured', 409);
-                await botCredentials(profile);
+                await botCredentials(profile.bot, profile.directory);
                 const running = { ...spawn(['src/lite/runner.ts', profile.bot], join(root, 'server/webclient')), profile };
                 client = running;
                 void running.process.exited.then(async () => {
