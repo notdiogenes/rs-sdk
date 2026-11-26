@@ -153,7 +153,7 @@ export function dashboardDemo(runtimeDir: string, botsDir: string, configDir: st
         };
     }
 
-    return async function handleDemo(request: Request, route: string) {
+    async function handle(request: Request, route: string) {
         const reading = route === 'status' || route === 'state' || route === 'events';
         if (!reading && !['client/start', 'client/stop', 'task/start', 'task/stop'].includes(route)) {
             return json({ error: 'Unknown demo route' }, 404);
@@ -205,5 +205,16 @@ export function dashboardDemo(runtimeDir: string, botsDir: string, configDir: st
         } finally {
             busy = false;
         }
-    };
+    }
+
+    async function profile() {
+        const name = await storedBot();
+        return name ? {
+            name,
+            directory: workingDir,
+            activity: task?.process.exitCode === null ? 'Pickpocketing Men' : undefined,
+        } : null;
+    }
+
+    return { handle, profile };
 }

@@ -219,8 +219,9 @@ Use the dashboard hostname with the following requests.
 | `POST /bots/activity?demo=client/stop` | Stop the script and log the demo character out |
 
 The task skips Tutorial Island if needed and stays in Lumbridge. The
-attached client and task run on the dashboard host. A dashboard service
-restart ends both processes and clears the event buffer. The demo's
+attached client and task run on the dashboard host. Once provisioned, the
+demo appears in the Fleet desk roster, including while offline. A dashboard
+service restart ends both processes and clears the event buffer. The demo's
 credentials stay on the host in the dashboard's private runtime directory
 so the same demo character can be started again. Each start returns `202`.
 Use the state and events responses to verify login and in-game effects.

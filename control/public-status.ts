@@ -84,8 +84,7 @@ async function listBots(directory: string) {
     return names.filter(name => name !== undefined).sort((a, b) => a.localeCompare(b));
 }
 
-async function botStatus(name: string, directory: string, managed?: ControlActivity): Promise<Bot> {
-    const task = managed?.bot === name ? managed.label : undefined;
+async function botStatus(name: string, directory: string, task?: string): Promise<Bot> {
     const row = (fields: Omit<Bot, 'name' | 'lastActivity' | 'stats'>, observation?: BotObservation,
         state?: BotWorldState): Bot => {
         let lastActivity = null;
@@ -95,7 +94,7 @@ async function botStatus(name: string, directory: string, managed?: ControlActiv
         return { name, ...fields, lastActivity, stats };
     };
     try {
-        const result = await hostedBotState(name, join(directory, name));
+        const result = await hostedBotState(name, directory);
         if (!result || result.botStatus === 'dead') return row({ status: 'Offline', activity: task ?? '—' });
         if (result.botStatus !== 'stale' && isFreshBotState(result.stateAge)) {
             const player = result.state?.player;
@@ -122,8 +121,15 @@ async function botStatus(name: string, directory: string, managed?: ControlActiv
 }
 
 async function collect(directory: string): Promise<Snapshot> {
-    const [names, activity] = await Promise.all([listBots(directory), controlActivity()]);
-    const bots = await Promise.all(names.map(name => botStatus(name, directory, activity)));
+    const [names, activity, demoProfile] = await Promise.all([
+        listBots(directory), controlActivity(), demo.profile().catch(() => null),
+    ]);
+    const roster = new Map(names.map(name => [name, {
+        name, directory: join(directory, name), activity: activity?.bot === name ? activity.label : undefined,
+    }]));
+    if (demoProfile) roster.set(demoProfile.name, demoProfile);
+    const profiles = [...roster.values()].sort((a, b) => a.name.localeCompare(b.name));
+    const bots = await Promise.all(profiles.map(profile => botStatus(profile.name, profile.directory, profile.activity)));
     return { bots, checkedAt: new Date().toISOString(), managed: activity };
 }
 
@@ -152,7 +158,7 @@ Bun.serve({
         const { pathname, searchParams } = new URL(request.url);
         if (pathname === '/bots/activity') {
             const demoRoute = searchParams.get('demo');
-            if (demoRoute !== null) return demo(request, demoRoute);
+            if (demoRoute !== null) return demo.handle(request, demoRoute);
             const action = searchParams.get('session');
             if (action) return sessions.handle(request, action);
             const session = await sessions.authenticate(request).catch(() => undefined);
