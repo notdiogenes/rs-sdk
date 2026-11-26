@@ -386,7 +386,7 @@ if (!botName) {
 }
 
 const repoRoot = fileURLToPath(new URL('../../../../', import.meta.url));
-const envPath = `${repoRoot}bots/${botName}/bot.env`;
+const envPath = process.env.RS_LITE_BOT_ENV || `${repoRoot}bots/${botName}/bot.env`;
 const env = Object.fromEntries(
     (await Bun.file(envPath).text())
         .split('\n')
@@ -403,6 +403,7 @@ const host = LEGACY_SERVER_HOSTS[env.SERVER ?? ''] ?? (env.SERVER || 'localhost'
 const profanityRaw = (env.PROFANITY_FILTER ?? process.env.PROFANITY_FILTER ?? '').toLowerCase();
 const session = await startSession({
     host,
+    cacheDir: process.env.RS_LITE_CACHE_DIR,
     username: env.BOT_USERNAME!,
     password: env.PASSWORD!,
     profanityFilter: ['false', '0', 'off', 'no'].includes(profanityRaw) ? false : undefined,

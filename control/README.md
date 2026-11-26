@@ -200,3 +200,27 @@ It reuses the bot's credentials if present and asks for its existing password
 in the terminal otherwise. It adds the `smoke-move` task without starting a
 client or task. When the operator authorizes the test, start the client, read
 a fresh location, run `smoke-move` once, and verify the new coordinates.
+
+### Separate Lumbridge pickpocket demo
+
+The HTTPS dashboard also exposes a second, isolated client and task for the
+bundled `pickpocket-men` demo. This uses the existing owner or delegated control
+Bearer credential. The primary `/v1` controller keeps its own bot and task.
+Use the dashboard hostname with the following requests.
+
+| Method and path | Result |
+| --- | --- |
+| `GET /bots/activity?demo=status` | Demo character, process IDs, start times and last exit codes |
+| `POST /bots/activity?demo=client/start` | Create the demo character on first use and start its headless client |
+| `GET /bots/activity?demo=state` | Snapshot freshness, tile/plane, HP, Thieving XP, coins, nearby Men and their action options, matching system messages and operation feedback |
+| `POST /bots/activity?demo=task/start` | Start the bundled script with `{"task":"pickpocket-men"}` after the client reports live state |
+| `GET /bots/activity?demo=events` | Latest 200 lifecycle and structured script events, including tutorial exit and pickpocket outcomes |
+| `POST /bots/activity?demo=task/stop` | Stop the script and keep the demo character logged in |
+| `POST /bots/activity?demo=client/stop` | Stop the script and log the demo character out |
+
+The task skips Tutorial Island if needed and stays in Lumbridge. The
+attached client and task run on the dashboard host. A dashboard service
+restart ends both processes and clears the event buffer. The demo's
+credentials stay on the host in the dashboard's private runtime directory
+so the same demo character can be started again. Each start returns `202`.
+Use the state and events responses to verify login and in-game effects.

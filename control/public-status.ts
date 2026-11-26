@@ -10,6 +10,7 @@ import type { BotWorldState } from '../sdk/types';
 import { dashboardFleetStats } from './dashboard-fleet-stats';
 import { dashboardQuestPoints, loadQuestCatalog } from './dashboard-quests';
 import { fleetPage } from './dashboard-fleet-page';
+import { dashboardDemo } from './dashboard-demo';
 
 const [botsDir, configDir] = process.argv.slice(2);
 if (!botsDir || !configDir) throw new Error('Expected the bot directory and control config directory');
@@ -20,6 +21,7 @@ const fleetStyle = await Bun.file(join(import.meta.dir, 'dashboard-fleet.css')).
 const controls = await Bun.file(join(import.meta.dir, 'public-status-controls.js')).text();
 const runtimeDir = join(dirname(configDir), 'rs-sdk-public-status');
 const diagnostics = dashboardDiagnostics(runtimeDir, token);
+const demo = dashboardDemo(runtimeDir, botsDir, configDir, token);
 const recordActivity = dashboardLastActivity(runtimeDir);
 const recordStats = dashboardFleetStats(runtimeDir);
 const sessions = dashboardSessions(runtimeDir, async () => {
@@ -149,6 +151,8 @@ Bun.serve({
     async fetch(request) {
         const { pathname, searchParams } = new URL(request.url);
         if (pathname === '/bots/activity') {
+            const demoRoute = searchParams.get('demo');
+            if (demoRoute !== null) return demo(request, demoRoute);
             const action = searchParams.get('session');
             if (action) return sessions.handle(request, action);
             const session = await sessions.authenticate(request).catch(() => undefined);
