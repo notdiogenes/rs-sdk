@@ -52,6 +52,28 @@ and a certificate for that hostname. Your IP endpoint, API token, and service
 stay in place. The command prints the new HTTPS health URL after validating
 the certificate. If the public IP changes, install again for the new address.
 
+## Optional GitHub push sync
+
+After the HTTPS hostname is working, install the receiver on Lightsail as
+your regular sudo-capable user:
+
+```sh
+bash control/install-github-sync.sh
+```
+
+In `notdiogenes/rs-sdk`, open **Settings → Webhooks → Add webhook**. Use the
+payload URL printed by the installer, select `application/json`, and paste the
+contents of `~/.config/rs-sdk-github-sync/secret` into **Secret**. Enable SSL
+verification and select **Just the push event**. GitHub sends a `ping` after
+registration. Check **Recent Deliveries** for a `204` response.
+
+A signed push to `main` queues a fast-forward of `~/rs-sdk-sync` and returns
+`202`. The harness decides when to use source from that checkout. The sync
+service leaves the bot checkout and running services alone. It runs Git only
+after a push, or to finish a pending sync at service startup. Keep the sync
+checkout clean. After a push, check `git -C ~/rs-sdk-sync rev-parse HEAD` and
+`journalctl -u rs-sdk-github-sync -n 30` for the synced revision.
+
 ## Optional bot configuration
 
 Before enabling gameplay, put the bot's existing `bot.env` and scripts in
