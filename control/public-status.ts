@@ -3,13 +3,16 @@ import { dirname, join } from 'node:path';
 import { hostedBotName, hostedBotState, isFreshBotState } from './hosted-bot';
 import { controllerRequest, dashboardActivity, handleActivity } from './dashboard-activity';
 import { dashboardSessions } from './dashboard-session';
+import { dashboardDiagnostics } from './dashboard-diagnostics';
 
 const [botsDir, configDir] = process.argv.slice(2);
 if (!botsDir || !configDir) throw new Error('Expected the bot directory and control config directory');
 const token = (await Bun.file(join(configDir, 'token')).text()).trim();
 if (!/^[a-f0-9]{64}$/.test(token)) throw new Error('Invalid control API token');
 const controls = await Bun.file(join(import.meta.dir, 'public-status-controls.js')).text();
-const sessions = dashboardSessions(join(dirname(configDir), 'rs-sdk-public-status'), async () => {
+const runtimeDir = join(dirname(configDir), 'rs-sdk-public-status');
+const diagnostics = dashboardDiagnostics(runtimeDir, token);
+const sessions = dashboardSessions(runtimeDir, async () => {
     const site = await Bun.file('/etc/nginx/sites-enabled/rs-sdk-control-hostname').text();
     const host = /^\s*server_name\s+([0-9]+-[0-9]+-[0-9]+-[0-9]+\.sslip\.io);/m.exec(site)?.[1];
     if (!host) throw new Error('The managed HTTPS hostname is unavailable.');
@@ -121,11 +124,18 @@ function render(nonce: string, data?: Snapshot) {
   form label { display: grid; gap: .25rem; }
   form [hidden] { display: none; }
   form h2, form p { margin: 0; }
+  #dashboard-diagnostics { max-width: min(42rem, 85vw); width: 100%; }
+  #dashboard-diagnostics th { width: 45%; }
+  #dashboard-diagnostics td { font-variant-numeric: tabular-nums; }
+  #diagnostics-events { padding-left: 1.25rem; }
+  #diagnostics-events li { margin-bottom: .35rem; overflow-wrap: anywhere; }
+  #diagnostics-events time { color: GrayText; }
 </style>
 </head>
 <body><main>
 <h1>Bot status</h1>
 <button type="button" id="dashboard-account">Sign in</button>
+<button type="button" id="dashboard-diagnostics-open">Diagnostics</button>
 ${data ? `<p>Checked <time datetime="${data.checkedAt}">${data.checkedAt.slice(11, 19)} UTC</time></p>` : ''}
 ${rows ? `<table aria-label="Bot status"><thead><tr><th scope="col">Bot</th><th scope="col">Status</th><th scope="col">Activity</th><th scope="col">Location</th><th scope="col">Controls</th></tr></thead><tbody>${rows}</tbody></table>`
     : `<p>${data ? 'No bots configured.' : 'Bot status is temporarily unavailable.'}</p>`}
@@ -142,6 +152,15 @@ ${rows ? `<table aria-label="Bot status"><thead><tr><th scope="col">Bot</th><th 
   <p role="status" aria-live="polite"></p>
   <div><button type="submit">Sign in</button> <button type="button">Close</button></div>
 </form></dialog>
+<dialog id="dashboard-diagnostics" aria-labelledby="diagnostics-title">
+  <h2 id="diagnostics-title">Diagnostics</h2>
+  <p id="diagnostics-status" role="status" aria-live="polite"></p>
+  <table aria-label="Current bot diagnostics"><tbody id="diagnostics-current"></tbody></table>
+  <h3>Recent events</h3>
+  <ul id="diagnostics-events"></ul>
+  <button type="button" id="diagnostics-refresh">Refresh</button>
+  <button type="button" id="diagnostics-close">Close</button>
+</dialog>
 <script nonce="${nonce}" data-refresh="${refreshSeconds}">${controls}</script>
 </body></html>`;
 }
@@ -156,6 +175,16 @@ Bun.serve({
             const action = searchParams.get('session');
             if (action) return sessions.handle(request, action);
             const session = await sessions.authenticate(request).catch(() => undefined);
+            if (searchParams.get('view') === 'diagnostics') {
+                const headers = { 'Cache-Control': 'no-store' };
+                if (request.method !== 'GET') return new Response(null, { status: 405, headers: { ...headers, Allow: 'GET' } });
+                if (!session) return Response.json({ error: 'Sign in to view diagnostics.' }, { status: 401, headers });
+                try {
+                    return Response.json(await diagnostics(), { headers: { ...headers, 'Set-Cookie': session } });
+                } catch {
+                    return Response.json({ error: 'Diagnostics are temporarily unavailable.' }, { status: 503, headers });
+                }
+            }
             const response = await handleActivity(request, token, session);
             if (session) response.headers.set('Set-Cookie', session);
             return response;

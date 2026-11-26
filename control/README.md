@@ -116,6 +116,12 @@ managed game client if needed, waits for live game state, and launches the
 task. You can close the dialog while it is starting. **Stop activity**
 cancels a pending start or ends the task and keeps the client logged in.
 
+Select **Diagnostics** after signing in to see the managed client and task,
+the latest task exit code, startup errors, game-state freshness, and the
+last movement and XP gain observed. The dashboard samples every 15 seconds
+and saves recent lifecycle events across dashboard restarts. The panel uses
+the existing session and is read-only.
+
 ## Optional bot configuration
 
 Before enabling gameplay, put the bot's existing `bot.env` and scripts in

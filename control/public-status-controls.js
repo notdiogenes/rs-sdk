@@ -3,6 +3,12 @@
     const dialog = document.querySelector('[aria-labelledby="activity-title"]');
     const form = dialog.querySelector('form');
     const account = document.querySelector('#dashboard-account');
+    const diagnosticsButton = document.querySelector('#dashboard-diagnostics-open');
+    const diagnosticsDialog = document.querySelector('#dashboard-diagnostics');
+    const diagnosticsStatus = diagnosticsDialog.querySelector('#diagnostics-status');
+    const diagnosticsCurrent = diagnosticsDialog.querySelector('#diagnostics-current');
+    const diagnosticsEvents = diagnosticsDialog.querySelector('#diagnostics-events');
+    const diagnosticsRefresh = diagnosticsDialog.querySelector('#diagnostics-refresh');
     const signIn = document.querySelector('#dashboard-sign-in');
     const signInForm = signIn.querySelector('form');
     const password = signInForm.querySelector('#dashboard-password');
@@ -79,7 +85,7 @@
     signIn.addEventListener('close', () => {
         signInForm.reset();
         pendingButton = undefined;
-        if (!dialog.open) scheduleRefresh();
+        if (!dialog.open && !diagnosticsDialog.open) scheduleRefresh();
     });
     signInForm.addEventListener('submit', async event => {
         event.preventDefault();
@@ -157,6 +163,88 @@
         }
         return result;
     }
+
+    function labelTime(value) {
+        return value ? new Date(value).toLocaleString() : '—';
+    }
+
+    async function loadDiagnostics() {
+        diagnosticsRefresh.disabled = true;
+        diagnosticsStatus.textContent = 'Loading diagnostics…';
+        try {
+            const { reading, history } = await request('/bots/activity?view=diagnostics');
+            if (!diagnosticsDialog.open) return;
+            const controller = reading?.controller;
+            const game = reading?.game;
+            const player = game?.player;
+            const exit = controller?.lastTask;
+            const rows = [
+                ['Bot', controller?.bot ?? '—'],
+                ['Controller', controller ? 'Responding' : 'Unavailable'],
+                ['Managed client', controller?.client ? (controller.client.stopping ? 'Stopping' : 'Running since ' + labelTime(controller.client.startedAt)) : controller ? 'Stopped' : 'Unknown'],
+                ['Activity', controller?.task?.name ?? (controller?.starting ? 'Starting ' + controller.starting : controller ? 'Idle' : 'Unknown')],
+                ['Activity started', labelTime(controller?.task?.startedAt)],
+                ['Last task exit', exit ? exit.name + ' · code ' + exit.exitCode + ' · ' + labelTime(exit.finishedAt) : '—'],
+                ['Last start error', controller?.startError ?? '—'],
+                ['Game state', game ? game.availability + (game.stateAgeMs == null ? '' : ' · ' + game.stateAgeMs + ' ms old at sample') : '—'],
+                ['Game tick', game?.tick ?? '—'],
+                ['Position', player ? 'X ' + player.x + ', Z ' + player.z : '—'],
+                ['Health / combat', player ? player.hp + '/' + player.maxHp + (player.inCombat ? ' · In combat' : ' · Out of combat') : '—'],
+                ['Last movement observed', labelTime(reading?.movedAt)],
+                ['Last XP gain observed', labelTime(reading?.gainedXpAt)],
+            ];
+            diagnosticsCurrent.replaceChildren(...rows.map(([label, value]) => {
+                const row = document.createElement('tr');
+                const heading = document.createElement('th');
+                heading.scope = 'row';
+                heading.textContent = label;
+                row.append(heading);
+                row.insertCell().textContent = value;
+                return row;
+            }));
+            diagnosticsEvents.replaceChildren(...(history.length ? history : [{ message: 'No events recorded yet.' }]).map(({ at, message }) => {
+                const entry = document.createElement('li');
+                if (at) {
+                    const time = document.createElement('time');
+                    time.dateTime = at;
+                    time.textContent = labelTime(at) + ' · ';
+                    entry.append(time);
+                }
+                entry.append(message);
+                return entry;
+            }));
+            diagnosticsStatus.textContent = 'Sampled ' + labelTime(reading?.checkedAt);
+        } catch (error) {
+            if (!diagnosticsDialog.open) return;
+            if (error.status === 401) {
+                setSignedIn(false);
+                diagnosticsDialog.close();
+                openSignIn(diagnosticsButton);
+            } else {
+                diagnosticsStatus.textContent = error.message;
+            }
+        } finally {
+            diagnosticsRefresh.disabled = false;
+        }
+    }
+
+    diagnosticsButton.addEventListener('click', async () => {
+        await sessionReady;
+        if (!signedIn) {
+            openSignIn(diagnosticsButton);
+            return;
+        }
+        clearTimeout(refresh);
+        diagnosticsDialog.showModal();
+        void loadDiagnostics();
+    });
+    diagnosticsDialog.querySelector('#diagnostics-close').addEventListener('click', () => diagnosticsDialog.close());
+    diagnosticsRefresh.addEventListener('click', loadDiagnostics);
+    diagnosticsDialog.addEventListener('close', () => {
+        diagnosticsCurrent.replaceChildren();
+        diagnosticsEvents.replaceChildren();
+        if (!signIn.open) scheduleRefresh();
+    });
 
     function updateRow(state) {
         if (state.bot !== selected.dataset.bot) return;

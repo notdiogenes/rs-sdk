@@ -1,8 +1,9 @@
-type ControllerStatus = {
+export type ControllerStatus = {
     bot: string | null;
     tasks: string[];
-    client: { stopping: boolean } | null;
-    task: { name: string; stopping: boolean } | null;
+    client: { startedAt: string; stopping: boolean } | null;
+    task: { name: string; startedAt: string; stopping: boolean } | null;
+    lastTask?: { name: string; exitCode: number; finishedAt: string } | null;
 };
 
 type Start = { bot: string; name: string; cancel: AbortController; done: Promise<void> };
