@@ -13,6 +13,7 @@ const taskLabels = {
 type DemoTaskName = keyof typeof taskLabels;
 const activityLabels: Record<string, string> = {
     'training-hitpoints': 'Training Hitpoints to 60',
+    'hitpoints-goal-reached': 'Preparing to pickpocket',
     'travelling-to-ardougne': 'Travelling to East Ardougne',
 };
 const targetLabels: Record<string, string> = {
@@ -27,6 +28,7 @@ type Process = { process: Bun.Subprocess; startedAt: string; stopping?: boolean 
 type Event = { id: number; at: string; stage: string; [key: string]: unknown };
 type Exit = { at: string; exitCode: number };
 type RosterProfile = { name: string; directory: string };
+type Task = Process & { name: DemoTaskName; activity: string; recovery?: { since: string; resumeAt: number } };
 
 async function stopProcess(handle: Process | undefined, signal: 'SIGINT' | 'SIGTERM') {
     if (!handle || handle.process.exitCode !== null) return;
@@ -47,7 +49,7 @@ export function dashboardDemo(runtimeDir: string, botsDir: string, configDir: st
     const events: Event[] = [];
     let nextEventId = 1;
     let client: Process | undefined;
-    let task: (Process & { name: DemoTaskName; activity: string }) | undefined;
+    let task: Task | undefined;
     let clientExit: Exit | null = null;
     let taskExit: (Exit & { name: DemoTaskName }) | null = null;
     let busy = false;
@@ -58,7 +60,7 @@ export function dashboardDemo(runtimeDir: string, botsDir: string, configDir: st
         if (events.length > 200) events.shift();
     }
 
-    async function consumeTaskEvents(stream: ReadableStream<Uint8Array>, running: NonNullable<typeof task>) {
+    async function consumeTaskEvents(stream: ReadableStream<Uint8Array>, running: Task) {
         const prefix = '[pickpocket-demo] ';
         let buffer = '';
         const reader = stream.pipeThrough(new TextDecoderStream()).getReader();
@@ -75,6 +77,12 @@ export function dashboardDemo(runtimeDir: string, botsDir: string, configDir: st
                     const label = stage === 'pickpocket-target' && typeof fields.npc === 'string'
                         ? targetLabels[fields.npc] : activityLabels[stage];
                     if (label) running.activity = label;
+                    if (stage === 'recovering') {
+                        const resumeAt = typeof fields.minimum === 'number' ? fields.minimum : 6;
+                        running.recovery = { since: new Date().toISOString(), resumeAt };
+                    } else if (stage === 'recovered') {
+                        running.recovery = undefined;
+                    }
                     event(stage, fields);
                 } catch { /* Only the bundled task's structured messages are returned. */ }
             }
@@ -143,7 +151,7 @@ export function dashboardDemo(runtimeDir: string, botsDir: string, configDir: st
                 SERVER: 'rs-sdk.maxbittker.com', SHOW_CHAT: 'false', GATEWAY_DIRECT: 'false',
             },
         });
-        const running: NonNullable<typeof task> = { process: child, startedAt: new Date().toISOString(), name, activity: taskLabels[name] };
+        const running: Task = { process: child, startedAt: new Date().toISOString(), name, activity: taskLabels[name] };
         task = running;
         taskExit = null;
         taskStopped = false;
@@ -189,7 +197,7 @@ export function dashboardDemo(runtimeDir: string, botsDir: string, configDir: st
         return {
             bot, tasks: Object.keys(taskLabels),
             client: client ? { startedAt: client.startedAt, stopping: Boolean(client.stopping) } : null,
-            task: task ? { name: task.name, startedAt: task.startedAt, stopping: Boolean(task.stopping), activity: task.activity } : null,
+            task: task ? { name: task.name, startedAt: task.startedAt, stopping: Boolean(task.stopping), activity: task.activity, recovery: task.recovery } : null,
             lastTask: taskExit && !taskStopped ? { name: taskExit.name, exitCode: taskExit.exitCode, finishedAt: taskExit.at } : null,
         };
     }
@@ -269,6 +277,29 @@ export function dashboardDemo(runtimeDir: string, botsDir: string, configDir: st
         } : null;
     }
 
+    function recentEvents() {
+        return events.slice(-20).reverse().map(entry => {
+            const { at, stage } = entry;
+            let message = stage.replaceAll('-', ' ');
+            const hp = typeof entry.hp === 'number' ? ` at ${entry.hp} HP` : '';
+            if (stage === 'recovering') {
+                const target = typeof entry.minimum === 'number' ? entry.minimum : 6;
+                message = `Waiting for HP recovery${hp}. Resume at ${target} HP.`;
+            } else if (stage === 'recovered') {
+                message = `HP recovered${hp}`;
+            } else if (stage === 'pickpocket' && typeof entry.npc === 'string') {
+                const outcome = entry.success === true ? 'success'
+                    : typeof entry.reason === 'string' ? entry.reason : 'failed';
+                message = `Pickpocket ${entry.npc} · ${outcome}${hp}`;
+            } else if (stage === 'food-restock' && typeof entry.item === 'string' && typeof entry.bought === 'number') {
+                message = `Bought ${entry.bought} × ${entry.item}`;
+            } else if (stage.endsWith('-exited') && typeof entry.exitCode === 'number') {
+                message += ` · code ${entry.exitCode}`;
+            }
+            return { at, message };
+        });
+    }
+
     const actions = createDashboardActivity((path, authorization, payload, signal) =>
         handle(new Request('http://127.0.0.1' + path, {
             headers: { Authorization: authorization },
@@ -277,5 +308,5 @@ export function dashboardDemo(runtimeDir: string, botsDir: string, configDir: st
             signal,
         }), path.slice('/v1/'.length), true));
 
-    return { handle, profile, status, allowed, ...actions };
+    return { handle, profile, status, allowed, recentEvents, ...actions };
 }

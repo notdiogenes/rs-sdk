@@ -7,7 +7,9 @@ export type BotObservation = {
     xp: Record<string, number>;
     inCombat?: boolean;
 };
-type StoredActivity = { observation: BotObservation; lastActivity: LastActivity | null };
+type ActivityTimes = { lastActivity: LastActivity | null; movedAt: string | null; gainedXpAt: string | null };
+type StoredActivity = { observation: BotObservation; lastActivity: LastActivity | null;
+    movedAt?: string | null; gainedXpAt?: string | null };
 
 export function dashboardLastActivity(directory: string) {
     let database: Database | undefined;
@@ -20,11 +22,14 @@ export function dashboardLastActivity(directory: string) {
         return database;
     }
 
-    return function lastActivity(bot: string, observation?: BotObservation): LastActivity | null {
+    return function lastActivity(bot: string, observation?: BotObservation): ActivityTimes {
         const db = store();
         const row = db.query('SELECT data FROM bot_activity WHERE bot = ?').get(bot) as { data: string } | null;
         const prior = row ? JSON.parse(row.data) as StoredActivity : null;
-        if (!observation) return prior?.lastActivity ?? null;
+        const lastActivity = prior?.lastActivity ?? null;
+        const movedAt = prior?.movedAt ?? (lastActivity?.reason.includes('Moved') ? lastActivity.at : null);
+        const gainedXpAt = prior?.gainedXpAt ?? (lastActivity?.reason.includes('Gained XP') ? lastActivity.at : null);
+        if (!observation) return { lastActivity, movedAt, gainedXpAt };
         const previous = prior?.observation;
         const before = previous?.position;
         const after = observation.position;
@@ -37,12 +42,17 @@ export function dashboardLastActivity(directory: string) {
             previous.inCombat !== observation.inCombat) {
             signals.push(observation.inCombat ? 'Entered combat' : 'Left combat');
         }
-        const last = signals.length ? { at: new Date().toISOString(), reason: signals.join(' · ') } : prior?.lastActivity ?? null;
+        const at = new Date().toISOString();
+        const times = {
+            lastActivity: signals.length ? { at, reason: signals.join(' · ') } : lastActivity,
+            movedAt: signals.includes('Moved') ? at : movedAt,
+            gainedXpAt: signals.includes('Gained XP') ? at : gainedXpAt,
+        };
         if (!previous || JSON.stringify(previous) !== JSON.stringify(observation)) {
             db.query('INSERT OR REPLACE INTO bot_activity (bot, data) VALUES (?, ?)').run(bot, JSON.stringify({
-                observation, lastActivity: last,
+                observation, ...times,
             } satisfies StoredActivity));
         }
-        return last;
+        return times;
     };
 }

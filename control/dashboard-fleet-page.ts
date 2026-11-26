@@ -22,6 +22,7 @@ function classify(bot: Bot, managed: ControlActivity | undefined, now: number): 
     if (bot.status === 'Offline') return managed?.running
         ? { category: 'attention', reason: 'Activity running while the bot is offline' }
         : { category: 'offline', reason: 'Logged out' };
+    if (managed?.waiting) return { category: 'idle', reason: managed.waiting };
     const lastEffect = bot.lastActivity ? Date.parse(bot.lastActivity.at) : 0;
     if (bot.inCombat || now - lastEffect < 2 * 60_000) {
         return { category: 'active', reason: bot.inCombat ? 'In combat' : 'Recent game activity' };
@@ -73,6 +74,7 @@ function card(bot: Bot, category: Group, reason: string, managed: ControlActivit
     <div class="card-footer">
       <button type="button" data-detail="${name}">Details</button>
       <button type="button" data-inventory="${name}">Current inventory</button>
+      <button type="button" data-diagnostics="${name}">Diagnostics</button>
       <button type="button" data-bank="${name}">Bank</button>
       ${activityButton}${watch}
     </div>
@@ -128,7 +130,6 @@ export function fleetPage({ nonce, data, questCatalog, fleetStyle, controls, ref
     <button type="button" id="banks">Check banks</button>
     <button type="button" id="refresh">Refresh</button>
     <button type="button" id="auto" aria-pressed="true">Auto</button>
-    <button type="button" id="dashboard-diagnostics-open">Diagnostics</button>
     <button type="button" id="dashboard-account">Sign in</button>
   </div>
 </header>

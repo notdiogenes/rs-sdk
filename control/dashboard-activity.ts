@@ -2,7 +2,13 @@ export type ControllerStatus = {
     bot: string | null;
     tasks: string[];
     client: { startedAt: string; stopping: boolean } | null;
-    task: { name: string; startedAt: string; stopping: boolean; activity?: string } | null;
+    task: {
+        name: string;
+        startedAt: string;
+        stopping: boolean;
+        activity?: string;
+        recovery?: { since: string; resumeAt: number };
+    } | null;
     lastTask?: { name: string; exitCode: number; finishedAt: string } | null;
 };
 

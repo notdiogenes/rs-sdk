@@ -52,6 +52,7 @@ export type ControlActivity = {
     startedAt?: string;
     transitioning?: boolean;
     failed?: boolean;
+    waiting?: string;
 };
 export type Snapshot = { bots: Bot[]; checkedAt: string };
 const refreshSeconds = 15;
@@ -70,7 +71,11 @@ function controlActivity({ bot, task, starting, startError, lastTask }: ReturnTy
     if (typeof bot !== 'string' || !hostedBotName.test(bot)) return;
     if (typeof task?.name === 'string' && /^[a-z][a-z0-9-]{0,63}$/.test(task.name)) {
         const label = task.activity ?? task.name.replaceAll('-', ' ');
-        return { bot, label: task.stopping ? `Stopping ${label}` : label, running: true, startedAt: task.startedAt, transitioning: task.stopping };
+        return {
+            bot, label: task.stopping ? `Stopping ${label}` : label, running: true,
+            startedAt: task.startedAt, transitioning: task.stopping,
+            waiting: task.recovery ? `Recovering HP · resumes at ${task.recovery.resumeAt} HP` : undefined,
+        };
     }
     if (starting) return { bot, label: `Starting ${starting.replaceAll('-', ' ')}`, running: true, transitioning: true };
     if (startError) return { bot, label: 'Activity could not start', running: false, failed: true };
@@ -126,6 +131,45 @@ async function inventory(name: string) {
     };
 }
 
+async function botDiagnostics(name: string) {
+    const profile = await botProfile(name);
+    if (!profile) return null;
+    const [primary, result] = await Promise.all([
+        primaryStatus().catch(() => null),
+        hostedBotState(profile.name, profile.directory).catch(() => undefined),
+    ]);
+    const isPrimary = primary?.bot?.toLowerCase() === profile.name.toLowerCase();
+    const worker = profile.worker;
+    const controller = isPrimary ? dashboardActivity(primary)
+        : worker?.dashboardActivity(worker.status(profile.name)) ??
+            { bot: profile.name, tasks: [], client: null, task: null, startError: null, starting: null };
+    const historical = isPrimary ? await diagnostics().catch(() => null) : null;
+    const primaryHistory = historical?.reading?.controller?.bot === primary?.bot ? historical : null;
+    const { movedAt, gainedXpAt } = recordActivity(profile.name);
+    const state = result?.state;
+    const player = state?.player;
+    const availability = result === undefined ? 'unavailable'
+        : result?.botStatus === 'stale' ? 'stale'
+            : !result || result.botStatus === 'dead' || !state?.inGame || !player ? 'offline'
+                : isFreshBotState(result.stateAge) ? 'live' : 'stale';
+    return {
+        reading: {
+            bot: profile.name, checkedAt: new Date().toISOString(), controller,
+            game: {
+                availability, stateAgeMs: Number.isFinite(result?.stateAge) ? result?.stateAge : null,
+                tick: state?.tick,
+                player: player ? {
+                    x: player.worldX, z: player.worldZ, plane: player.level,
+                    hp: player.hp, maxHp: player.maxHp, inCombat: player.combat?.inCombat,
+                } : undefined,
+            },
+            movedAt: movedAt ?? primaryHistory?.reading?.movedAt ?? null,
+            gainedXpAt: gainedXpAt ?? primaryHistory?.reading?.gainedXpAt ?? null,
+        },
+        history: primaryHistory?.history ?? worker?.recentEvents() ?? [],
+    };
+}
+
 async function listBots(directory: string) {
     const entries = await readdir(directory, { withFileTypes: true });
     const names = await Promise.all(entries.filter(entry => entry.isDirectory() && hostedBotName.test(entry.name))
@@ -139,7 +183,7 @@ async function botStatus(name: string, directory: string, control?: ControlActiv
         state?: BotWorldState): Bot => {
         let lastActivity = null;
         let stats;
-        try { lastActivity = recordActivity(name, observation); } catch { /* Show the other status fields. */ }
+        try { lastActivity = recordActivity(name, observation).lastActivity; } catch { /* Show the other status fields. */ }
         try { stats = recordStats(name, state, fields.heartbeat); } catch { /* Show the other status fields. */ }
         return { name, ...fields, lastActivity, stats, control };
     };
@@ -232,6 +276,21 @@ Bun.serve({
                         : Response.json({ error: 'Bot profile not found.' }, { status: 404, headers });
                 } catch {
                     return Response.json({ error: 'Current inventory is temporarily unavailable.' }, { status: 503, headers });
+                }
+            }
+            if (view === 'diagnostics' && bot !== null) {
+                const headers: Record<string, string> = { 'Cache-Control': 'no-store' };
+                if (request.method !== 'GET') return new Response(null, { status: 405, headers: { ...headers, Allow: 'GET' } });
+                if (!session && !await demo.allowed(request)) {
+                    return Response.json({ error: 'Sign in to view diagnostics.' }, { status: 401, headers });
+                }
+                if (session) headers['Set-Cookie'] = session;
+                try {
+                    const report = await botDiagnostics(bot);
+                    return report ? Response.json(report, { headers })
+                        : Response.json({ error: 'Bot profile not found.' }, { status: 404, headers });
+                } catch {
+                    return Response.json({ error: 'Diagnostics are temporarily unavailable.' }, { status: 503, headers });
                 }
             }
             if (view === 'diagnostics' || view === 'fleet-data' || view === 'quests') {

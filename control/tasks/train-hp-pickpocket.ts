@@ -101,13 +101,16 @@ const result = await runScript(async ({ bot, sdk }) => {
         const food = sdk.findInventoryItem(heal);
         return food ? (await bot.eatFood(food)).success : false;
     };
-    const rest = async (minimum: number) => {
+    const rest = async (minimum: number, resupply?: () => Promise<void>) => {
         await waitAlive();
         if (!sdk.getState()?.player || (sdk.getState()?.player?.hp ?? 0) >= minimum) return;
         log('recovering', { minimum, ...metrics() });
         while ((sdk.getState()?.player?.hp ?? 0) < minimum) {
             await waitAlive();
-            if (!await eat()) await sdk.waitForTicks(12);
+            if (!await eat()) {
+                await resupply?.();
+                await sdk.waitForTicks(12);
+            }
         }
         log('recovered', metrics());
     };
@@ -169,7 +172,7 @@ const result = await runScript(async ({ bot, sdk }) => {
         const baker = closest(/^baker$/i, /trade/i);
         if (!baker || !(await bot.openShop(baker)).success) return;
         try {
-            for (const [name, limit] of [['Cake', 3], ['Bread', 10]] as const) {
+            for (const [name, limit] of [['Cake', 3], ['Chocolate slice', 8], ['Bread', 10]] as const) {
                 const item = sdk.getState()?.shop.shopItems.find(entry => entry.name === name && entry.count > 0);
                 if (!item) continue;
                 const bought = await bot.buyFromShop(name, Math.min(limit, item.count));
@@ -202,11 +205,13 @@ const result = await runScript(async ({ bot, sdk }) => {
         const p = sdk.getState()?.player;
         if (!p) throw new Error('Player state unavailable in pickpocket phase');
         const low = Math.max(8, Math.floor(p.maxHp / 3));
-        if (p.hp <= low && !sdk.findInventoryItem(heal) && Date.now() >= nextFood) {
-            nextFood = Date.now() + 45_000;
-            await buyFood().catch(() => {});
+        if (p.hp <= low) {
+            await rest(Math.max(low + 4, Math.ceil(p.maxHp / 2)), async () => {
+                if (Date.now() < nextFood) return;
+                nextFood = Date.now() + 45_000;
+                await buyFood().catch(() => {});
+            });
         }
-        if (p.hp <= low) await rest(Math.max(low + 4, Math.ceil(p.maxHp / 2)));
 
         const thieving = level('Thieving');
         const hero = thieving >= 80 ? closest(heroes, pocket) : undefined;

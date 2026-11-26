@@ -140,9 +140,11 @@ managed game client if needed, waits for live game state, and launches the
 task. You can close the dialog while it is starting. **Stop activity**
 cancels a pending start or ends the task and keeps the client logged in.
 
-Select **Diagnostics** after signing in to see the managed client and task,
+Select **Diagnostics** on a bot's card after signing in to see that bot's
+managed client and task,
 the latest task exit code, startup errors, game-state freshness, and the
-last movement and XP gain observed. The dashboard samples every 15 seconds
+last movement and XP gain observed. For scripts that report an HP recovery
+pause, the panel shows the current HP and the level needed to resume. The dashboard samples every 15 seconds
 and saves recent lifecycle events across dashboard restarts. The panel uses
 the existing session and is read-only.
 
@@ -212,7 +214,9 @@ Fleet desk must sign out of that client before Fleet desk can launch one.
 The inventory dialog reads the selected bot's fresh backpack contents from
 game state. It reports offline or stale state when a current snapshot is
 unavailable. Use `GET /bots/activity?view=inventory&bot=NAME` with a dashboard
-session, or use `/bots/activity?bot=NAME` for bot-specific task controls. The
+session, or use `/bots/activity?bot=NAME` for bot-specific task controls.
+`GET /bots/activity?view=diagnostics&bot=NAME` accepts the dashboard session
+or control Bearer credential and reads the selected bot's diagnostics. The
 primary controller's existing task list continues to apply to its configured
 bot. Other roster bots can use the bundled activities and maintain separate
 client and task processes.
