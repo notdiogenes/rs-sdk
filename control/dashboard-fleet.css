@@ -34,18 +34,12 @@ dialog form{display:grid;gap:12px}dialog form label{display:grid;gap:4px}
 dialog h3{margin-top:12px}
 #fleet-empty{margin-top:12px}
 
-.quest-scroll { max-height: 76vh; }
-.quest-grid { width: max-content; min-width: 100%; text-align: center; --quest-account-width: 12rem; }
-.quest-grid th, .quest-grid td { padding: 7px 8px; }
-.quest-grid thead th {
-    position: sticky;
-    top: 0;
-    z-index: 2;
-    background: #2b2721;
-}
+.quest-band { overflow: clip; }
+.quest-band + .quest-band { margin-top: 10px; }
+.quest-grid { width: 100%; table-layout: fixed; text-align: center; }
+.quest-grid th, .quest-grid td { padding: 5px 0; }
+.quest-grid thead th { background: #2b2721; }
 .quest-grid thead th:not(.quest-account, .quest-points) {
-    min-width: 1.9rem;
-    padding: 8px 4px;
     vertical-align: bottom;
     text-transform: none;
 }
@@ -54,22 +48,14 @@ dialog h3{margin-top:12px}
     writing-mode: vertical-rl;
     transform: rotate(180deg);
     color: #efeae0;
-    font-size: .78rem;
+    font-size: .75rem;
+    line-height: 1.15;
     white-space: nowrap;
 }
-.quest-column-name small { font-size: .71rem; }
-.quest-grid .quest-account, .quest-grid .quest-points {
-    position: sticky;
-    z-index: 1;
-    background: var(--paper);
-}
-.quest-grid .quest-account {
-    left: 0;
-    min-width: var(--quest-account-width);
-    width: var(--quest-account-width);
-}
-.quest-grid .quest-points { left: var(--quest-account-width); min-width: 3.4rem; }
-.quest-grid thead :is(.quest-account, .quest-points) { z-index: 3; background: #2b2721; }
+.quest-column-name small { font-size: .68rem; }
+.quest-grid .quest-account { width: 7rem; padding-inline: 8px; }
+.quest-grid .quest-points { width: 2.5rem; overflow-wrap: anywhere; white-space: normal; }
+.quest-account .button, .quest-account small { white-space: normal; overflow-wrap: anywhere; }
 .quest-account small { display: block; }
 .quest-points a { font-weight: 750; text-decoration: none; }
 .quest-points a:hover { text-decoration: underline; }
@@ -88,4 +74,3 @@ dialog h3{margin-top:12px}
     clip-path: inset(50%);
     white-space: nowrap;
 }
-@media (max-width: 540px) { .quest-grid { --quest-account-width: 8rem; } }

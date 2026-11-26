@@ -76,6 +76,7 @@
     let fleetDataReady = Promise.resolve();
     let sort = { key: 0, direction: 1 };
     let view = 'fleet-panel';
+    let shownQuestColumns = 0;
 
     function matches(name, status, kind) {
         return (statusFilter.value === 'all' || statusFilter.value === status) &&
@@ -116,7 +117,15 @@
             ? number(reported.reduce((sum, points) => sum + points, 0)) : '—';
     }
 
-    function renderQuestGrid(visible) {
+    function questColumnsFor(panel) {
+        const rem = parseFloat(getComputedStyle(document.documentElement).fontSize);
+        // Budget the Account and QP widths, borders, and one rem per quest.
+        const capacity = Math.max(1, Math.floor((panel.clientWidth - 2) / rem - 9.5));
+        const bandCount = Math.max(1, Math.ceil(questCatalog.length / capacity));
+        return Math.max(1, Math.ceil(questCatalog.length / bandCount));
+    }
+
+    function renderQuestGrid(visible, columns) {
         const headers = questCatalog.map(({ id, name }) => {
             const observed = visible.map(row => journals[row.name]?.progress[id]).filter(Boolean);
             const complete = observed.filter(status => status === 'complete').length;
@@ -139,21 +148,26 @@
                 return `<td class="quest-mark ${status}" title="${mark.label}"><span class="visually-hidden">${mark.label}</span>
                     <span aria-hidden="true">${mark.symbol}</span></td>`;
             });
-            return `<tr><th scope="row" class="quest-account">
+            const account = `<th scope="row" class="quest-account">
                 <button type="button" class="button" data-detail="${escape(name)}">${escape(name)}</button>
                 <small title="${escape(labelTime(journal?.at))}">${summary}</small></th>
                 <td class="quest-points"><a href="${escape(hiscore)}" target="_blank" rel="noopener"
-                    title="Hiscores checked ${escape(labelTime(score?.checkedAt))}">${points}</a></td>${marks.join('')}</tr>`;
+                    title="Hiscores checked ${escape(labelTime(score?.checkedAt))}">${points}</a></td>`;
+            return { account, marks };
         });
         const legend = Object.entries(questMarks).map(([status, { symbol, label }]) =>
             `<span><b class="quest-mark ${status}" aria-hidden="true">${symbol}</b> ${label}</span>`);
-        return `<div class="table-wrap quest-scroll" tabindex="0" role="region" aria-label="Scrollable quest grid">
-          <table class="quest-grid">
-            <thead><tr><th scope="col" class="quest-account">Account</th>
-            <th scope="col" class="quest-points" title="Quest points from hiscores">QP</th>${headers.join('')}</tr></thead>
-            <tbody>${rows.join('')}</tbody>
-          </table>
-        </div><p class="quest-legend">${legend.join('')}</p>`;
+        const bands = [];
+        for (let start = 0; start < Math.max(1, headers.length); start += columns) {
+            const end = start + columns;
+            bands.push(`<div class="table-wrap quest-band"><table class="quest-grid" aria-label="Quest progress">
+              <thead><tr><th scope="col" class="quest-account">Account</th>
+              <th scope="col" class="quest-points" title="Quest points from hiscores">QP</th>
+              ${headers.slice(start, end).join('')}</tr></thead>
+              <tbody>${rows.map(({ account, marks }) => `<tr>${account}${marks.slice(start, end).join('')}</tr>`).join('')}</tbody>
+            </table></div>`);
+        }
+        return bands.join('') + `<p class="quest-legend">${legend.join('')}</p>`;
     }
 
     function renderView() {
@@ -174,7 +188,8 @@
             return;
         }
         if (showQuests) {
-            panel.innerHTML = renderQuestGrid(visible);
+            shownQuestColumns = questColumnsFor(panel);
+            panel.innerHTML = renderQuestGrid(visible, shownQuestColumns);
             return;
         }
         const detail = ({ name, kind }) =>
@@ -297,6 +312,11 @@
         if (Number.isInteger(saved?.sort?.key) && saved.sort.key >= 0 && saved.sort.key < skills.length + 5) sort = saved.sort;
         selectTab(tabs.find(tab => tab.getAttribute('aria-controls') === saved?.view) || tabs[0]);
         document.querySelector('#refresh').addEventListener('click', () => window.location.reload());
+        window.addEventListener('resize', () => {
+            if (view !== 'quests-panel') return;
+            const panel = document.getElementById(view);
+            if (questColumnsFor(panel) !== shownQuestColumns) renderView();
+        });
         auto.addEventListener('click', () => {
             auto.setAttribute('aria-pressed', auto.getAttribute('aria-pressed') === 'true' ? 'false' : 'true');
             saveView();
