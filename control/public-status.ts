@@ -7,7 +7,7 @@ if (!botsDir || !configDir) throw new Error('Expected the bot directory and cont
 const token = (await Bun.file(join(configDir, 'token')).text()).trim();
 if (!/^[a-f0-9]{64}$/.test(token)) throw new Error('Invalid control API token');
 
-type Bot = { name: string; status: 'Online' | 'Offline' | 'Unknown'; activity: string };
+type Bot = { name: string; status: 'Online' | 'Offline' | 'Unknown'; activity: string; location?: string };
 type ControlActivity = { bot: string; label: string } | undefined;
 type Snapshot = { bots: Bot[]; checkedAt: string };
 const refreshSeconds = 15;
@@ -51,7 +51,14 @@ async function botStatus(name: string, directory: string, managed: ControlActivi
         if (result.botStatus !== 'stale' && isFreshBotState(result.stateAge)) {
             const player = result.state?.player;
             if (!result.state?.inGame || !player) return { name, status: 'Offline', activity: task ?? '—' };
-            return { name, status: 'Online', activity: task ?? (player.combat?.inCombat ? 'In combat' : 'No activity reported') };
+            const { worldX, worldZ, level } = player;
+            const plane = Number.isInteger(level) && level >= 0 && level <= 3 ? ` · Plane ${level}` : '';
+            const location = Number.isSafeInteger(worldX) && Number.isSafeInteger(worldZ)
+                ? `X ${worldX}, Z ${worldZ}${plane}` : undefined;
+            return {
+                name, status: 'Online', location,
+                activity: task ?? (player.combat?.inCombat ? 'In combat' : 'No activity reported'),
+            };
         }
     } catch {
         // Credentials and gateway errors are private. Render an unknown status.
@@ -78,8 +85,9 @@ const escape = (value: string) => value.replaceAll('&', '&amp;').replaceAll('<',
     .replaceAll('>', '&gt;').replaceAll('"', '&quot;').replaceAll("'", '&#39;');
 
 function render(data?: Snapshot) {
-    const rows = data?.bots.map(({ name, status, activity }) => `<tr><th scope="row">${escape(name)}</th>
-        <td><span class="${status.toLowerCase()}">${status}</span></td><td>${escape(activity)}</td></tr>`).join('');
+    const rows = data?.bots.map(({ name, status, activity, location }) => `<tr><th scope="row">${escape(name)}</th>
+        <td><span class="${status.toLowerCase()}">${status}</span></td><td>${escape(activity)}</td>
+        <td>${escape(location ?? '—')}</td></tr>`).join('');
     return `<!doctype html>
 <html lang="en">
 <head>
@@ -104,7 +112,7 @@ function render(data?: Snapshot) {
 <body><main>
 <h1>Bot status</h1>
 ${data ? `<p>Checked <time datetime="${data.checkedAt}">${data.checkedAt.slice(11, 19)} UTC</time></p>` : ''}
-${rows ? `<table aria-label="Bot status"><thead><tr><th scope="col">Bot</th><th scope="col">Status</th><th scope="col">Activity</th></tr></thead><tbody>${rows}</tbody></table>`
+${rows ? `<table aria-label="Bot status"><thead><tr><th scope="col">Bot</th><th scope="col">Status</th><th scope="col">Activity</th><th scope="col">Location</th></tr></thead><tbody>${rows}</tbody></table>`
     : `<p>${data ? 'No bots configured.' : 'Bot status is temporarily unavailable.'}</p>`}
 </main></body></html>`;
 }

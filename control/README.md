@@ -82,13 +82,16 @@ With the HTTPS hostname and GitHub sync installed, run on Lightsail:
 bash ~/rs-sdk-sync/control/install-public-status.sh
 ```
 
-The installer prints the public `/bots` URL. The page shows the names of bots
-with a `bot.env` in the controller's `bots/` directory, their game status, and
-activity. Activity comes from a running task managed by the control API or
-from combat reported by the game gateway. If neither is available, the page
-says so. Stale or failed game checks appear as **Unknown**. The page refreshes
-every 15 seconds while open. It serves only the public fields and runs in a
-separate service from the control API and gameplay processes.
+The installer prints the public `/bots` URL. The page lists bots with a
+`bot.env` in the controller's `bots/` directory and shows their game status,
+activity, and current location. The Location column shows world X and Z and
+the map plane when available. It shows a dash for offline bots, stale data,
+or missing coordinates. Activity comes from a running task managed by the
+control API or from combat reported by the game gateway. If neither is
+available, the page says so. Stale or failed game checks appear as **Unknown**.
+The page refreshes every 15 seconds while open. It serves only the public
+fields and runs in a separate service from the control API and gameplay
+processes.
 
 ## Optional bot configuration
 
