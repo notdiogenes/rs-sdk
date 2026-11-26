@@ -6,10 +6,15 @@ import { botCredentials, hostedBotState, isFreshBotState } from './hosted-bot';
 
 const taskName = 'pickpocket-men';
 const taskLabels = {
+    "cooks-assistant": "Cook’s Assistant",
+    "restless-ghost": "The Restless Ghost",
     'train-cows': 'Training melee on cows',
     'pickpocket-men': 'Pickpocketing Men',
     'train-hp-pickpocket': 'Training Hitpoints to 60',
 } as const;
+export function isBundledTask(name: unknown): name is keyof typeof taskLabels {
+    return typeof name === 'string' && Object.hasOwn(taskLabels, name);
+}
 type DemoTaskName = keyof typeof taskLabels;
 const activityLabels: Record<string, string> = {
     'training-hitpoints': 'Training Hitpoints to 60',
@@ -143,7 +148,8 @@ export function dashboardDemo(runtimeDir: string, botsDir: string, configDir: st
 
     async function startTask(bot: string, name: DemoTaskName) {
         const credentials = await botCredentials(bot, workingDir);
-        const child = Bun.spawn([process.execPath, '--no-env-file', join(import.meta.dir, 'tasks', name + '.ts')], {
+        const child = Bun.spawn([process.execPath, '--no-env-file', join(import.meta.dir, 'tasks', name === 'cooks-assistant' || name === 'restless-ghost'
+            ? `quests/${name}.ts` : `${name}.ts`)], {
             cwd: writableDir,
             stdin: 'ignore', stdout: 'pipe', stderr: 'inherit',
             env: {
@@ -244,7 +250,7 @@ export function dashboardDemo(runtimeDir: string, botsDir: string, configDir: st
             if (route === 'task/start') {
                 const body = await request.json().catch(() => null);
                 const name = body?.task;
-                if (typeof name !== 'string' || !Object.hasOwn(taskLabels, name)) {
+                if (!isBundledTask(name)) {
                     return json({ error: 'Unknown demo task' }, 400);
                 }
                 const bot = await storedBot();
@@ -253,7 +259,7 @@ export function dashboardDemo(runtimeDir: string, botsDir: string, configDir: st
                     client !== activeClient || activeClient.stopping || activeClient.process.exitCode !== null) {
                     return json({ error: 'Start the demo client and wait for live state before starting a task' }, 409);
                 }
-                await startTask(bot, name as DemoTaskName);
+                await startTask(bot, name);
                 return json({ bot, task: name, phase: 'starting' }, 202);
             }
             if (task) taskStopped = true;
@@ -293,6 +299,10 @@ export function dashboardDemo(runtimeDir: string, botsDir: string, configDir: st
                 message = `Pickpocket ${entry.npc} · ${outcome}${hp}`;
             } else if (stage === 'food-restock' && typeof entry.item === 'string' && typeof entry.bought === 'number') {
                 message = `Bought ${entry.bought} × ${entry.item}`;
+            } else if (stage === 'quest-failed' && typeof entry.error === 'string') {
+                message = 'Quest stopped · ' + entry.error.slice(0, 320);
+            } else if (stage === 'quest-ingredient' && typeof entry.item === 'string') {
+                message = 'Collected ' + entry.item;
             } else if (stage.endsWith('-exited') && typeof entry.exitCode === 'number') {
                 message += ` · code ${entry.exitCode}`;
             }

@@ -1,0 +1,136 @@
+import type { ScriptContext } from '../../../sdk/runner';
+
+export type QuestContext = Pick<ScriptContext, 'bot' | 'sdk'>;
+export const questLog = (stage: string, data: object = {}) =>
+    console.log('[pickpocket-demo] ' + JSON.stringify({ stage, ...data }));
+
+export function readQuest({ sdk }: QuestContext, component: number) {
+    return sdk.getState()?.questJournal?.[component];
+}
+
+export async function walk({ bot, sdk }: QuestContext, x: number, z: number, tolerance = 4) {
+    const result = await bot.walkTo(x, z, tolerance, { timeout: 150_000 });
+    const p = sdk.getState()?.player;
+    if (!result.success && (!p || Math.max(Math.abs(x - p.worldX), Math.abs(z - p.worldZ)) > tolerance)) {
+        throw new Error(`Could not walk to ${x}, ${z}: ${result.message}`);
+    }
+}
+
+export async function changeFloor(ctx: QuestContext, direction: 'up' | 'down', x: number, z: number) {
+    const { bot, sdk } = ctx;
+    const before = sdk.getState()?.player;
+    if (!before) throw new Error('No location for floor change');
+    const search = direction === 'up' ? /climb.up|go.up|walk.up/i : /climb.down|go.down|walk.down/i;
+    const candidates = (await sdk.scanNearbyLocs(12)).flatMap(loc => {
+        if (!/ladder|stair|trapdoor/i.test(loc.name) || Math.max(Math.abs(loc.x - x), Math.abs(loc.z - z)) > 7) return [];
+        const option = loc.optionsWithIndex.find(entry => search.test(entry.text));
+        return option ? [{ loc, option }] : [];
+    }).sort((a, b) => a.loc.distance - b.loc.distance);
+    for (const { loc, option } of candidates) {
+        // Surface-to-dungeon ladders can change region while retaining plane zero.
+        await bot.interactLoc(loc, option.opIndex);
+        const changed = await sdk.waitForCondition(state => {
+            const p = state.player;
+            return !!p && (p.level !== before.level || Math.abs(p.worldZ - before.worldZ) > 1000);
+        }, 4500).catch(() => null);
+        if (changed) return;
+    }
+    throw new Error(`Could not climb ${direction} near ${x}, ${z} on plane ${before.level}`);
+}
+
+export async function talk(ctx: QuestContext, npc: RegExp, choices: RegExp[]) {
+    const { bot, sdk } = ctx;
+    const target = sdk.findNearbyNpc(npc);
+    if (!target) throw new Error(`Could not find ${npc}`);
+    const conversation = await bot.talkTo(target);
+    if (!conversation.success && !sdk.getDialog()?.isOpen) throw new Error(conversation.message);
+    await continueDialog(ctx, choices);
+}
+
+export async function continueDialog({ sdk }: QuestContext, choices: RegExp[] = []) {
+    for (let page = 0; page < 24; page++) {
+        const dialog = sdk.getDialog();
+        if (!dialog?.isOpen) {
+            await sdk.waitForTicks(2);
+            if (!sdk.getDialog()?.isOpen) return;
+            continue;
+        }
+        if (dialog.options.length) {
+            const match = choices.find(choice => dialog.options.some(option => choice.test(option.text)));
+            if (!match) throw new Error('Unexpected quest choices: ' + dialog.options.map(option => option.text).join(' | '));
+            const chosen = await sdk.clickDialogByText(match);
+            if (!chosen.success) throw new Error(chosen.message);
+        } else {
+            await sdk.sendClickDialog(0);
+        }
+        await sdk.waitForTicks(2);
+    }
+    throw new Error('Quest dialogue did not finish');
+}
+
+export async function groundItem(ctx: QuestContext, item: RegExp, x: number, z: number) {
+    const { bot, sdk } = ctx;
+    if (sdk.findInventoryItem(item)) return;
+    await walk(ctx, x, z, 4);
+    for (let attempt = 0; attempt < 9; attempt++) {
+        const next = (await sdk.scanGroundItems(12))
+            .filter(entry => item.test(entry.name) && Math.max(Math.abs(entry.x - x), Math.abs(entry.z - z)) <= 10)
+            .sort((a, b) => Number(b.reachable) - Number(a.reachable) || a.distance - b.distance)[0];
+        if (next) {
+            await bot.pickupItem(next);
+            if (sdk.findInventoryItem(item)) return;
+        }
+        await sdk.waitForTicks(5);
+    }
+    throw new Error(`Could not find ${item} near ${x}, ${z}`);
+}
+
+export async function bankForQuest(ctx: QuestContext, supplies: readonly { name: string; count: number }[]) {
+    const { bot, sdk } = ctx;
+    const wanted = new Map(supplies.map(item => [item.name.toLowerCase(), item.count]));
+    const current = () => sdk.getInventory();
+    const exact = (name: string) => new RegExp('^' + name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '$', 'i');
+    const have = (name: string) => sdk.countInventoryItems(exact(name));
+    const open = async () => {
+        const result = await bot.openBank();
+        if (!result.success) throw new Error(result.message);
+    };
+    const deposit = async () => {
+        for (const name of new Set(current().map(item => item.name))) {
+            const count = have(name) - (wanted.get(name.toLowerCase()) ?? 0);
+            if (count > 0 && !(await bot.depositItem(exact(name), count)).success) throw new Error(`Could not bank ${name}`);
+        }
+    };
+    questLog('banking-quest-loadout');
+    await walk(ctx, 3092, 3243, 4);
+    await open();
+    try {
+        await deposit();
+        if (sdk.getEquipment().length) {
+            await bot.closeBank();
+            for (const item of sdk.getEquipment()) {
+                if ((wanted.get(item.name.toLowerCase()) ?? 0) > 0) continue;
+                const result = await bot.unequipItem(item);
+                if (!result.success) throw new Error(result.message);
+            }
+            await open();
+            await deposit();
+        }
+        for (const supply of supplies) {
+            const entry = sdk.findBankItem(exact(supply.name));
+            const needed = supply.count - have(supply.name);
+            if (entry && needed > 0) {
+                const amount = Math.min(entry.count, needed);
+                const taken = await bot.withdrawItem(entry, amount);
+                if (!taken.success) throw new Error(`Could not withdraw ${supply.name}`);
+            }
+        }
+    } finally {
+        if (sdk.isBankOpen()) await bot.closeBank();
+    }
+    const surplus = current().find(item => have(item.name) > (wanted.get(item.name.toLowerCase()) ?? 0));
+    if (surplus || sdk.getEquipment().some(item => !wanted.has(item.name.toLowerCase()))) {
+        throw new Error('Unexpected items remained after banking');
+    }
+    questLog('quest-loadout-ready', { items: current().map(item => [item.name, item.count]) });
+}

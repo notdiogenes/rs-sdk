@@ -10,7 +10,7 @@ import type { BotWorldState } from '../sdk/types';
 import { dashboardFleetStats } from './dashboard-fleet-stats';
 import { dashboardQuestPoints, loadQuestCatalog } from './dashboard-quests';
 import { fleetPage } from './dashboard-fleet-page';
-import { dashboardDemo } from './dashboard-demo';
+import { dashboardDemo, isBundledTask } from './dashboard-demo';
 
 const [botDirectory, controlConfig] = process.argv.slice(2);
 if (!botDirectory || !controlConfig) throw new Error('Expected the bot directory and control config directory');
@@ -96,6 +96,16 @@ async function botProfile(name: string) {
     return { name, directory, worker: rosterControllers.get(name.toLowerCase()) };
 }
 
+function workerStatus(name: string, worker?: ReturnType<typeof dashboardDemo>) {
+    return worker?.dashboardActivity(worker.status(name));
+}
+
+function usesPrimary(name: string, primary: ControllerStatus | null, worker?: ReturnType<typeof dashboardDemo>) {
+    if (primary?.bot?.toLowerCase() !== name.toLowerCase()) return false;
+    const secondary = workerStatus(name, worker);
+    return !!primary.client || !!dashboardActivity(primary).starting || (!secondary?.client && !secondary?.starting);
+}
+
 async function handleBotActivity(request: Request, name: string, session?: string) {
     const reply = (body: object, status: number) => Response.json(body, { status, headers: { 'Cache-Control': 'no-store' } });
     if (!session && !await demo.allowed(request)) return reply({ error: 'Unauthorized' }, 401);
@@ -103,8 +113,21 @@ async function handleBotActivity(request: Request, name: string, session?: strin
         const profile = await botProfile(name);
         if (!profile) return reply({ error: 'Bot profile not found.' }, 404);
         const primary = await primaryStatus();
-        if (primary.bot?.toLowerCase() === profile.name.toLowerCase()) {
-            return handleActivity(request, token, session, primary.bot);
+        const isPrimary = primary.bot?.toLowerCase() === profile.name.toLowerCase();
+        const primaryActive = isPrimary && (primary.client || dashboardActivity(primary).starting);
+        const body = request.method === 'POST' ? await request.clone().json().catch(() => null) : null;
+        const bundled = body?.action === 'start' && isBundledTask(body.task) && !primary.tasks.includes(body.task);
+        if (primaryActive && bundled) {
+            return reply({ error: 'Stop the primary game client before starting this bundled activity.' }, 409);
+        }
+        if (isPrimary && !bundled && usesPrimary(profile.name, primary, profile.worker)) {
+            const response = await handleActivity(request, token, session, primary.bot ?? undefined);
+            if (!primaryActive && request.method === 'GET' && response.ok) {
+                const status = await response.json();
+                const tasks = profile.worker?.status(profile.name).tasks ?? demo.status(null).tasks;
+                return reply({ ...status, tasks: [...new Set([...status.tasks, ...tasks])] }, 200);
+            }
+            return response;
         }
         let worker = profile.worker;
         if (!worker) {
@@ -138,10 +161,10 @@ async function botDiagnostics(name: string) {
         primaryStatus().catch(() => null),
         hostedBotState(profile.name, profile.directory).catch(() => undefined),
     ]);
-    const isPrimary = primary?.bot?.toLowerCase() === profile.name.toLowerCase();
     const worker = profile.worker;
+    const isPrimary = primary && usesPrimary(profile.name, primary, worker);
     const controller = isPrimary ? dashboardActivity(primary)
-        : worker?.dashboardActivity(worker.status(profile.name)) ??
+        : workerStatus(profile.name, worker) ??
             { bot: profile.name, tasks: [], client: null, task: null, startError: null, starting: null };
     const historical = isPrimary ? await diagnostics().catch(() => null) : null;
     const primaryHistory = historical?.reading?.controller?.bot === primary?.bot ? historical : null;
@@ -223,8 +246,8 @@ async function collect(directory: string): Promise<Snapshot> {
     const profiles = [...roster.values()].sort((a, b) => a.name.localeCompare(b.name));
     const bots = await Promise.all(profiles.map(profile => {
         const worker = demoProfile?.name === profile.name ? demo : rosterControllers.get(profile.name.toLowerCase());
-        const controller = primary?.bot?.toLowerCase() === profile.name.toLowerCase() ? dashboardActivity(primary)
-            : worker?.dashboardActivity(worker.status(profile.name));
+        const controller = primary && usesPrimary(profile.name, primary, worker) ? dashboardActivity(primary)
+            : workerStatus(profile.name, worker);
         return botStatus(profile.name, profile.directory, controller && controlActivity(controller));
     }));
     return { bots, checkedAt: new Date().toISOString() };
