@@ -6,7 +6,7 @@ import {
 } from './quest-combat';
 import {
     buyQuestSupply, changeFloor, continueDialog, groundItem, journalText, prepareQuestStep, questLog, questPhase,
-    readQuest, talkAt, useTogether, waitForQuestJournal, walk, type QuestContext,
+    readQuest, talk, talkAt, useTogether, waitForQuestJournal, walk, type QuestContext,
 } from './shared';
 
 const quest = 'Dragon Slayer';
@@ -159,8 +159,9 @@ async function getBriefing(ctx: QuestContext) {
         /how am I meant to prove/i, /a dragon.*sounds like fun/i];
     const farewell = /try and get everything together/i;
     const findDragon = /where can I find this dragon/i;
+    await walk(ctx, 3068, 3517, 0);
     for (const topic of [/first piece/i, /second piece/i, /third piece/i, /where can I get an antidragon shield/i]) {
-        await talkAt(ctx, 3069, 3517, /^oziach$/i, [...introductions, farewell, topic, findDragon], 8000);
+        await talk(ctx, /^oziach$/i, [...introductions, farewell, topic, findDragon]);
     }
     if (/should return to Oziach|should speak to Oziach/i.test(await journalText(ctx, journal, title))) {
         throw new Error('Dragon Slayer journal did not confirm Oziach’s briefing');
