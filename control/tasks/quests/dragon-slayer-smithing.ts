@@ -1,9 +1,12 @@
 import { auditEvent, auditOperation } from '../../../sdk/audit-trace';
 import { questSkill } from './quest-combat';
-import { buyQuestSupply, itemNamed, prepareQuestStep, questPhase, walk, type QuestContext } from './shared';
+import { buyQuestSupply, itemNamed, prepareQuestStep, questPhase, readQuest, walk, type QuestContext } from './shared';
 
 const faladorBank = [2947, 3368] as const;
 const westVarrockBank = [3185, 3435] as const;
+const doricAnvil = [2951, 3451] as const;
+const varrockAnvil = [3187, 3424] as const;
+const canUseDoricAnvil = (ctx: QuestContext) => readQuest(ctx, 7336) === 'complete';
 const stock = { copper: 'Copper ore', tin: 'Tin ore', iron: 'Iron ore', coal: 'Coal' } as const;
 const rockIds = { copper: [2090, 2091], tin: [2094, 2095], iron: [2092, 2093], coal: [2096, 2097] };
 type Ore = keyof typeof stock;
@@ -21,23 +24,30 @@ async function collectOre(ctx: QuestContext, ore: Ore, amount: number) {
     const anchor = ore === 'iron' ? [2903, 3353] : [2908, 3363];
     await walk(ctx, anchor[0]!, anchor[1]!, 3);
     let misses = 0;
+    const attempted = new Map<string, number>();
+    const key = (loc: { x: number; z: number }) => `${loc.x},${loc.z}`;
     while (count(ctx, stock[ore]) < amount) {
         const rock = (await sdk.scanNearbyLocs(12)).filter(loc => rockIds[ore].includes(loc.id) && loc.reachable !== false)
-            .sort((a, b) => a.distance - b.distance)[0];
+            .sort((a, b) => (attempted.get(key(a)) ?? -1) - (attempted.get(key(b)) ?? -1) || a.distance - b.distance)[0];
         if (!rock) {
             if (++misses >= 12) throw new Error(`No reachable ${stock[ore]} rock near Falador`);
             await sdk.waitForTicks(3);
             continue;
         }
+        attempted.set(key(rock), sdk.getState()?.tick ?? 0);
         const before = count(ctx, stock[ore]);
         const mined = await auditOperation('dragon-slayer-mine-ship-ore', 'Gather ore to make the ship repair nails',
-            { ore, x: rock.x, z: rock.z, remaining: amount - before }, () => sdk.getState(),
-            () => bot.mineRock(rock, { timeout: 9_000 }), result => ({
+            { ore, id: rock.id, x: rock.x, z: rock.z, remaining: amount - before }, () => sdk.getState(),
+            async () => {
+                const result = await bot.mineRock(rock, { timeout: 9_000 });
+                if (count(ctx, stock[ore]) <= before) await sdk.waitForTicks(4);
+                return result;
+            }, result => ({
                 outcome: count(ctx, stock[ore]) > before ? 'complete' : 'unconfirmed',
                 message: result.message, available: count(ctx, stock[ore]),
             }));
         if (count(ctx, stock[ore]) > before) misses = 0;
-        else if (++misses >= 8) throw new Error(`Could not gather ${stock[ore]}: ${mined.message}`);
+        else if (++misses >= 12) throw new Error(`Could not gather ${stock[ore]}: ${mined.message}`);
     }
 }
 
@@ -65,7 +75,8 @@ async function smeltBars(ctx: QuestContext, type: 'Bronze' | 'Steel', target: nu
 async function smithAvailable(ctx: QuestContext, metal: 'Bronze' | 'Iron' | 'Steel', product: string, enough: () => boolean) {
     const name = metal + ' bar';
     if (!count(ctx, name) || enough()) return;
-    await walk(ctx, 3187, 3424, 2);
+    const anvil = canUseDoricAnvil(ctx) ? doricAnvil : varrockAnvil;
+    await walk(ctx, anvil[0], anvil[1], 1);
     while (count(ctx, name) && !enough()) {
         const before = count(ctx, name);
         const result = await auditOperation('dragon-slayer-smith-ship-supply', 'Work a bar at the anvil',
@@ -84,18 +95,16 @@ export async function makeShipNails(ctx: QuestContext) {
     questPhase('dragon-slayer-smith-ship-nails');
     const qualified = () => questSkill(ctx, 'Smithing') >= 34;
     if (!qualified()) {
-        await prepareQuestStep(ctx, { bank: westVarrockBank, slots: 12, keep, withdraw: [
+        await prepareQuestStep(ctx, { bank: canUseDoricAnvil(ctx) ? faladorBank : westVarrockBank, slots: 16, keep, withdraw: [
             { name: 'Bronze bar', count: 8 }, { name: 'Iron bar', count: 8 },
         ] });
         await smithAvailable(ctx, 'Iron', 'iron dagger', () => qualified() || questSkill(ctx, 'Smithing') < 15);
         await smithAvailable(ctx, 'Bronze', 'bronze dagger', qualified);
     }
-    if (!qualified() || count(ctx, 'Steel bar') < Math.ceil(needed() / 2)) {
-        const requiredBars = Math.ceil(needed() / 2);
-        await prepareQuestStep(ctx, { bank: faladorBank, slots: 18, keep, withdraw: [
-            { name: 'Bronze pickaxe', count: 1 }, { name: 'Iron ore', count: requiredBars }, { name: 'Coal', count: 2 * requiredBars },
-        ] });
-        if (!sdk.findInventoryItem(pickaxe) && !sdk.findEquipmentItem(pickaxe)) {
+    if ((!qualified() || count(ctx, 'Steel bar') < Math.ceil(needed() / 2)) &&
+        !sdk.findInventoryItem(pickaxe) && !sdk.findEquipmentItem(pickaxe)) {
+        await prepareQuestStep(ctx, { bank: faladorBank, slots: 2, keep, withdraw: [{ name: 'Bronze pickaxe', count: 1 }] });
+        if (!sdk.findInventoryItem(pickaxe)) {
             await walk(ctx, 3231, 3203);
             await buyQuestSupply(ctx, /^bob$/i, 'Bronze pickaxe', 12);
         }
@@ -118,6 +127,9 @@ export async function makeShipNails(ctx: QuestContext) {
     const bars = Math.ceil(needed() / 2);
     if (count(ctx, 'Steel bar') < bars) {
         const missing = bars - count(ctx, 'Steel bar');
+        await prepareQuestStep(ctx, { bank: faladorBank, slots: 3 * missing, keep, withdraw: [
+            { name: 'Iron ore', count: missing }, { name: 'Coal', count: 2 * missing },
+        ] });
         while (questSkill(ctx, 'Mining') < 30 && count(ctx, 'Coal') < 2 * missing) {
             await prepareQuestStep(ctx, { bank: faladorBank, slots: 8, keep: /^(?!copper ore$).*$/i });
             // Copper is available at level 1. Leave room for one more verified swing.

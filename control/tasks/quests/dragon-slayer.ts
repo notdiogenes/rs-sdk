@@ -20,6 +20,7 @@ const shipRepaired = /I have repaired my ship/i;
 const shipBought = /I bought a ship in Port Sarim/i;
 const nedHired = /Ned from Draynor Village has agreed/i;
 const coins = /^coins$/i;
+const wormbrainPrice = 10_000;
 const magicDoorSupplies = ['Wizard\'s mind bomb', 'Silk', 'Lobster pot', 'Unfired bowl'];
 const meleeRequirements: Record<string, number> = {
     dragon: 60, rune: 40, adamant: 30, mithril: 20, black: 10, steel: 5, iron: 1, bronze: 1,
@@ -628,7 +629,10 @@ async function buyWormbrainRunes(ctx: QuestContext) {
                 vendor: vendor.name, shop: state?.shop.title, coins: held(ctx, 995), quote: cost,
                 stock: stock.map(({ id, name, count, buyPrice }) => ({ id, name, count, buyPrice })),
             });
-            if (!available || cost > held(ctx, 995)) continue;
+            if (!available || cost > held(ctx, 995)) {
+                if (held(ctx, 995) >= wormbrainPrice) return false;
+                continue;
+            }
             for (const { supply, item } of orders) {
                 if (!item) continue;
                 await auditOperation('dragon-slayer-buy-wormbrain-runes', 'Buy missing Fire Strike and Telekinetic Grab supplies from an NPC rune shop',
@@ -646,7 +650,7 @@ async function buyWormbrainRunes(ctx: QuestContext) {
 
 async function buyWormbrainMap(ctx: QuestContext) {
     const { sdk } = ctx;
-    const cost = 10_000;
+    const cost = wormbrainPrice;
     await prepareQuestStep(ctx, { bank: mapSupplyBank(ctx), slots: 2, withdraw: [{ name: 'Coins', count: cost }] });
     if (held(ctx, 995) < cost) throw new Error('Wormbrain requires Telekinetic Grab supplies or 10,000 coins for his map piece');
     await auditOperation('dragon-slayer-buy-wormbrain-map', 'Buy Wormbrain’s map piece at the fixed quest price',
@@ -678,7 +682,7 @@ async function wormbrainMap(ctx: QuestContext) {
     const telegrab = 1168;
     questPhase('dragon-slayer-wormbrain-map');
     const magic = questSkill(ctx, 'Magic');
-    if (magic < 33 || (held(ctx, 995) >= 10_000 && area(ctx, 3012, 3187, 12))) return buyWormbrainMap(ctx);
+    if (magic < 33 || (held(ctx, 995) >= wormbrainPrice && area(ctx, 3012, 3187, 12))) return buyWormbrainMap(ctx);
     await prepareQuestStep(ctx, { bank: mapSupplyBank(ctx), slots: 5, withdraw: [
         ...questSpellSupplies(ctx, 5).map(item => item.name === 'Air rune' ? { ...item, count: item.count + 1 } : item),
         { name: 'Law rune', count: 1 }, { name: 'Coins', count: 400 },
