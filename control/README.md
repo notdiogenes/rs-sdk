@@ -87,11 +87,13 @@ The installer prints the public `/bots` URL. The page lists bots with a
 activity, and current location. The Location column shows world X and Z and
 the map plane when available. It shows a dash for offline bots, stale data,
 or missing coordinates. Activity comes from a running task managed by the
-control API or from combat reported by the game gateway. If neither is
+control API or from combat reported by the game client. If neither is
 available, the page says so. Stale or failed game checks appear as **Unknown**.
 **Last activity** shows when the dashboard last observed a change in position
 or floor, an XP gain, or a bot entering or leaving combat. The service checks
-every 15 seconds, even when the page is closed. It keeps the observation
+every 15 seconds from the latest local client frame, with a gateway read
+for clients that do not publish to Fleet Desk. Inventory and Diagnostics
+use the same state source. The service keeps the observation
 time across dashboard restarts and logouts and displays it in US Eastern time.
 A dash means no activity has been observed since tracking started.
 The page refreshes every 15 seconds while open. It serves only the public
@@ -110,9 +112,11 @@ including while the account is offline. **Unreported** means no journal state
 was observed for that quest. Per-quest markers require a bot client running
 code that publishes Quest Journal telemetry.
 
-**Stats** shows last observed base levels and combat level. **Check
-banks** shows coin balances and item stacks from the latest open bank observed
-for each account. Checking the dashboard never opens a bank in-game. XP on a
+**Stats** shows last observed base levels and combat level. **Check banks**
+reads locally saved balances and item stacks when opened. Managed clients
+capture bank contents as the game sends updates, including short bank visits.
+Older clients can save a bank when a fleet sample sees it open.
+Checking the dashboard never opens a bank in-game. XP on a
 Fleet card is the gain between samples taken within the last hour. Timestamps
 on the dashboard use US Eastern time.
 

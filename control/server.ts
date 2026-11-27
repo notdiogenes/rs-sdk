@@ -1,13 +1,18 @@
 import { createHash, timingSafeEqual } from 'node:crypto';
+import { existsSync } from 'node:fs';
 import { realpath } from 'node:fs/promises';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { botCredentials, hostedBotName, hostedBotState, isFreshBotState } from './hosted-bot';
 import { inventoryActionResponse, inventoryControls } from './dashboard-inventory';
+import { dashboardClientFeed } from './dashboard-live-state';
+import { dashboardFleetStats } from './dashboard-fleet-stats';
 import { parseInventoryCommand } from '../sdk/inventory-command';
 
 const root = join(import.meta.dir, '..');
 const configDir = process.env.RS_CONTROL_CONFIG_DIR;
 if (!configDir) throw new Error('RS_CONTROL_CONFIG_DIR is required');
+const fleetRuntime = join(dirname(configDir), 'rs-sdk-public-status');
+const fleetStats = dashboardFleetStats(fleetRuntime);
 const token = (await Bun.file(join(configDir, 'token')).text()).trim();
 if (!/^[a-f0-9]{64}$/.test(token)) throw new Error('Invalid control token');
 const digest = (value: string) => createHash('sha256').update(value).digest();
@@ -24,7 +29,11 @@ const error = (message: string, status: number) => reply({ error: message }, sta
 
 type Profile = { bot: string; directory: string; tasks: Map<string, string> };
 type ProcessInfo = { process: Bun.Subprocess; startedAt: string; stop?: Promise<void> };
-let client: (ProcessInfo & { profile: Profile; inventory: ReturnType<typeof inventoryControls> }) | undefined;
+let client: (ProcessInfo & {
+    profile: Profile;
+    inventory: ReturnType<typeof inventoryControls>;
+    feed: ReturnType<typeof dashboardClientFeed>;
+}) | undefined;
 let task: (ProcessInfo & { name: string }) | undefined;
 let lastTask: { name: string; exitCode: number; finishedAt: string } | undefined;
 let mutating = false;
@@ -103,7 +112,7 @@ const server = Bun.serve({
     port: Number(process.env.RS_CONTROL_PORT ?? 3719),
     maxRequestBodySize: 4096,
     async fetch(request) {
-        const { pathname } = new URL(request.url);
+        const { pathname, searchParams } = new URL(request.url);
         const route = `${request.method} ${pathname}`;
         if (route === 'GET /health') return reply({ ok: true });
         const offered = digest(request.headers.get('Authorization') ?? '');
@@ -126,7 +135,13 @@ const server = Bun.serve({
         if (request.method === 'GET') {
             try {
                 const profile = client?.profile ?? await readProfile();
-                if (route === 'GET /v1/status') return reply(status(profile));
+                if (route === 'GET /v1/status') {
+                    const value = status(profile);
+                    const includeFleet = searchParams.get('fleet') === '1' && timingSafeEqual(expected[0]!, offered);
+                    return reply(includeFleet && client && !client.stop && client.process.exitCode === null
+                        ? { ...value, fleetState: client.feed.state() }
+                        : value);
+                }
                 if (route === 'GET /v1/state') {
                     return profile ? reply(await gameState(profile)) : error('Bot not configured', 409);
                 }
@@ -152,7 +167,16 @@ const server = Bun.serve({
                 if (!profile) return error('Bot not configured', 409);
                 await botCredentials(profile.bot, profile.directory);
                 const inventory = inventoryControls();
-                const running = { ...spawn(['src/lite/runner.ts', profile.bot], join(root, 'server/webclient'), inventory.receive), profile, inventory };
+                const feed = dashboardClientFeed((items, at) => {
+                    if (existsSync(fleetRuntime)) fleetStats.recordBank(profile.bot, items, at);
+                });
+                const running = {
+                    ...spawn(['src/lite/runner.ts', profile.bot], join(root, 'server/webclient'), message => {
+                        inventory.receive(message);
+                        feed.receive(message);
+                    }),
+                    profile, inventory, feed,
+                };
                 client = running;
                 void running.process.exited.then(async () => {
                     inventory.disconnect();

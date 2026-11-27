@@ -28,6 +28,7 @@ import WordFilter from '#/wordfilter/WordFilter.js';
 import WordPack from '#/wordfilter/WordPack.js';
 
 import { LiteClient, MAX_PLAYER_COUNT } from '../LiteClient.js';
+import { BANK_INV_ID } from '../actions.js';
 import { buildCollision } from '../world/CollisionBuilder.js';
 import { getNpcPos, getPlayerPos, screenNameOf } from './entities.js';
 import { zonePacket } from './zone.js';
@@ -295,16 +296,19 @@ export function dispatch(c: LiteClient, opcode: number, buf: Packet, psize: numb
 
         // ----------------------------------------------------------- inventory
         case ServerProt.UPDATE_INV_STOP_TRANSMIT: {
-            const inv = c.ifMutable(buf.g2());
+            const component = buf.g2();
+            const inv = c.ifMutable(component);
             if (inv?.linkObjType) {
                 for (let i = 0; i < inv.linkObjType.length; i++) {
                     inv.linkObjType[i] = 0;
                 }
             }
+            if (component === BANK_INV_ID) c.bankInventoryPacket('stop');
             return;
         }
         case ServerProt.UPDATE_INV_FULL: {
-            const inv = c.ifMutable(buf.g2());
+            const component = buf.g2();
+            const inv = c.ifMutable(component);
             if (!inv?.linkObjType || !inv.linkObjNumber) {
                 return;
             }
@@ -321,10 +325,12 @@ export function dispatch(c: LiteClient, opcode: number, buf: Packet, psize: numb
                 inv.linkObjType[i] = 0;
                 inv.linkObjNumber[i] = 0;
             }
+            if (component === BANK_INV_ID) c.bankInventoryPacket('full');
             return;
         }
         case ServerProt.UPDATE_INV_PARTIAL: {
-            const inv = c.ifMutable(buf.g2());
+            const component = buf.g2();
+            const inv = c.ifMutable(component);
             if (!inv?.linkObjType || !inv.linkObjNumber) {
                 return;
             }
@@ -340,6 +346,7 @@ export function dispatch(c: LiteClient, opcode: number, buf: Packet, psize: numb
                     inv.linkObjNumber[slot] = count;
                 }
             }
+            if (component === BANK_INV_ID) c.bankInventoryPacket('partial');
             return;
         }
 

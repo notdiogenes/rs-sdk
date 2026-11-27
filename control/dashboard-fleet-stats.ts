@@ -1,5 +1,6 @@
 import { Database } from 'bun:sqlite';
 import { join } from 'node:path';
+import type { FleetViewState } from '../sdk/fleet-telemetry';
 import type { BankItem, BotWorldState, QuestJournal } from '../sdk/types';
 
 export const fleetSkills = [
@@ -29,6 +30,7 @@ export function dashboardFleetStats(directory: string) {
     function store() {
         if (!database) {
             const db = new Database(join(directory, 'fleet-stats.sqlite'));
+            db.run('PRAGMA busy_timeout = 1000');
             db.exec(`
                 CREATE TABLE IF NOT EXISTS fleet_stats (bot TEXT PRIMARY KEY, skills TEXT, bank TEXT);
                 CREATE TABLE IF NOT EXISTS fleet_journal (bot TEXT PRIMARY KEY, data TEXT NOT NULL);
@@ -41,13 +43,32 @@ export function dashboardFleetStats(directory: string) {
         return database;
     }
 
-    return function observe(bot: string, state?: BotWorldState, at = Date.now()): FleetStats {
+    function recordBank(bot: string, contents: BankItem[], at: number): void {
+        const items = contents.filter(item => nonnegativeInteger(item.count) && item.count > 0)
+            .map(({ slot, id, name, count }) => ({ slot, id, name, count }));
+        const coins = items.filter(item => item.id === 995).reduce((sum, item) => sum + item.count, 0);
+        const bank: BankSnapshot = { at, stacks: items.length, coins, items };
+        store().query(`INSERT INTO fleet_stats (bot, bank) VALUES (?, ?)
+            ON CONFLICT (bot) DO UPDATE SET bank = excluded.bank
+            WHERE fleet_stats.bank IS NULL OR json_extract(fleet_stats.bank, '$.at') <= ?`)
+            .run(bot, JSON.stringify(bank), at);
+    }
+
+    function bankOverview() {
+        return store().query(`SELECT bot AS name, json_extract(bank, '$.at') AS at,
+            json_extract(bank, '$.stacks') AS stacks, json_extract(bank, '$.coins') AS coins
+            FROM fleet_stats WHERE bank IS NOT NULL`).all() as (Omit<BankSnapshot, 'items'> & { name: string })[];
+    }
+
+    function observe(bot: string, state?: FleetViewState & { bank?: BotWorldState['bank'] }, at = Date.now()): FleetStats {
         const db = store();
+        // Legacy clients report the bank only in world state while it is open.
+        if (state?.player && state.bank?.isOpen && Array.isArray(state.bank.items)) recordBank(bot, state.bank.items, at);
         const prior = db.query(`SELECT skills, bank, (SELECT data FROM fleet_journal WHERE bot = ?1) AS journal
             FROM (SELECT 1) LEFT JOIN fleet_stats ON bot = ?1`)
             .get(bot) as { skills: string | null; bank: string | null; journal: string | null };
         let skills: SkillSnapshot | null = prior.skills ? JSON.parse(prior.skills) : null;
-        let bank: BankSnapshot | null = prior.bank ? JSON.parse(prior.bank) : null;
+        const bank: BankSnapshot | null = prior.bank ? JSON.parse(prior.bank) : null;
         let journal: JournalSnapshot | null = prior.journal ? JSON.parse(prior.journal) : null;
         let xpGained: number | null = null;
         const player = state?.player;
@@ -61,9 +82,6 @@ export function dashboardFleetStats(directory: string) {
             if (nonnegativeInteger(skill.baseLevel) && skill.baseLevel > 0) levels[name] = skill.baseLevel;
             if (nonnegativeInteger(skill.experience)) experience[name] = skill.experience;
         }
-        const observedBank = state.bank?.isOpen && Array.isArray(state.bank.items)
-            ? state.bank.items.filter(item => nonnegativeInteger(item.count) && item.count > 0)
-            : undefined;
         const observedProgress = state.questJournal && Object.entries(state.questJournal)
             .filter(([id, status]) => /^\d{1,5}$/.test(id) &&
                 (status === 'not-started' || status === 'in-progress' || status === 'complete'));
@@ -81,13 +99,6 @@ export function dashboardFleetStats(directory: string) {
                 db.query(`INSERT INTO fleet_stats (bot, skills) VALUES (?, ?)
                     ON CONFLICT (bot) DO UPDATE SET skills = excluded.skills`).run(bot, JSON.stringify(skills));
             }
-            if (observedBank && (!bank || at >= bank.at)) {
-                const coins = observedBank.filter(item => item.id === 995).reduce((sum, item) => sum + item.count, 0);
-                const items = observedBank.map(({ slot, id, name, count }) => ({ slot, id, name, count }));
-                bank = { at, stacks: items.length, coins, items };
-                db.query(`INSERT INTO fleet_stats (bot, bank) VALUES (?, ?)
-                    ON CONFLICT (bot) DO UPDATE SET bank = excluded.bank`).run(bot, JSON.stringify(bank));
-            }
             if (!Object.keys(experience).length) return;
             const cutoff = at - 60 * minute;
             db.query('DELETE FROM fleet_xp WHERE bot = ? AND at < ?').run(bot, cutoff);
@@ -104,4 +115,5 @@ export function dashboardFleetStats(directory: string) {
         })();
         return { skills, bank, journal, xpGained };
     };
+    return Object.assign(observe, { recordBank, bankOverview });
 }

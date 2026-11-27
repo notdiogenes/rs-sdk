@@ -1,7 +1,8 @@
 import { Database } from 'bun:sqlite';
 import { join } from 'node:path';
-import { controllerRequest, dashboardActivity } from './dashboard-activity';
+import { dashboardActivity } from './dashboard-activity';
 import type { ControllerStatus } from './dashboard-activity';
+import { fleetAvailability, type FleetStateReading } from './dashboard-live-state';
 
 type GameState = {
     availability: 'live' | 'stale' | 'offline' | 'unavailable';
@@ -20,13 +21,11 @@ type Reading = {
 };
 type Event = { at: string; message: string };
 
-export function dashboardDiagnostics(directory: string, token: string) {
+export function dashboardDiagnostics(directory: string) {
     let db: Database | undefined;
-    let pending: Promise<void> | undefined;
     let latest: Reading | undefined;
     let previous: Reading | undefined;
     let history: Event[] = [];
-    const authorization = `Bearer ${token}`;
 
     function load() {
         if (db) return db;
@@ -42,21 +41,19 @@ export function dashboardDiagnostics(directory: string, token: string) {
         return db;
     }
 
-    async function read<T>(path: string): Promise<T | null> {
-        try {
-            const response = await controllerRequest(path, authorization);
-            return response.ok ? await response.json() : null;
-        } catch {
-            return null;
-        }
-    }
-
-    async function sample() {
-        const status = await read<ControllerStatus>('/v1/status');
+    function observe(status: ControllerStatus | null, result: FleetStateReading | null | undefined) {
         const controller = status ? dashboardActivity(status) : null;
-        const game = controller?.bot
-            ? await read<GameState>('/v1/state') ?? { availability: 'unavailable' as const }
-            : null;
+        const state = result?.state;
+        const player = state?.player;
+        const game: GameState | null = controller?.bot ? {
+            availability: fleetAvailability(result),
+            stateAgeMs: result && Number.isFinite(result.stateAge) ? result.stateAge : null,
+            tick: state?.tick,
+            player: player ? {
+                x: player.worldX, z: player.worldZ, hp: player.hp, maxHp: player.maxHp, inCombat: player.combat?.inCombat,
+            } : undefined,
+            skills: state?.skills,
+        } : null;
         const checkedAt = new Date().toISOString();
         const database = load();
         const sameBot = controller?.bot && previous?.controller?.bot === controller.bot;
@@ -102,16 +99,7 @@ export function dashboardDiagnostics(directory: string, token: string) {
         latest = reading;
     }
 
-    function refresh() {
-        return pending ??= sample().finally(() => { pending = undefined; });
-    }
-
-    const collect = () => void refresh().catch(() => console.error('Dashboard diagnostics sample failed'));
-    collect();
-    setInterval(collect, 15000).unref();
-
-    return async function diagnostics() {
-        if (!latest) await refresh();
+    function read() {
         const game = latest?.game;
         return {
             reading: latest && {
@@ -120,5 +108,7 @@ export function dashboardDiagnostics(directory: string, token: string) {
             },
             history: history.slice(0, 20),
         };
-    };
+    }
+
+    return { observe, read };
 }

@@ -305,22 +305,29 @@
     const bankColumns = 8;
     const bankRows = 72;
 
-    function showBankOverview() {
-        bankVersion++;
+    async function showBankOverview() {
+        const version = ++bankVersion;
         delete banksDialog.dataset.bankView;
         bankTitle.textContent = 'Bank snapshots';
-        bankStatus.textContent = 'Balances are recorded when a bot opens its bank in-game.';
+        bankStatus.textContent = 'Reading bank snapshots…';
         bankDetail.hidden = true;
         bankBack.hidden = true;
-        const visible = matchingRows();
-        bankPanel.innerHTML = dataError
-            ? `<p class="empty" role="status">${escape(dataError)}</p>` : visible.length
-            ? table(['Account', 'Coins', 'Stacks', 'Last observed'], visible.map(row => {
-                const bank = stats.get(row.name)?.bank;
+        bankPanel.replaceChildren();
+        try {
+            const saved = await request('/bots/activity?view=banks');
+            if (!banksDialog.open || version !== bankVersion) return;
+            bankStatus.textContent = 'Last saved balances';
+            const snapshots = new Map(saved.map(snapshot => [snapshot.name, snapshot]));
+            const visible = matchingRows();
+            bankPanel.innerHTML = visible.length ? table(['Account', 'Coins', 'Stacks', 'Last observed'], visible.map(row => {
+                const bank = snapshots.get(row.name);
                 const name = escape(row.name);
                 return [`<button type="button" class="bank-account" data-bank-account="${name}">${name}</button>`,
                     number(bank?.coins), number(bank?.stacks), escape(labelTime(bank?.at))];
             }), 'Last observed bank balances') : '<p class="empty">No bots match your filters.</p>';
+        } catch (error) {
+            if (banksDialog.open && version === bankVersion) bankStatus.textContent = error.message;
+        }
     }
 
     function bankGrid(items) {
@@ -372,7 +379,7 @@
         clearTimeout(refresh);
         banksDialog.showModal();
         if (name) void showBank(name);
-        else showBankOverview();
+        else void showBankOverview();
     }
 
     const backpackSlots = 28;
@@ -707,7 +714,7 @@
         });
         banksDialog.addEventListener('close', () => { bankVersion++; });
         bankBack.addEventListener('click', () => {
-            showBankOverview();
+            void showBankOverview();
             bankTitle.focus();
         });
         bankPanel.addEventListener('load', showLoadedSprite, true);
@@ -759,9 +766,10 @@
                 openInventory(button.dataset.inventory);
                 return;
             }
-            await fleetDataReady;
             if (!signedIn) return;
             if (button.dataset.detail) {
+                await fleetDataReady;
+                if (!signedIn) return;
                 openDetails(button.dataset.detail);
             } else if (button === banks || button.dataset.bank) {
                 openBanks(button.dataset.bank);

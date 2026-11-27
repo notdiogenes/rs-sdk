@@ -3,6 +3,8 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { createDashboardActivity, type ControllerStatus } from './dashboard-activity';
 import { inventoryControls } from './dashboard-inventory';
+import { dashboardClientFeed } from './dashboard-live-state';
+import type { dashboardFleetStats } from './dashboard-fleet-stats';
 import { botCredentials, hostedBotState, isFreshBotState } from './hosted-bot';
 import type { BotProfile } from './dashboard-roster';
 import { auditPrefix } from '../sdk/audit-trace';
@@ -39,7 +41,8 @@ async function stopProcess(handle: Process | undefined, signal: 'SIGINT' | 'SIGT
     try { await handle.process.exited; } finally { clearTimeout(deadline); }
 }
 
-export function dashboardDemo(runtimeDir: string, botsDir: string, configDir: string, token: string, roster?: BotProfile, audit?: DashboardAudit, revision?: string) {
+export function dashboardDemo(runtimeDir: string, botsDir: string, configDir: string, token: string,
+    recordBank: ReturnType<typeof dashboardFleetStats>['recordBank'], roster?: BotProfile, audit?: DashboardAudit, revision?: string) {
     const writableDir = roster ? join(runtimeDir, 'managed-bots', roster.name) : join(runtimeDir, 'pickpocket-demo');
     const workingDir = roster?.directory ?? writableDir;
     const envFile = join(workingDir, 'bot.env');
@@ -49,7 +52,7 @@ export function dashboardDemo(runtimeDir: string, botsDir: string, configDir: st
     const delegatedKey = Bun.file(join(configDir, 'caller.sha256'));
     const events: Event[] = [];
     let nextEventId = 1;
-    let client: (Process & { inventory: ReturnType<typeof inventoryControls> }) | undefined;
+    let client: (Process & { inventory: ReturnType<typeof inventoryControls>; feed: ReturnType<typeof dashboardClientFeed> }) | undefined;
     let task: Task | undefined;
     let clientExit: Exit | null = null;
     let taskExit: (Exit & { name: DemoTaskName }) | null = null;
@@ -158,16 +161,20 @@ export function dashboardDemo(runtimeDir: string, botsDir: string, configDir: st
 
     function startClient(bot: string) {
         const inventory = inventoryControls();
+        const feed = dashboardClientFeed((items, at) => recordBank(bot, items, at));
         const child = Bun.spawn([process.execPath, '--no-env-file', join(webclient, 'src/lite/runner.ts'), bot], {
             cwd: webclient,
             stdin: 'ignore', stdout: 'inherit', stderr: 'inherit',
-            ipc: inventory.receive,
+            ipc(message) {
+                inventory.receive(message);
+                feed.receive(message);
+            },
             env: {
                 ...process.env, GATEWAY_DIRECT: 'false', NODE_PATH: dependencies, RS_LITE_BOT_ENV: envFile,
                 RS_LITE_CACHE_DIR: join(writableDir, 'cache'),
             },
         });
-        const running = { process: child, startedAt: new Date().toISOString(), inventory };
+        const running = { process: child, startedAt: new Date().toISOString(), inventory, feed };
         client = running;
         clientExit = null;
         event('client-started', { bot, pid: child.pid });
@@ -417,5 +424,9 @@ export function dashboardDemo(runtimeDir: string, botsDir: string, configDir: st
         return client && !client.stopping && client.inventory.available() ? client : undefined;
     }
 
-    return { handle, profile, status, allowed, recentEvents, planBackend, inventoryClient, ...actions };
+    function fleetState() {
+        return client && !client.stopping && client.process.exitCode === null ? client.feed.state() : undefined;
+    }
+
+    return { handle, profile, status, allowed, recentEvents, planBackend, inventoryClient, fleetState, ...actions };
 }

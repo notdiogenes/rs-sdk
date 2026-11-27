@@ -206,6 +206,8 @@ export class LiteClient {
     private readonly loginPass: string;
     private readonly maxMessageLength: number;
     private onGameTickCallback: (() => void) | null = null;
+    private onBankUpdate?: (items: ReturnType<typeof A.getBankItems>) => void;
+    private bankSynchronized = false;
     private loggedOut = false;
     private collector: BotStateCollector | null = null;
     private executor: ActionExecutor | null = null;
@@ -420,6 +422,19 @@ export class LiteClient {
 
     setOnGameTickCallback(cb: (() => void) | null): void {
         this.onGameTickCallback = cb;
+    }
+
+    setOnBankUpdateCallback(callback: (items: ReturnType<typeof A.getBankItems>) => void): void {
+        this.onBankUpdate = callback;
+    }
+
+    bankInventoryPacket(update: 'full' | 'partial' | 'stop'): void {
+        if (update === 'stop') {
+            this.bankSynchronized = false;
+            return;
+        }
+        if (update === 'full') this.bankSynchronized = true;
+        if (this.bankSynchronized) this.onBankUpdate?.(A.getBankItems(this));
     }
 
     notifyGameTick(): void {

@@ -18,6 +18,7 @@ import { type ActionResult } from '#/bot/ActionExecutor.js';
 import { BotActionQueue, type QueuedBotAction } from '#/bot/ActionQueue.js';
 import type { BotAction, BotWorldState } from '#/bot/types.js';
 import type { LiteClient } from './LiteClient.js';
+import type { FleetBankFrame, FleetStateFrame } from '../../../../sdk/fleet-telemetry';
 import { parseInventoryCommand, prepareInventoryCommand,
     type InventoryReply, type InventoryRequest, type InventoryResult } from '../../../../sdk/inventory-command';
 import {
@@ -31,6 +32,12 @@ import {
 const TICK_MS = 20; // matches the browser draw loop that drives BotOverlay.tick()
 const RECONNECT_MS = 3000;
 const INVENTORY_TIMEOUT_MS = 4500;
+
+function publishFleetFrame(frame: FleetBankFrame | FleetStateFrame): void {
+    if (!process.connected) return;
+    try { process.send?.(frame); }
+    catch { /* The parent may have closed IPC while the game is still connected. */ }
+}
 
 class LiteGatewayRunner {
     private client: LiteClient;
@@ -67,6 +74,9 @@ class LiteGatewayRunner {
         private fastKbdAttackEnabled = false,
     ) {
         this.client = session.client;
+        if (process.connected) this.client.setOnBankUpdateCallback(items => {
+            publishFleetFrame({ type: 'fleet-bank', at: Date.now(), items });
+        });
         // State collection and action execution go through the client, which
         // activates this bot's interface table first - see LiteClient.activate.
         this.client.setOnGameTickCallback(() => {
@@ -89,7 +99,7 @@ class LiteGatewayRunner {
                 }
                 this.fastKbdRawWasVisible = targetIndex !== undefined;
             }
-            this.sendState();
+            this.sendState(true);
         });
 
         this.tickTimer = setInterval(() => this.tick(), TICK_MS);
@@ -364,10 +374,26 @@ class LiteGatewayRunner {
         }
     }
 
-    private sendState(): void {
-        if (!this.wsConnected) return;
+    private sendState(gameTick = false): void {
+        const publishLocally = gameTick && process.connected;
+        if (!this.wsConnected && !publishLocally) return;
         const state = this.client.collectBotState(this.serverTick);
         if (!state) return;
+        if (publishLocally) {
+            const { tick, inGame, player, skills, inventory, questPoints, questJournal } = state;
+            publishFleetFrame({
+                type: 'fleet-state', at: Date.now(),
+                state: {
+                    tick, inGame, skills, inventory, questPoints, questJournal,
+                    player: player && {
+                        worldX: player.worldX, worldZ: player.worldZ, level: player.level,
+                        hp: player.hp, maxHp: player.maxHp, combatLevel: player.combatLevel,
+                        combat: { inCombat: player.combat.inCombat },
+                    },
+                },
+            });
+        }
+        if (!this.wsConnected) return;
         if (this.fastKbdAttackEnabled) {
             const targetIndex = findFastKbdAttackTarget(state);
             if (targetIndex !== undefined && this.lastFastKbdAttackTick !== this.serverTick) {
