@@ -4,7 +4,7 @@ import { PRAYER_INDICES, PRAYER_LEVELS, type NearbyNpc, type PrayerName } from '
 import { itemNamed, type QuestContext } from './shared';
 
 export const questFood = /^(?:lobster|swordfish|shark|salmon|trout|cooked meat|cooked chicken|cake|2\/3 cake|slice of cake|tuna|bread)$/i;
-export const questFoodSupplies = ['Lobster', 'Swordfish', 'Shark', 'Salmon', 'Trout'].map(name => ({ name, count: 3 }));
+export const questFoodSupplies = ['Lobster', 'Swordfish', 'Shark', 'Salmon', 'Trout', 'Cake', 'Tuna', 'Cooked meat'].map(name => ({ name, count: 3 }));
 
 const combatSpells = [
     { name: 'Fire Blast', component: Spells.FIRE_BLAST, magic: 59, maxHit: 16, runes: { 'Death rune': 1, 'Fire rune': 5, 'Air rune': 4 } },

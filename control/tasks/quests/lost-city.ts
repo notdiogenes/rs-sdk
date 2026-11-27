@@ -344,10 +344,17 @@ const result = await runScript(async ctx => {
     questPhase('lost-city-enter-zanaris');
     const equip = await bot.equipItem(/^dramen staff$/i);
     if (!equip.success && !sdk.findEquipmentItem(/^dramen staff$/i)) throw new Error(equip.message);
-    await walk(ctx, 3201, 3169, 0);
-    const door = (await sdk.scanNearbyLocs(10)).find(loc => loc.id === 2406);
-    if (!door) throw new Error('The Zanaris shed door was not visible');
-    await sdk.sendInteractLoc(door.x, door.z, door.id, 1);
+    try {
+        await walk(ctx, 3201, 3169, 0);
+    } catch (error) {
+        // The pathfinder can open the shed on approach and move us to Zanaris as a side effect.
+        const p = player();
+        if (!p || p.worldX < 3200 || p.worldX > 3270 || p.worldZ < 9500 || p.worldZ > 9600) throw error;
+    }
+    if (readQuest(ctx, journal) !== 'complete') {
+        const door = (await sdk.scanNearbyLocs(10)).find(loc => loc.id === 2406);
+        if (door) await sdk.sendInteractLoc(door.x, door.z, door.id, 1);
+    }
     await waitForQuestJournal(ctx, journal, 'complete', 16000);
     questLog('quest-complete', { quest, evidence: 'journal', questPoints: sdk.getState()?.questPoints });
 }, { printState: false, timeout: 5_400_000 });

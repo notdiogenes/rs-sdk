@@ -57,11 +57,90 @@ async function activate(ctx: QuestContext, ids: readonly number[], x: number, z:
 }
 
 async function exitZanaris(ctx: QuestContext) {
-    if (!area(ctx, 3230, 9565, 40)) return;
+    const p = position(ctx);
+    if (p.worldX < 3140 || p.worldX > 3270 || p.worldZ < 9536 || p.worldZ >= 9600) return;
+    const { sdk, bot } = ctx;
     questPhase('dragon-slayer-leave-zanaris');
-    await activate(ctx, [2410], 3253, 9591, 'Use the Zanaris exit ladder');
-    await continueDialog(ctx, [/yes.*ready to leave/i]);
-    await ctx.sdk.waitForCondition(s => (s.player?.worldZ ?? 9600) < 4000, 10000);
+    await bot.closeInterface();
+    sdk.blockDoorTemporarily(0, 3238, 9558, 600_000);
+    sdk.blockDoorTemporarily(0, 3233, 9554, 600_000);
+    const bank = [3152, 9578] as const;
+    const magic = questSkill(ctx, 'Magic');
+    const air = /^air rune$/i;
+    const fire = /^fire rune$/i;
+    const earth = /^earth rune$/i;
+    const law = /^law rune$/i;
+    const jewellery = /^(?:ring of dueling|amulet of glory)\([1-8]\)$/i;
+    const spell = () => sdk.countInventoryItems(law) >= 1 && sdk.countInventoryItems(air) >= 3
+        ? magic >= 25 && sdk.countInventoryItems(fire) >= 1 ? Spells.VARROCK_TELEPORT
+            : magic >= 31 && sdk.countInventoryItems(earth) >= 1 ? Spells.LUMBRIDGE_TELEPORT
+            : undefined
+        : undefined;
+    if (!spell() && !sdk.findInventoryItem(jewellery)) {
+        await prepareQuestStep(ctx, { bank, slots: 6, withdraw: [
+            { name: 'Law rune', count: 2 }, { name: 'Air rune', count: 3 }, { name: 'Fire rune', count: 1 },
+            { name: 'Earth rune', count: 1 },
+        ] });
+    }
+    if (!spell() && !sdk.findInventoryItem(jewellery)) {
+        await walk(ctx, bank[0], bank[1], 3);
+        const opened = await bot.openBank();
+        if (!opened.success) throw new Error(opened.message);
+        try {
+            const entry = sdk.findBankItem(jewellery);
+            if (entry) {
+                const taken = await bot.withdrawItem(entry, 1);
+                if (!taken.success) throw new Error(taken.message);
+            }
+        } finally {
+            await bot.closeBank();
+        }
+    }
+    if (!spell() && !sdk.findInventoryItem(jewellery) && magic >= 25 && sdk.countInventoryItems(air) >= 3 &&
+        (sdk.countInventoryItems(fire) >= 1 || magic >= 31 && sdk.countInventoryItems(earth) >= 1)) {
+        const being = { name: 'Otherworldly being', hitpoints: 66, incomingHit: 5, meleeLevel: 45, minimumFood: 1 };
+        await prepareQuestStep(ctx, { bank, slots: 5, withdraw: [
+            ...questFoodSupplies,
+            ...canMeleeQuest(ctx, being) ? [{ name: 'Adamant longsword', count: 1 }] : questSpellSupplies(ctx, being.hitpoints),
+        ] });
+        const sword = sdk.findInventoryItem(/^adamant longsword$/i);
+        if (sword && canMeleeQuest(ctx, being)) {
+            const wield = await bot.equipItem(sword);
+            if (!wield.success) throw new Error(wield.message);
+        }
+        questPhase('dragon-slayer-collect-teleport-rune');
+        await walk(ctx, 3156, 9545, 4);
+        for (let attempt = 0; attempt < 28 && !spell(); attempt++) {
+            if (await pickUp(ctx, 563, 10)) break;
+            const state = await sdk.waitForCondition(s => s.nearbyNpcs.some(n => n.id === 126 && n.hp !== 0 && n.reachable !== false), 25000);
+            const target = state.nearbyNpcs.find(n => n.id === 126 && n.hp !== 0 && n.reachable !== false);
+            if (!target) continue;
+            const plan = planQuestFight(ctx, being);
+            await withQuestProtection(ctx, ['protect_from_melee'], () => fightQuestNpc(ctx, target, being, plan, {
+                retreat: () => walk(ctx, 3156, 9557, 2),
+            }));
+            await sdk.waitForTicks(3);
+            await pickUp(ctx, 563, 10);
+        }
+    }
+    const component = spell();
+    const item = sdk.findInventoryItem(jewellery);
+    await auditOperation('dragon-slayer-teleport-from-zanaris', 'Leave Zanaris without entering the gated marketplace',
+        { component, item: item?.name }, () => sdk.getState(), async () => {
+            if (component) {
+                const cast = await sdk.sendClickComponent(component);
+                if (!cast.success) throw new Error(cast.message);
+            } else if (item) {
+                const rub = item.optionsWithIndex.find(option => /^rub$/i.test(option.text));
+                if (!rub) throw new Error(`${item.name} does not offer a Rub action`);
+                await sdk.sendUseItem(item.slot, rub.opIndex);
+                await sdk.waitForCondition(state => state.dialog.isOpen, 6000);
+                await continueDialog(ctx, [/edgeville|duel arena/i]);
+            } else {
+                throw new Error('Leaving Zanaris without paying the marketplace tax requires teleport runes or charged jewellery');
+            }
+            await sdk.waitForCondition(state => (state.player?.worldZ ?? 9600) < 4000, 10000);
+        }, () => ({ outcome: 'complete' }));
 }
 
 async function getBriefing(ctx: QuestContext) {
@@ -417,7 +496,19 @@ async function fightElvarg(ctx: QuestContext, page: string) {
         planQuestFight(ctx, elvarg);
         questPhase('dragon-slayer-sail-crandor');
         if (!nedHired.test(page) && !finishedSailing.test(page)) {
-            await talkAt(ctx, 3100, 3258, /^ned$/i, [/could you take me to the island of crandor/i], 8000);
+            await talkAt(ctx, 3100, 3258, /^ned$/i, [
+                /could you take me to the island of crandor/i, /are you going to take me to crandor island/i,
+            ], 8000);
+            const map = inventory(ctx, 1538);
+            if (map) {
+                const ned = sdk.findNearbyNpc(/^ned$/i);
+                if (!ned) throw new Error('Ned was no longer in view when giving him the map');
+                await auditOperation('dragon-slayer-give-map', 'Give Ned the completed map so he joins the repaired ship',
+                    { npc: ned.index, map: map.id }, () => sdk.getState(), () => sdk.sendUseItemOnNpc(map.slot, ned.index),
+                    result => ({ outcome: result.success ? 'dispatched' : 'failed', message: result.message }));
+                await sdk.waitForCondition(() => !has(ctx, 1538), 8000);
+                await continueDialog(ctx);
+            }
             if (!nedHired.test(await journalText(ctx, journal, title))) throw new Error('The journal did not confirm that Ned was hired');
         }
         await shipHold(ctx);
