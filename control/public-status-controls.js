@@ -163,14 +163,8 @@
     }
 
     function renderQuestGrid(visible, columns) {
-        const headers = questCatalog.map(({ id, name }) => {
-            const observed = visible.map(row => journals[row.name]?.progress[id]).filter(Boolean);
-            const complete = observed.filter(status => status === 'complete').length;
-            const count = observed.length ? `${complete}/${observed.length}` : '';
-            return `<th scope="col" class="quest-heading"><span class="quest-column-name">${escape(name)}
-                ${count ? `<small aria-label="${complete} complete out of ${observed.length} reported">${count}</small>` : ''}
-                </span></th>`;
-        });
+        const headers = questCatalog.map(({ name }) =>
+            `<th scope="col" class="quest-heading"><span class="quest-column-name">${escape(name)}</span></th>`);
         const rows = visible.map(({ name, hiscore }) => {
             const journal = journals[name];
             const statuses = questCatalog.map(({ id }) => journal?.progress[id] || 'unknown');

@@ -196,7 +196,6 @@ dialog h3{margin-top:12px}
     line-height: 1;
     white-space: nowrap;
 }
-.quest-column-name small { font-size: .68rem; }
 .quest-grid .quest-account { width: var(--quest-account-width); padding-inline: 8px; }
 .quest-account .button { white-space: normal; overflow-wrap: anywhere; }
 .quest-account-meta { display: flex; flex-wrap: wrap; gap: 2px 6px; line-height: 1.2; }
