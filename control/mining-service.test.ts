@@ -48,6 +48,7 @@ for (const mode of ['bank', 'power'] as const) {
                 getState: () => state,
                 getStateAge: () => 0,
                 waitForTicks: async () => state,
+                scanNearbyLocs: async () => state.nearbyLocs,
                 waitForCondition: async (check: (value: BotWorldState) => boolean) => {
                     if (!check(state)) throw new Error('No observed effect');
                     return state;
@@ -76,8 +77,8 @@ for (const mode of ['bank', 'power'] as const) {
                     state.player!.worldX = x;
                     state.player!.worldZ = z;
                     if (!Object.values(miningBanks).some(bank => bank.x === x && bank.z === z)) {
-                        if (!state.nearbyLocs.some(loc => loc.x === x && loc.z === z)) mine++;
-                        state.nearbyLocs = Array.from({ length: 3 }, (_, offset) => ({ id: 2092, x: x + offset, z, name: 'Rocks',
+                        if (!state.nearbyLocs.some(loc => loc.x === x + 1 && loc.z === z)) mine++;
+                        state.nearbyLocs = [[x + 1, z], [x - 1, z], [x, z + 1]].map(([rockX, rockZ], offset) => ({ id: 2092, x: rockX, z: rockZ, name: 'Rocks',
                             distance: offset, optionsWithIndex: [{ text: 'Mine', opIndex: 1 }] })) as BotWorldState['nearbyLocs'];
                     }
                     return success;

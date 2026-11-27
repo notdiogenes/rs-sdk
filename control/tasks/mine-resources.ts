@@ -1,4 +1,5 @@
 import { auditEvent, auditFrame, auditOperation } from '../../sdk/audit-trace';
+import { findLongPath, isTileWalkable } from '../../sdk/pathfinding';
 import type { ScriptContext } from '../../sdk/runner';
 import type { BotWorldState, InventoryItem, NearbyLoc } from '../../sdk/types';
 import { guildLadder, inMiningGuild, miningBanks, miningDistance, miningResources, miningSelection, rankMiningSites, type MiningSite, type Tile } from '../mining-routes';
@@ -136,18 +137,36 @@ export async function mineResources({ bot, sdk }: ScriptContext, task = process.
     const isRock = (loc: NearbyLoc) => loc.reachable !== false && rockIds.includes(loc.id) &&
         loc.optionsWithIndex.some(option => /^mine$/i.test(option.text));
     async function mineRock(rock: NearbyLoc) {
-        const option = rock.optionsWithIndex.find(entry => /^mine$/i.test(entry.text))!;
+        if (resource !== 'essence') {
+            const position = tile(current());
+            const sides = [{ x: rock.x + 1, z: rock.z }, { x: rock.x, z: rock.z - 1 },
+                { x: rock.x - 1, z: rock.z }, { x: rock.x, z: rock.z + 1 }]
+                .sort((a, b) => miningDistance(a, position) - miningDistance(b, position));
+            const side = sides.find(point => {
+                if (miningDistance(point, position) === 0) return true;
+                if (!isTileWalkable(0, point.x, point.z)) return false;
+                const end = findLongPath(0, position.x, position.z, point.x, point.z, 50).at(-1);
+                return end?.x === point.x && end.z === point.z;
+            });
+            if (!side) return { outcome: 'unconfirmed', message: 'No reachable tile beside this rock.' };
+            await walk({ ...side, name: 'the tile beside the rock' }, 0);
+        }
+        const live = (await sdk.scanNearbyLocs(resource === 'essence' ? 18 : 5))
+            .find(loc => loc.id === rock.id && loc.x === rock.x && loc.z === rock.z && isRock(loc));
+        const option = live?.optionsWithIndex.find(entry => /^mine$/i.test(entry.text));
+        if (!live || !option) return { outcome: 'unconfirmed', message: 'The rock was depleted or out of reach before the swing.' };
         const before = current();
         const xp = skill(before)?.experience ?? 0;
         const count = quantity(before);
-        const rejected = before.opFeedback?.opRejectedCount ?? 0;
-        const dispatch = await sdk.sendInteractLoc(rock.x, rock.z, rock.id, option.opIndex);
+        const dispatch = await sdk.sendInteractLoc(live.x, live.z, live.id, option.opIndex);
         if (!dispatch.success) return { outcome: 'unconfirmed', message: dispatch.message };
         const timeout = resource === 'adamantite' || resource === 'mithril' ? 45_000 : 24_000;
+        const refusal = (state: BotWorldState) => state.gameMessages?.find(message => message.tick > before.tick && message.type === 0 &&
+            /no (ore|minerals)|need a (pickaxe|mining level)|inventory is too full|can't reach|cannot reach/i.test(message.text));
         const after = await observe(state => (quantity(state) > count && (skill(state)?.experience ?? 0) > xp)
-            || (state.opFeedback?.opRejectedCount ?? 0) > rejected, timeout).catch(() => null);
+            || !!refusal(state), timeout).catch(() => null);
         if (!after || quantity(after) <= count || (skill(after)?.experience ?? 0) <= xp) {
-            return { outcome: 'unconfirmed', message: after ? 'The game rejected the mining interaction.' : 'No item or XP gain was observed.' };
+            return { outcome: 'unconfirmed', message: (after && refusal(after)?.text) || 'No item or XP gain was observed.' };
         }
         auditEvent('milestone', 'mining-product-confirmed', {
             resource, rock: rock.id, x: rock.x, z: rock.z, quantity: quantity(after) - count,
