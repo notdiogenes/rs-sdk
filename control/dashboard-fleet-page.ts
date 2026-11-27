@@ -7,6 +7,16 @@ import type { Bot, ControlActivity, Snapshot } from './public-status';
 const escape = (value: string) => value.replaceAll('&', '&amp;').replaceAll('<', '&lt;')
     .replaceAll('>', '&gt;').replaceAll('"', '&quot;').replaceAll("'", '&#39;');
 const groups = { attention: 'Needs attention', active: 'Producing', idle: 'Idle', offline: 'Offline' } as const;
+// Row order from the game's stats tab. Runecraft shares the last row with the total.
+const skillTabOrder = [
+    'Attack', 'Hitpoints', 'Mining',
+    'Strength', 'Agility', 'Smithing',
+    'Defence', 'Herblore', 'Fishing',
+    'Ranged', 'Thieving', 'Cooking',
+    'Prayer', 'Crafting', 'Firemaking',
+    'Magic', 'Fletching', 'Woodcutting',
+    'Runecraft',
+] satisfies (typeof fleetSkills[number][0])[];
 type Group = keyof typeof groups;
 const displayTimeZone = 'America/New_York';
 const clock = new Intl.DateTimeFormat('en-US', {
@@ -90,6 +100,7 @@ function card(bot: Bot, category: Group, reason: string, managed: ControlActivit
     <div class="card-footer">
       ${cardAction('Details', 'details', `data-detail="${name}"`)}
       ${cardAction('Current inventory', 'inventory', `data-inventory="${name}"`)}
+      ${cardAction('View skill stats', 'skills', `data-skill-stats="${name}" aria-haspopup="dialog"`)}
       ${cardAction('Diagnostics', 'diagnostics', `data-diagnostics="${name}"`)}
       ${cardAction('Audit history', 'audit', `data-audit-bot="${name}"`)}
       ${cardAction('Bank', 'bank', `data-bank="${name}"`)}
@@ -171,6 +182,16 @@ export function fleetPage({ nonce, data, questCatalog, fleetStyle, controls, ref
   <div class="dialog-header"><h2 id="fleet-details-title"></h2><button type="button" data-close>Close</button></div>
   <p id="fleet-details-status" role="status"></p>
   <div id="fleet-details-content"></div>
+</div></dialog>
+<dialog id="skill-stats-dialog" aria-labelledby="skill-stats-title" aria-describedby="skill-stats-status"><div class="dialog-body">
+  <div class="dialog-header"><h2 id="skill-stats-title">Skills</h2><button type="button" data-close autofocus>Close</button></div>
+  <p id="skill-stats-status" role="status"></p>
+  <dl class="skill-stats-grid" id="skill-stats-grid" hidden>
+    ${skillTabOrder.map(skill => `<div class="skill-stat" data-skill-stat="${skill}">
+      <dt>${fleetSkillIcon(skill)}<span>${skill}</span></dt><dd>—</dd>
+    </div>`).join('')}
+    <div class="skill-stat skill-stat-total"><dt>Total level</dt><dd id="skill-stats-total">—</dd></div>
+  </dl>
 </div></dialog>
 <dialog id="inventory-dialog" aria-labelledby="inventory-title"><div class="dialog-body">
   <div class="dialog-header"><h2 id="inventory-title">Current inventory</h2>

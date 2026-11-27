@@ -34,6 +34,28 @@ button:disabled{opacity:.6;cursor:default}
 [aria-pressed=true]{border-color:#79634a;color:var(--gold)}
 .status-online{color:var(--green)}.status-unknown{color:var(--amber)}
 .group-title h2{color:inherit}.group-title h2.attention{color:var(--amber)}.group-title h2.active{color:var(--green)}
+#skill-stats-dialog{max-width:min(430px,calc(100vw - 24px));max-height:85dvh}
+#skill-stats-dialog .dialog-header{align-items:center;margin-bottom:6px}
+#skill-stats-dialog h2{font-size:19px;overflow-wrap:anywhere}
+#skill-stats-status{font-size:12px;margin-bottom:12px}
+.skill-stats-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:5px;margin:0;padding:7px;
+  border:1px solid #6b4d32;border-radius:8px;background:#35271d;box-shadow:inset 0 0 0 2px #241b15}
+.skill-stat{position:relative;min-width:0;min-height:59px;padding:6px 9px;border:1px solid #674d37;border-radius:5px;
+  background:#443224;box-shadow:inset 0 1px 0 #674e36}
+.skill-stat dt{display:grid;justify-items:start;gap:2px;color:#e9d2b3;font-size:11px;letter-spacing:0;
+  font-weight:600;text-transform:none;overflow-wrap:anywhere}
+.skill-stat .skill-icon{width:26px;height:26px}
+.skill-stat dd{position:absolute;inset-block-start:8px;inset-inline-end:9px;margin:0;color:#ffe4a2;
+  font-size:20px;font-weight:750;line-height:1.2;font-variant-numeric:tabular-nums}
+.skill-stat-total{grid-column:span 2;display:flex;align-items:center;justify-content:space-between;gap:7px;
+  padding-inline:13px;background:#30251c;border-color:#8e6a45}
+.skill-stat-total dt{font-size:12px}
+.skill-stat-total dd{position:static;font-size:23px}
+@media(max-width:380px){
+  #skill-stats-dialog .dialog-body{padding:12px}
+  .skill-stat{padding-inline:6px}
+  .skill-stat dd{inset-inline-end:6px}
+}
 #dashboard-diagnostics{max-width:min(720px,calc(100vw - 24px))}
 #inventory-dialog{max-width:min(680px,calc(100vw - 24px))}
 #inventory-dialog .dialog-header{align-items:center;margin-bottom:8px}

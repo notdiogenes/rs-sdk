@@ -47,6 +47,12 @@
     const bankBack = document.querySelector('#bank-back');
     let bankVersion = 0;
     const detailsDialog = document.querySelector('#fleet-details');
+    const skillStatsDialog = document.querySelector('#skill-stats-dialog');
+    const skillStatsTitle = document.querySelector('#skill-stats-title');
+    const skillStatsStatus = document.querySelector('#skill-stats-status');
+    const skillStatsGrid = document.querySelector('#skill-stats-grid');
+    const skillStatsTotal = document.querySelector('#skill-stats-total');
+    let skillStatsVersion = 0;
     const inventoryDialog = document.querySelector('#inventory-dialog');
     const inventoryStatus = document.querySelector('#inventory-status');
     const inventoryLayout = document.querySelector('#inventory-layout');
@@ -651,6 +657,37 @@
         detailsDialog.showModal();
     }
 
+    function showSkillStats(name) {
+        const snapshot = stats.get(name)?.skills;
+        skillStatsGrid.hidden = !snapshot;
+        if (!snapshot) {
+            skillStatsStatus.textContent = dataError || 'No skill snapshot has been reported.';
+            return;
+        }
+        for (const tile of skillStatsGrid.querySelectorAll('[data-skill-stat]')) {
+            const level = snapshot.levels[tile.dataset.skillStat];
+            tile.querySelector('dd').textContent = number(level);
+        }
+        skillStatsTotal.textContent = number(skillTotal(snapshot));
+        skillStatsStatus.textContent = `Base levels · Sampled ${labelTime(snapshot.at)}`;
+    }
+
+    async function openSkillStats(name) {
+        const version = ++skillStatsVersion;
+        clearTimeout(refresh);
+        skillStatsTitle.textContent = `Skills for ${name}`;
+        if (updating && !stats.has(name)) {
+            skillStatsGrid.hidden = true;
+            skillStatsStatus.textContent = 'Loading skill levels…';
+        } else {
+            showSkillStats(name);
+        }
+        skillStatsDialog.showModal();
+        if (!updating) return;
+        await fleetDataReady;
+        if (skillStatsDialog.open && version === skillStatsVersion && signedIn) showSkillStats(name);
+    }
+
     function installFleet() {
         let saved;
         try { saved = JSON.parse(sessionStorage.getItem('fleet-view')); } catch { /* Reset stored preferences. */ }
@@ -685,10 +722,11 @@
                 selectTab(tabs[next], true);
             });
         }
-        for (const modal of [banksDialog, detailsDialog, inventoryDialog]) {
+        for (const modal of [banksDialog, detailsDialog, inventoryDialog, skillStatsDialog]) {
             modal.querySelector('[data-close]').addEventListener('click', () => modal.close());
             modal.addEventListener('close', scheduleRefresh);
         }
+        skillStatsDialog.addEventListener('close', () => { skillStatsVersion++; });
         inventoryRefresh.addEventListener('click', () => {
             if (inventoryRefresh.getAttribute('aria-disabled') === 'true') return;
             showInventoryAction();
@@ -752,7 +790,7 @@
                 document.querySelector(`[data-sort="${key}"]`)?.focus();
                 return;
             }
-            if (button !== banks && !button.matches('[data-bank], [data-detail], [data-inventory], [data-diagnostics], [data-unlock]')) return;
+            if (button !== banks && !button.matches('[data-bank], [data-detail], [data-inventory], [data-skill-stats], [data-diagnostics], [data-unlock]')) return;
             await sessionReady;
             if (!signedIn) {
                 openSignIn(button.hasAttribute('data-unlock') ? undefined : button);
@@ -764,6 +802,10 @@
             }
             if (button.dataset.inventory) {
                 openInventory(button.dataset.inventory);
+                return;
+            }
+            if (button.dataset.skillStats) {
+                void openSkillStats(button.dataset.skillStats);
                 return;
             }
             if (!signedIn) return;
