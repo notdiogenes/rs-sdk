@@ -66,6 +66,22 @@ const sites: MiningSite[] = [
 export const miningDistance = (a: Tile, b: Tile) => Math.max(Math.abs(a.x - b.x), Math.abs(a.z - b.z));
 export const miningTravelTimeout = (distance: number) => Math.min(480_000, Math.max(35_000, 25_000 + distance * 950));
 
+export const alKharidTollGate = place('Al Kharid toll gate', 3268, 3227);
+const alKharidNorthApproach = place('the open road north of Al Kharid', 3275, 3306);
+
+export function miningTravelVia(from: Tile, to: Tile) {
+    const [west, east] = from.x < to.x ? [from, to] : [to, from];
+    if (west.x < alKharidTollGate.x && west.z < 3300 &&
+        east.x >= alKharidTollGate.x && east.x <= 3335 && east.z >= 3130 && east.z < 3270) {
+        return alKharidNorthApproach;
+    }
+}
+
+export function miningTravelDistance(from: Tile, to: Tile) {
+    const via = miningTravelVia(from, to);
+    return via ? miningDistance(from, via) + miningDistance(via, to) : miningDistance(from, to);
+}
+
 export const guildLadder = place('Mining Guild ladders', 3019, 3339);
 export function inMiningGuild(p: Tile) {
     return p.x >= 3010 && p.x <= 3060 && p.z >= 9722 && p.z <= 9755;
@@ -78,8 +94,8 @@ export function rankMiningSites(resource: MiningResource, mode: MiningMode, from
         const start = site.guild ? guildLadder : site.mine;
         const origin = inMiningGuild(from) ? guildLadder : from;
         const ladder = site.guild ? 25 : 0;
-        const banking = mode === 'bank' ? 2 * (miningDistance(start, site.bank) + ladder) / 27 : 0;
-        return Math.max(0, respawn / stock - 2) + banking + (miningDistance(start, origin) + ladder) / 55;
+        const banking = mode === 'bank' ? 2 * (miningTravelDistance(start, site.bank) + ladder) / 27 : 0;
+        return Math.max(0, respawn / stock - 2) + banking + (miningTravelDistance(origin, start) + ladder) / 55;
     };
     return sites.filter(site => site.rocks[resource] && (!site.guild || level >= 60)).sort((a, b) => score(a) - score(b));
 }

@@ -1,9 +1,10 @@
 import { auditEvent, auditFrame, auditOperation } from '../../sdk/audit-trace';
+import { throwIfExecutionAborted } from '../../sdk/execution-context';
 import { findLongPath, isTileWalkable } from '../../sdk/pathfinding';
 import type { ScriptContext } from '../../sdk/runner';
 import type { BotWorldState, InventoryItem, NearbyLoc } from '../../sdk/types';
-import { guildLadder, inMiningGuild, miningBanks, miningDistance, miningResources, miningSelection,
-    miningTravelTimeout, rankMiningSites, type MiningSite, type Tile } from '../mining-routes';
+import { alKharidTollGate, guildLadder, inMiningGuild, miningBanks, miningDistance, miningResources, miningSelection,
+    miningTravelDistance, miningTravelTimeout, miningTravelVia, rankMiningSites, type MiningSite, type Tile } from '../mining-routes';
 
 const pickaxe = 1275;
 const capacity = 28;
@@ -20,6 +21,7 @@ export async function mineResources({ bot, sdk }: ScriptContext, task = process.
         throw new Error('A bank stock target must be between 1 and 100,000 and requires banking mode.');
     }
     function current() {
+        throwIfExecutionAborted();
         const state = sdk.getState();
         if (!state?.inGame || !state.player || state.player.isDead || sdk.getStateAge() > 10_000) {
             throw new Error('Mining requires a fresh game state and a living player.');
@@ -61,13 +63,30 @@ export async function mineResources({ bot, sdk }: ScriptContext, task = process.
         return result;
     }
 
-    async function walk(target: Tile & { name: string }, radius: number) {
+    async function walkLeg(target: Tile & { name: string }, radius: number) {
         const distance = miningDistance(tile(current()), target);
         if (distance <= radius) return;
         const timeout = miningTravelTimeout(distance);
         await act('mining-walk', `Reach ${target.name}`, { ...target, distance, timeout },
             () => bot.walkTo(target.x, target.z, radius, { timeout }));
         if (miningDistance(tile(current()), target) > radius) throw new Error(`Arrival at ${target.name} was not confirmed.`);
+    }
+
+    async function dismissTollDialogue() {
+        const state = current();
+        if (!state.dialog?.isOpen || miningDistance(tile(state), alKharidTollGate) > 2) return;
+        const text = [state.dialog.text, ...state.dialog.options.map(option => option.text),
+            ...(state.dialog.allComponents ?? []).map(component => component.text)].join(' ');
+        if (!/come through this gate|pay a toll|walk around|you may pass for free/i.test(text)) return;
+        await act('mining-dismiss-toll', 'Close the Al Kharid toll dialogue', {}, () => sdk.sendCloseModal());
+        await observe(next => !next.dialog.isOpen, 5_000);
+    }
+
+    async function walk(target: Tile & { name: string }, radius: number) {
+        const via = miningTravelVia(tile(current()), target);
+        await dismissTollDialogue();
+        if (via) await walkLeg(via, 0);
+        await walkLeg(target, radius);
     }
 
     async function leaveEssenceMine() {
@@ -108,6 +127,29 @@ export async function mineResources({ bot, sdk }: ScriptContext, task = process.
         if (!current().bank.isOpen) throw new Error('The game did not confirm bank access.');
     }
 
+    async function openSetupBank() {
+        if (current().bank.isOpen) return;
+        await leaveEssenceMine();
+        if (inMiningGuild(tile(current()))) await guildTransition(false);
+        const start = tile(current());
+        const banks = Object.values(miningBanks).filter(bank => bank !== miningBanks.shilo || miningDistance(start, bank) < 75)
+            .sort((a, b) => miningTravelDistance(start, a) - miningTravelDistance(start, b));
+        let lastError: unknown;
+        for (const bank of banks.slice(0, 3)) {
+            try {
+                await openBank(bank);
+                return;
+            } catch (error) {
+                current();
+                lastError = error;
+                auditEvent('setback', 'mining-setup-bank-failed', {
+                    bank: bank.name, message: error instanceof Error ? error.message : String(error),
+                });
+            }
+        }
+        throw lastError;
+    }
+
     async function closeBank() {
         if (current().bank.isOpen) await act('mining-close-bank', 'Close the bank', {}, () => bot.closeBank());
     }
@@ -138,10 +180,7 @@ export async function mineResources({ bot, sdk }: ScriptContext, task = process.
     const keep = (item: InventoryItem) => item.id === pickaxe || canEat(item);
     const bag = current();
     if (bankTarget !== undefined || bag.bank.isOpen || !hasPick(bag) || bag.inventory.some(item => !keep(item))) {
-        const bank = Object.values(miningBanks).filter(candidate => candidate !== miningBanks.shilo
-            || miningDistance(candidate, tile(bag)) < 75)
-            .sort((a, b) => miningDistance(tile(bag), a) - miningDistance(tile(bag), b))[0]!;
-        await openBank(insideEssenceMine(tile(bag)) ? miningBanks.east : inMiningGuild(tile(bag)) ? miningBanks.falador : bank);
+        await openSetupBank();
         await bankItems(keep);
         if (checkStock()) {
             await closeBank();
@@ -175,25 +214,39 @@ export async function mineResources({ bot, sdk }: ScriptContext, task = process.
             if (!side) return { outcome: 'unconfirmed', message: 'No reachable tile beside this rock.' };
             await walk({ ...side, name: 'the tile beside the rock' }, 0);
         }
-        const live = (await sdk.scanNearbyLocs(resource === 'essence' ? 18 : 5))
-            .find(loc => loc.id === rock.id && loc.x === rock.x && loc.z === rock.z && isRock(loc));
+        const atTile = (await sdk.scanNearbyLocs(resource === 'essence' ? 18 : 5))
+            .filter(loc => loc.x === rock.x && loc.z === rock.z);
+        const live = atTile.find(isRock);
         const option = live?.optionsWithIndex.find(entry => /^mine$/i.test(entry.text));
-        if (!live || !option) return { outcome: 'unconfirmed', message: 'The rock was depleted or out of reach before the swing.' };
+        if (!live || !option) {
+            const reason = atTile.some(loc => rockIds.includes(loc.id)) ? 'The rock is no longer reachable with a Mine option.'
+                : 'The rock tile has no active ore on rescan.';
+            return { outcome: 'unconfirmed', message: reason };
+        }
         const before = current();
         const xp = skill(before)?.experience ?? 0;
         const count = quantity(before);
         const dispatch = await sdk.sendInteractLoc(live.x, live.z, live.id, option.opIndex);
         if (!dispatch.success) return { outcome: 'unconfirmed', message: dispatch.message };
         const timeout = resource === 'adamantite' || resource === 'mithril' ? 45_000 : 24_000;
-        const refusal = (state: BotWorldState) => state.gameMessages?.find(message => message.tick > before.tick && message.type === 0 &&
-            /no (ore|minerals)|need a (pickaxe|mining level)|inventory is too full|can't reach|cannot reach/i.test(message.text));
-        const after = await observe(state => (quantity(state) > count && (skill(state)?.experience ?? 0) > xp)
-            || !!refusal(state), timeout).catch(() => null);
-        if (!after || quantity(after) <= count || (skill(after)?.experience ?? 0) <= xp) {
-            return { outcome: 'unconfirmed', message: (after && refusal(after)?.text) || 'No item or XP gain was observed.' };
+        const feedback = (state: BotWorldState, pattern: RegExp) => state.gameMessages?.find(message =>
+            message.tick > before.tick && message.type === 0 && pattern.test(message.text))?.text;
+        const refusal = (state: BotWorldState) =>
+            feedback(state, /no (ore|minerals)|need a (pickaxe|mining level)|inventory is too full|can't reach|cannot reach/i);
+        const earned = (state: BotWorldState) => quantity(state) > count && (skill(state)?.experience ?? 0) > xp;
+        const finished = (state: BotWorldState) => earned(state) || !!refusal(state);
+        const swung = (state: BotWorldState) => !!feedback(state, /you swing your pick at the rock/i);
+        const startTimeout = 6_000;
+        const started = await observe(state => finished(state) || swung(state), startTimeout).catch(() => current());
+        if (!finished(started) && !swung(started)) {
+            return { outcome: 'unconfirmed', message: 'No mining swing was observed after dispatch.' };
+        }
+        const after = finished(started) ? started : await observe(finished, timeout - startTimeout).catch(() => current());
+        if (!earned(after)) {
+            return { outcome: 'unconfirmed', message: refusal(after) || 'The swing started but did not yield ore and XP.' };
         }
         auditEvent('milestone', 'mining-product-confirmed', {
-            resource, rock: rock.id, x: rock.x, z: rock.z, quantity: quantity(after) - count,
+            resource, rock: live.id, x: live.x, z: live.z, quantity: quantity(after) - count,
             xp: skill(after)!.experience - xp,
         });
         return { outcome: 'complete' };
@@ -254,6 +307,7 @@ export async function mineResources({ bot, sdk }: ScriptContext, task = process.
                 const failedRocks = new Set<string>();
                 let attemptsWithoutOre = 0;
                 let emptySince = 0;
+                let yieldedHere = false;
                 while (true) {
                     const state = current();
                     if (!hasPick(state)) throw new Error('The rune pickaxe is no longer usable or present.');
@@ -278,10 +332,10 @@ export async function mineResources({ bot, sdk }: ScriptContext, task = process.
                     if (!rock) {
                         if (tooManyMisses) break;
                         emptySince ||= Date.now();
-                        const competitors = here.nearbyPlayers.filter(player => miningDistance(player, site.mine) <= 16).length;
-                        const wait = competitors ? 18_000 : Math.min(90_000, Math.max(24_000, settings.respawn * 1000));
+                        const nearbyPlayers = here.nearbyPlayers.filter(player => miningDistance(player, site.mine) <= 16).length;
+                        const wait = nearbyPlayers && !yieldedHere ? 18_000 : Math.min(90_000, Math.max(24_000, settings.respawn * 1000));
                         if (Date.now() - emptySince >= wait) {
-                            auditEvent('setback', 'mining-patch-depleted', { site: site.mine.name, competitors, waitedMs: wait });
+                            auditEvent('setback', 'mining-patch-depleted', { site: site.mine.name, nearbyPlayers, yieldedHere, waitedMs: wait });
                             break;
                         }
                         await sdk.waitForTicks(3);
@@ -292,6 +346,7 @@ export async function mineResources({ bot, sdk }: ScriptContext, task = process.
                         () => sdk.getState(), () => mineRock(rock), value => value);
                     if (result.outcome === 'complete') {
                         produced = true;
+                        yieldedHere = true;
                         quietSweeps = 0;
                         attemptsWithoutOre = 0;
                         failedRocks.clear();

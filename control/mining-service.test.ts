@@ -2,7 +2,7 @@ import { expect, test } from 'bun:test';
 import type { ScriptContext } from '../sdk/runner';
 import type { BotWorldState, InventoryItem } from '../sdk/types';
 import { activity, isActivity } from './dashboard-task-catalog';
-import { miningBanks, miningResources, miningTravelTimeout, rankMiningSites } from './mining-routes';
+import { miningBanks, miningResources, miningTravelDistance, miningTravelTimeout, miningTravelVia, rankMiningSites } from './mining-routes';
 import { mineResources } from './tasks/mine-resources';
 
 test('every supported resource has both modes and resource-specific routes', () => {
@@ -25,6 +25,57 @@ test('every supported resource has both modes and resource-specific routes', () 
     expect(miningTravelTimeout(8)).toBeLessThan(150000);
 });
 
+for (const firstBankFails of [false, true]) {
+    test(`setup resumes west of the toll gate with a bank fallback = ${firstBankFails}`, async () => {
+        const gate = { x: 3267, z: 3227 };
+        expect(miningTravelVia(gate, miningBanks.kharid)).toMatchObject({ x: 3275, z: 3306 });
+        expect(miningTravelVia(miningBanks.kharid, gate)).toMatchObject({ x: 3275, z: 3306 });
+        expect(miningTravelDistance(gate, miningBanks.draynor)).toBeLessThan(miningTravelDistance(gate, miningBanks.kharid));
+        const state = {
+            inGame: true,
+            player: { worldX: gate.x, worldZ: gate.z, level: 0, hp: 99, maxHp: 99, isDead: false },
+            skills: [{ name: 'Mining', baseLevel: 61, experience: 300000 }],
+            inventory: [], equipment: [],
+            bank: { isOpen: false, items: [{ id: 453, name: 'Coal', count: 6000, slot: 0 }] },
+            dialog: { isOpen: true, text: 'You must pay a toll of 10 gold coins to pass.', options: [] },
+        } as unknown as BotWorldState;
+        const success = { success: true, message: '' };
+        const walks: number[][] = [];
+        let dialoguesClosed = 0;
+        const context = {
+            sdk: {
+                getState: () => state,
+                getStateAge: () => 0,
+                sendCloseModal: async () => {
+                    dialoguesClosed++;
+                    state.dialog.isOpen = false;
+                    return success;
+                },
+                waitForCondition: async (check: (value: BotWorldState) => boolean) => {
+                    expect(check(state)).toBe(true);
+                    return state;
+                },
+            },
+            bot: {
+                walkTo: async (x: number, z: number) => {
+                    expect(state.dialog.isOpen).toBe(false);
+                    walks.push([x, z]);
+                    if (firstBankFails && walks.length === 1) return { success: false, message: 'Path blocked' };
+                    state.player!.worldX = x;
+                    state.player!.worldZ = z;
+                    return success;
+                },
+                openBank: async () => { state.bank.isOpen = true; return success; },
+                closeBank: async () => { state.bank.isOpen = false; return success; },
+            },
+        } as unknown as ScriptContext;
+        await mineResources(context, 'mine-coal-bank', 6000);
+        expect(walks).toEqual(firstBankFails ? [[3092, 3243], [3253, 3420]] : [[3092, 3243]]);
+        expect(dialoguesClosed).toBe(1);
+        expect(state.bank.isOpen).toBe(false);
+    });
+}
+
 for (const scenario of ['bank', 'power', 'partial-bank', 'stock-target'] as const) {
     test(`mining ${scenario} confirms pick withdrawal, switches sites, mines, and unloads`, async () => {
         const mode = scenario === 'power' ? 'power' : 'bank';
@@ -35,6 +86,7 @@ for (const scenario of ['bank', 'power', 'partial-bank', 'stock-target'] as cons
         });
         const state = {
             inGame: true,
+            tick: 1,
             player: { worldX: miningBanks.west.x, worldZ: miningBanks.west.z, level: 0, hp: 99, maxHp: 99, isDead: false },
             skills: [{ name: 'Mining', baseLevel: 61, experience: 300000 }],
             inventory: Array.from({ length: partial ? 24 : 26 }, (_, slot) => item(379, 'Lobster', slot, true)),
@@ -43,12 +95,14 @@ for (const scenario of ['bank', 'power', 'partial-bank', 'stock-target'] as cons
             nearbyLocs: [],
             nearbyPlayers: [],
             opFeedback: { opRejectedCount: 0 },
+            gameMessages: [],
         } as unknown as BotWorldState;
         if (target !== undefined) state.bank.items.push({ slot: 1, id: 440, name: 'Iron ore', count: 999 });
         const success = { success: true, message: '' };
         const trips: string[] = [];
         let mine = 0;
         let haul = 0;
+        let pendingOre = false;
         const context = {
             sdk: {
                 getState: () => state,
@@ -56,6 +110,12 @@ for (const scenario of ['bank', 'power', 'partial-bank', 'stock-target'] as cons
                 waitForTicks: async () => state,
                 scanNearbyLocs: async () => state.nearbyLocs,
                 waitForCondition: async (check: (value: BotWorldState) => boolean) => {
+                    if (!check(state) && pendingOre) {
+                        pendingOre = false;
+                        state.inventory.push(item(440, 'Iron ore', 27));
+                        state.skills[0]!.experience += 35;
+                        trips.push('verified ore');
+                    }
                     if (!check(state)) throw new Error('No observed effect');
                     return state;
                 },
@@ -66,9 +126,9 @@ for (const scenario of ['bank', 'power', 'partial-bank', 'stock-target'] as cons
                         return { success: false, message: 'End fixture' };
                     }
                     if (partial && state.inventory.some(entry => entry.id === 440)) return { success: false, message: 'Rock was depleted' };
-                    state.inventory.push(item(440, 'Iron ore', 27));
-                    state.skills[0]!.experience += 35;
-                    trips.push('verified ore');
+                    state.gameMessages = [{ tick: ++state.tick, text: 'You swing your pick at the rock.',
+                        type: 0, sender: '', fromSelf: false }];
+                    pendingOre = true;
                     return success;
                 },
             },
