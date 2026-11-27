@@ -135,6 +135,19 @@ async function prepareEntrana(ctx: QuestContext) {
     }
 }
 
+async function leaveShip(ctx: QuestContext, x: number, z: number, plank: number) {
+    const { sdk } = ctx;
+    await walk(ctx, x, z, 2);
+    const loc = (await sdk.scanNearbyLocs(10)).find(entry => entry.id === plank);
+    if (!loc) throw new Error('The ship’s disembarkation gangplank was not visible');
+    await auditOperation('cross-gangplank', 'Leave the ship via the disembarkation gangplank',
+        { x, z, plank }, () => sdk.getState(), async () => {
+            const sent = await sdk.sendInteractLoc(loc.x, loc.z, loc.id, 1);
+            if (!sent.success) throw new Error(sent.message);
+            await sdk.waitForCondition(s => !!s.player && s.player.level === 0 && s.player.worldZ > z, 12000);
+        }, () => ({ outcome: 'complete' }));
+}
+
 const result = await runScript(async ctx => {
     const { sdk, bot } = ctx;
     const player = () => sdk.getState()?.player;
@@ -197,10 +210,11 @@ const result = await runScript(async ctx => {
     if (onIsland() && !has(771) && !has(772)) {
         questPhase('lost-city-enter-cave');
         planQuestFight(ctx, spiritFight);
-        if ((player()?.level ?? 0) > 0) {
+        if ((player()?.level ?? 0) === 0 && (player()?.worldZ ?? 0) < 3334) {
             await walk(ctx, 2829, 3330, 3);
-            await changeFloor(ctx, 'down', 2829, 3330, 1);
+            await changeFloor(ctx, 'up', 2829, 3330, 1);
         }
+        if ((player()?.level ?? 0) === 1) await leaveShip(ctx, 2834, 3333, 2415);
         await talkAt(ctx, 2822, 3374, /^cave monk$/i, [/risk i will have to take/i]);
         await sdk.waitForCondition(() => !!inside(), 8000);
     }
@@ -259,10 +273,7 @@ const result = await runScript(async ctx => {
         await talkAt(ctx, 2835, 3335, /^monk of entrana$/i, [/yes.*ready to go/i]);
         await sdk.waitForCondition(() => !onIsland(), 16000);
         await continueDialog(ctx);
-        if ((player()?.level ?? 0) > 0) {
-            await walk(ctx, 3052, 3229, 3);
-            await changeFloor(ctx, 'down', 3052, 3229, 1);
-        }
+        if ((player()?.level ?? 0) === 1) await leaveShip(ctx, 3048, 3232, 2413);
     }
     questPhase('lost-city-enter-zanaris');
     const equip = await bot.equipItem(/^dramen staff$/i);
