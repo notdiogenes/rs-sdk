@@ -1,10 +1,86 @@
 import { expect, test } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { dashboardAudit } from './dashboard-audit';
+import { dashboardAudit as recordDashboardAudit } from './dashboard-audit';
+import { auditDashboardLocation, readDashboardAudit } from './dashboard-audit-report';
 import { dashboardPresentation } from './dashboard-presentation';
+import { fleetPage } from './dashboard-fleet-page';
+import { dashboardWebHandler } from './dashboard-web';
 import { dashboardSessions } from './dashboard-session';
+
+function dashboardAudit(directory: string, clock = Date.now) {
+    const writer = recordDashboardAudit(directory, clock);
+    const db = new Database(join(directory, 'activity-audit.sqlite'), { readonly: true });
+    return {
+        ...writer,
+        read: (params: URLSearchParams) => readDashboardAudit(db, clock(), params),
+        close() {
+            db.close();
+            writer.close();
+        },
+    };
+}
+
+test('restarts the Fleet Desk web listener while the Unix supervisor keeps recording the same run', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'fleet-web-'));
+    const socket = join(directory, 'worker.sock');
+    const recording = recordDashboardAudit(directory);
+    const reports = new Database(join(directory, 'activity-audit.sqlite'), { readonly: true });
+    const run = recording.begin('Scout', 'pickpocket-knights', null, null, []);
+    const cookie = '__Secure-rs-sdk-dashboard=fixture';
+    const supervisor = Bun.serve({
+        unix: socket,
+        fetch(request) {
+            const url = new URL(request.url);
+            if (url.pathname === '/internal/fleet-snapshot') {
+                return Response.json({ bots: [], checkedAt: new Date().toISOString() });
+            }
+            if (request.headers.get('Cookie') !== cookie) return new Response(null, { status: 401 });
+            if (url.pathname === '/internal/audit-access') {
+                return new Response(null, { status: 204, headers: { 'Set-Cookie': cookie } });
+            }
+            if (url.pathname === '/bots/activity' && url.searchParams.get('view') === 'inventory') {
+                return Response.json({ availability: 'live', items: [{ id: 995, slot: 0, name: 'Coins', count: 50 }] },
+                    { headers: { 'Set-Cookie': cookie } });
+            }
+            return new Response(null, { status: 404 });
+        },
+    });
+    const startWeb = () => Bun.serve({
+        port: 0, hostname: '127.0.0.1',
+        fetch: dashboardWebHandler(request => fetch(request, { unix: socket, redirect: 'manual' }),
+            async () => ({ revision: 'fixture', fleetStyle: '', controls: '', fleetPage, auditDashboardLocation, readDashboardAudit }),
+            () => reports, []),
+    });
+    let web = startWeb();
+    const request = (path: string, options?: RequestInit) => fetch(new URL(path, web.url), options);
+    try {
+        expect((await request('/bots')).status).toBe(200);
+        expect((await request('/internal/fleet-snapshot')).status).toBe(404);
+        expect((await request('/bots/activity?view=inventory')).status).toBe(401);
+        const inventory = await request('/bots/activity?view=inventory', { headers: { Cookie: cookie } });
+        expect(inventory.headers.get('Set-Cookie')).toBe(cookie);
+        expect(await inventory.json()).toMatchObject({ items: [{ id: 995, spriteUrl: 'https://rs-sdk.maxbittker.com/sprite/item/995.png' }] });
+
+        await web.stop(true);
+        recording.append(run, { kind: 'milestone', name: 'pickpocket-attempt-succeeded', xpGained: 50 });
+        web = startWeb();
+        const audit = await request(`/bots/activity?view=audit&run=${run}`, { headers: { Cookie: cookie } });
+        expect(audit.headers.get('Set-Cookie')).toBe(cookie);
+        expect(await audit.json()).toMatchObject({
+            run: { id: run, status: 'running' },
+            signals: [expect.objectContaining({ name: 'pickpocket-attempt-succeeded', count: 1 })],
+        });
+    } finally {
+        await web.stop(true);
+        await supervisor.stop(true);
+        reports.close();
+        recording.close();
+        rmSync(directory, { recursive: true, force: true });
+    }
+});
 
 test('groups matching breakpoints and preserves bounded evidence beyond trace eviction', () => {
     const directory = mkdtempSync(join(process.cwd(), '.audit-test-'));

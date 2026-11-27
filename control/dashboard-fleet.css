@@ -35,6 +35,28 @@ button:disabled{opacity:.6;cursor:default}
 .status-online{color:var(--green)}.status-unknown{color:var(--amber)}
 .group-title h2{color:inherit}.group-title h2.attention{color:var(--amber)}.group-title h2.active{color:var(--green)}
 #dashboard-diagnostics{max-width:min(720px,calc(100vw - 24px))}
+#inventory-dialog{max-width:min(370px,calc(100vw - 24px))}
+#inventory-dialog h2{font-size:19px}
+#inventory-status{min-height:1.35em;font-size:12px}
+.inventory-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:6px;list-style:none;margin:12px 0 0;padding:11px;
+  background:#35271d;border:1px solid #6b4d32;border-radius:8px;box-shadow:inset 0 0 0 2px #241b15}
+.inventory-cell{min-width:0;height:49px;border-radius:5px;background:#2a211a;border:1px solid #523d2c}
+.inventory-empty{box-shadow:inset 0 1px 3px #18120e}
+.inventory-slot{position:relative;display:grid;place-items:center;width:100%;height:100%;padding:2px;border:0;border-radius:4px;
+  background:#443224;box-shadow:inset 0 1px 0 #674e36}
+.inventory-slot:hover{background:#58402d}
+.inventory-slot[aria-pressed=true]{box-shadow:inset 0 0 0 1px #e0b36d;background:#523e2c}
+.inventory-slot:focus-visible{outline:2px solid #f0ca83;outline-offset:1px}
+.inventory-sprite,.inventory-fallback{grid-area:1/1}
+.inventory-sprite{visibility:hidden;width:40px;height:40px;max-width:100%;object-fit:contain;image-rendering:pixelated}
+.inventory-fallback{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow:hidden;overflow-wrap:anywhere;
+  max-width:100%;padding:0 2px;font-size:10px;line-height:1.1;color:#efdbbc}
+.has-sprite .inventory-sprite{visibility:visible}
+.has-sprite .inventory-fallback{visibility:hidden}
+.inventory-quantity{position:absolute;top:3px;left:4px;color:#ffe07d;text-shadow:0 1px 2px #160f08,1px 0 #160f08;
+  font:700 10px/1 ui-monospace,monospace;pointer-events:none}
+.inventory-item-detail{margin-top:10px;min-height:2.5em;color:#ead2a8;font-size:12px;overflow-wrap:anywhere}
+#inventory-refresh{margin-top:10px}
 #audit-dialog{max-width:min(1140px,calc(100vw - 24px));height:91dvh;max-height:91dvh;overflow:hidden;background:#1b1b18}
 #audit-dialog .dialog-body{display:flex;flex-direction:column;height:100%;padding:0}
 .audit-chrome{flex:none;max-height:65%;overflow:auto;background:#24231f;border-bottom:1px solid var(--line);padding:16px 22px 11px}

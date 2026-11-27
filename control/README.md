@@ -117,9 +117,18 @@ for each account. Checking the dashboard never opens a bank in-game. XP on a
 Fleet card is the gain between samples taken within the last hour. Timestamps
 on the dashboard use US Eastern time.
 
-The service runs from `~/rs-sdk-sync` and reloads when the webhook updates
-its source files. Run the installer once to switch an existing dashboard to
-this setup. Future dashboard source updates are picked up after the sync.
+Fleet Desk uses two systemd services from `~/rs-sdk-sync`. The web service
+serves the page and report responses. The worker supervisor owns bot clients,
+active tasks, saved plans, and audit recording. The services communicate over
+a private Unix socket. Restarting the web service keeps the supervisor and
+its active tasks running. The webhook has separate restart rules for web and
+worker source changes.
+
+Run the installer above once between runs to move an existing installation
+to the separate services. The migration stops the old combined service before
+the new supervisor opens its databases. Saved running plans resume on the
+new supervisor. Until this migration, the old automatic restart watcher
+leaves the combined service running.
 
 Open the one-time setup link to choose a password of at least 12 characters.
 After setup, use **Sign in** with your dashboard password. You can also set or
@@ -257,12 +266,10 @@ client when starting a plan.
 ### Activity audit history
 
 Fleet Desk loads its page, browser assets, and read-only audit reports from one
-committed Git revision. A UI update takes effect on the next page load without
-restarting the dashboard service or its bot workers. If a presentation fails
-to load, Fleet Desk keeps serving the previous version. The first deployment that
-installs this loader still needs a dashboard service restart. Schedule that
-deployment between runs. Changes to controller code or audit recording can
-still require a service restart.
+committed Git revision. A UI update takes effect on the next page load. If a
+presentation fails to load, Fleet Desk keeps serving the previous version.
+Changes to task control or audit recording can still require a worker
+supervisor restart.
 
 Fleet desk stores activity runs in `activity-audit.sqlite` in the dashboard
 runtime directory. Each dashboard-managed task and the Lumbridge demo worker

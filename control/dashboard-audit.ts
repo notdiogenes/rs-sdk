@@ -3,7 +3,6 @@ import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { dashboardAuditInsights } from './dashboard-audit-insights';
 import { auditDay, auditKinds, auditRetentionDays, safeAuditName } from './dashboard-audit-schema';
-import { readDashboardAudit } from './dashboard-audit-report';
 
 export { auditRetentionDays } from './dashboard-audit-schema';
 
@@ -195,7 +194,7 @@ export function dashboardAudit(directory: string, clock = Date.now) {
         active.delete(id);
     });
 
-    return { begin, append, finish, prune, read: (params: URLSearchParams) => readDashboardAudit(db, clock(), params), close: () => db.close() };
+    return { begin, append, finish, prune, close: () => db.close() };
 }
 
 export type DashboardAudit = ReturnType<typeof dashboardAudit>;

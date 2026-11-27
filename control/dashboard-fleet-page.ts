@@ -175,7 +175,8 @@ export function fleetPage({ nonce, data, questCatalog, fleetStyle, controls, ref
 <dialog id="inventory-dialog" aria-labelledby="inventory-title"><div class="dialog-body">
   <div class="dialog-header"><h2 id="inventory-title">Current inventory</h2><button type="button" data-close>Close</button></div>
   <p id="inventory-status" role="status"></p>
-  <div id="inventory-items"></div>
+  <ol id="inventory-items" class="inventory-grid" role="list" aria-label="Backpack slots" hidden></ol>
+  <p id="inventory-item-detail" class="inventory-item-detail" aria-live="polite" hidden></p>
   <button type="button" id="inventory-refresh">Refresh inventory</button>
 </div></dialog>
 <dialog id="banks-dialog" aria-labelledby="bank-title"><div class="dialog-body">
