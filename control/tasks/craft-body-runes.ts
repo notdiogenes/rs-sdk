@@ -10,7 +10,6 @@ const goal = 99;
 const backpackSize = 28;
 // The client publishes integer XP. The hosted curve reaches level 20 at 3,105 XP.
 const level20Xp = 3105;
-const airXp = 5;
 
 // runecraft.dbrow and loc.pack use 64-tile map squares and concrete location IDs.
 const air = {
@@ -45,6 +44,7 @@ function inTemple(state: BotWorldState, rune: Rune) {
 }
 
 export async function craftBodyRunes({ bot, sdk }: ScriptContext) {
+    let observedAirXp: number | undefined;
     const current = () => {
         const state = sdk.getState();
         if (!state?.inGame || !state.player || state.player.isDead) throw new Error('Runecrafting needs a live, living player.');
@@ -98,7 +98,8 @@ export async function craftBodyRunes({ bot, sdk }: ScriptContext) {
         await act('close-runecraft-bank', 'Close the bank', {}, () => bot.closeBank());
     }
 
-    const airNeeded = (state: BotWorldState) => Math.max(1, Math.ceil((level20Xp - runecraft(state).experience) / airXp));
+    const airNeeded = (state: BotWorldState) => observedAirXp
+        ? Math.max(1, Math.ceil((level20Xp - runecraft(state).experience) / observedAirXp)) : 1;
 
     async function restock(rune: Rune) {
         phase('runecraft-bank', rune);
@@ -112,7 +113,7 @@ export async function craftBodyRunes({ bot, sdk }: ScriptContext) {
             const talisman = current().bank.items.find(item => item.id === rune.talisman);
             if (!count(current().inventory, rune.talisman)) {
                 if (!talisman) throw new Error(`No ${rune.name} talisman in the backpack or bank.`);
-                await act('withdraw-runecraft-talisman', `Withdraw a ${rune.name} talisman`, { id: rune.talisman },
+                await act('withdraw-runecraft-talisman', `Withdraw the ${rune.name} talisman`, { id: rune.talisman },
                     () => bot.withdrawItem(talisman, 1, { asNote: false }));
             }
             for (const product of [air, body]) {
@@ -192,10 +193,14 @@ export async function craftBodyRunes({ bot, sdk }: ScriptContext) {
                 outcome: 'complete', essenceUsed: beforeStock - count(next.inventory, essenceId),
                 runesCrafted: count(next.inventory, rune.rune) - beforeRunes, xpGained: runecraft(next).experience - beforeXp,
             }));
+        const essenceUsed = beforeStock - count(after.inventory, essenceId);
+        const xpGained = runecraft(after).experience - beforeXp;
+        // The world can amplify the configured XP. Sample one essence before planning any larger Air batch.
+        if (rune === air) observedAirXp = xpGained / essenceUsed;
         auditEvent('milestone', 'runecraft-batch-confirmed', {
-            rune: rune.name, essenceUsed: beforeStock - count(after.inventory, essenceId),
+            rune: rune.name, essenceUsed,
             runesCrafted: count(after.inventory, rune.rune) - beforeRunes,
-            xpGained: runecraft(after).experience - beforeXp, level: runecraft(after).baseLevel,
+            xpGained, level: runecraft(after).baseLevel,
         });
     }
 }
