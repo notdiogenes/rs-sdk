@@ -149,3 +149,70 @@ export async function journalText({ bot, sdk }: QuestContext, component: number,
         await bot.closeInterface();
     }
 }
+
+export const itemNamed = (name: string) => new RegExp('^' + name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '$', 'i');
+
+export async function talkAt(ctx: QuestContext, x: number, z: number, name: RegExp, choices: RegExp[] = []) {
+    await walk(ctx, x, z);
+    await talk(ctx, name, choices);
+}
+
+export async function buyQuestSupply({ bot, sdk }: QuestContext, shopkeeper: RegExp, name: string, maximum: number) {
+    const opened = await bot.openShop(shopkeeper);
+    if (!opened.success) throw new Error(opened.message);
+    try {
+        const item = sdk.getState()?.shop.shopItems.find(i => i.name === name && i.count > 0);
+        if (!item || !Number.isFinite(item.buyPrice) || item.buyPrice > maximum) {
+            throw new Error(`${name} is unavailable from the NPC shop for ${maximum} coins or less`);
+        }
+        const bought = await bot.buyFromShop(item, 1);
+        if (!bought.success) throw new Error(bought.message);
+    } finally {
+        await bot.closeShop();
+    }
+}
+
+export async function equipQuestSword({ bot, sdk }: QuestContext) {
+    const sword = sdk.findInventoryItem(/^adamant longsword$/i);
+    if (sword) {
+        const equipped = await bot.equipItem(sword);
+        if (!equipped.success) throw new Error(equipped.message);
+    }
+}
+
+export async function useTogether({ sdk }: QuestContext, first: RegExp, second: RegExp) {
+    const source = sdk.findInventoryItem(first);
+    const target = sdk.findInventoryItem(second);
+    if (!source || !target) throw new Error(`Missing ${first} or ${second}`);
+    const result = await sdk.sendUseItemOnItem(source.slot, target.slot);
+    if (!result.success) throw new Error(result.message);
+}
+
+export async function lootFromNpc(ctx: QuestContext, item: RegExp, npc: RegExp, x: number, z: number, count = 1) {
+    const { bot, sdk } = ctx;
+    const held = () => sdk.countInventoryItems(item);
+    if (held() >= count) return;
+    await walk(ctx, x, z);
+    for (let attempt = 0; attempt < 35 && held() < count; attempt++) {
+        const drop = (await sdk.scanGroundItems(10)).find(i => item.test(i.name) && i.reachable !== false);
+        if (drop) {
+            await bot.pickupItem(drop);
+            continue;
+        }
+        const target = sdk.getNearbyNpcs().filter(i => npc.test(i.name) && i.reachable !== false &&
+            !i.inCombat && i.optionsWithIndex.some(o => /^attack$/i.test(o.text))).sort((a, b) => a.distance - b.distance)[0];
+        if (target && !sdk.getState()?.player?.combat.inCombat) {
+            await bot.attack(target);
+            await sdk.waitForCondition(state => !!state.player && !state.player.combat.inCombat, 40_000).catch(() => null);
+        }
+        await sdk.waitForTicks(3);
+    }
+    if (held() < count) throw new Error(`Could not obtain ${count} × ${item} near ${x}, ${z}`);
+}
+
+export async function questLoc({ sdk }: QuestContext, name: RegExp, option?: RegExp) {
+    const loc = (await sdk.scanNearbyLocs(10)).filter(l => name.test(l.name)
+        && (!option || l.optionsWithIndex.some(o => option.test(o.text)))).sort((a, b) => a.distance - b.distance)[0];
+    if (!loc) throw new Error(`Could not find ${name}${option ? ' with ' + option : ''}`);
+    return loc;
+}

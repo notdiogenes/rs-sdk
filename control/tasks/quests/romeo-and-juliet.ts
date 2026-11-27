@@ -4,7 +4,7 @@ import { bankForQuest, changeFloor, groundItem, journalText, questLog, readQuest
 const journal = 7343;
 const quest = 'Romeo & Juliet';
 const juliet = { x: 3158, z: 3425 };
-const stairs = { x: 3158, z: 3429 };
+const stairs = { x: 3156, z: 3435 };
 const supplies = [
     { name: 'Message', count: 1 }, { name: 'Cadava berries', count: 1 }, { name: 'Cadava potion', count: 1 },
 ];
@@ -27,8 +27,9 @@ const result = await runScript(async ctx => {
         await talk(ctx, /^romeo$/i, [...choices, /he sent me to the apothecary/i]);
     };
     const visitJuliet = async () => {
-        await walk(ctx, juliet.x, juliet.z, 4);
+        await walk(ctx, stairs.x, stairs.z, 2);
         await changeFloor(ctx, 'up', stairs.x, stairs.z);
+        await walk(ctx, juliet.x, juliet.z, 3);
         await talk(ctx, /^juliet$/i, choices);
         await leaveHouse();
     };

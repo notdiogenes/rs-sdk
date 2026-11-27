@@ -20,6 +20,9 @@ export const activityCatalog = {
     'romeo-and-juliet': {
         label: 'Romeo & Juliet', category: 'Quests', usage: 'once', script: 'quests/romeo-and-juliet.ts', journal: 7343,
     },
+    'vampire-slayer': {
+        label: 'Vampire Slayer', category: 'Quests', usage: 'once', script: 'quests/vampire-slayer.ts', journal: 7347,
+    },
     'cooks-assistant': {
         label: 'Cook’s Assistant', category: 'Quests', usage: 'once', script: 'quests/cooks-assistant.ts', journal: 7333,
     },
