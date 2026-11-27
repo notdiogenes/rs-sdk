@@ -1,6 +1,6 @@
 import { auditEvent, auditOperation } from '../../../sdk/audit-trace';
 import { Spells } from '../../../sdk/spells';
-import { PRAYER_INDICES, PRAYER_LEVELS, type NearbyNpc, type PrayerName } from '../../../sdk/types';
+import { PRAYER_INDICES, PRAYER_LEVELS, type BotWorldState, type NearbyNpc, type PrayerName } from '../../../sdk/types';
 import { itemNamed, type QuestContext } from './shared';
 
 export const questFood = /^(?:lobster|swordfish|shark|salmon|trout|cooked meat|cooked chicken|cake|2\/3 cake|slice of cake|tuna|bread)$/i;
@@ -110,6 +110,15 @@ export async function withQuestProtection(ctx: QuestContext, choices: readonly O
             await bot.activatePrayer(previous);
         }
     }
+}
+
+export function availableQuestTarget(state: BotWorldState, npcType: number) {
+    return state.nearbyNpcs.filter(npc => npc.id === npcType && npc.hp !== 0 && npc.reachable !== false)
+        .filter(npc => !npc.inCombat ||
+            state.player?.combat.targetType === 'npc' && state.player.combat.targetIndex === npc.index ||
+            state.combatEvents.some(event => event.type === 'damage_taken' && event.sourceType === 'npc' &&
+                event.sourceIndex === npc.index && event.targetType === 'player' && state.tick - event.tick <= 12))
+        .sort((a, b) => a.distance - b.distance)[0];
 }
 
 export async function fightQuestNpc(ctx: QuestContext, target: NearbyNpc, fight: Fight, plan: FightPlan, {

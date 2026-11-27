@@ -3,7 +3,7 @@ import { runScript } from '../../../sdk/runner';
 import { Spells } from '../../../sdk/spells';
 import { makeShipNails } from './dragon-slayer-smithing';
 import {
-    canMeleeQuest, fightQuestNpc, planQuestFight, questFood, questFoodSupplies, questSkill, questSpellSupplies, withQuestProtection,
+    availableQuestTarget, canMeleeQuest, fightQuestNpc, planQuestFight, questFood, questFoodSupplies, questSkill, questSpellSupplies, withQuestProtection,
 } from './quest-combat';
 import {
     buyQuestSupply, changeFloor, continueDialog, groundItem, journalText, prepareQuestStep, questLog, questPhase,
@@ -302,9 +302,9 @@ async function mazeRoom(ctx: QuestContext, room: typeof mazeRooms[number], cross
         const plan = planQuestFight(ctx, fight, { magicOnly: !hasMeleeWeapon(ctx) });
         for (let attempt = 0; attempt < 5 && !has(ctx, room.key); attempt++) {
             if (await pickUp(ctx, room.key, 8)) break;
-            const seen = await sdk.waitForCondition(s => s.nearbyNpcs.some(n => n.id === room.npc && !n.inCombat), 15000);
-            const target = seen.nearbyNpcs.find(n => n.id === room.npc && !n.inCombat);
-            if (!target) continue;
+            const seen = await sdk.waitForCondition(s => !!availableQuestTarget(s, room.npc), 15_000).catch(() => null);
+            const target = seen && availableQuestTarget(seen, room.npc);
+            if (!target) throw new Error(`${room.name} was not available to fight in this maze room`);
             const p = position(ctx);
             await fightQuestNpc(ctx, target, fight, plan, { retreat: async () => {
                 await sdk.sendWalk(p.worldX, p.worldZ);
@@ -354,6 +354,7 @@ async function melzarsMaze(ctx: QuestContext) {
         await prepareCombat(ctx, mazeHealth);
         planQuestFight(ctx, { name: 'Melzar’s Maze', hitpoints: mazeHealth, incomingHit: 8, meleeLevel: 40, minimumFood: 2 },
             { magicOnly: !hasMeleeWeapon(ctx) });
+        questPhase('dragon-slayer-maze-entry');
         await activate(ctx, [2595], 2941, 3248, 'Unlock the entrance to Melzar’s Maze', { item: 1542 });
         await walk(ctx, 2940, 3248, 0);
     }
@@ -571,20 +572,61 @@ async function prepareShip(ctx: QuestContext, page: string) {
     await leaveShip(ctx);
 }
 
+async function bankBeforeElvarg(ctx: QuestContext) {
+    const { sdk, bot } = ctx;
+    const plan = planQuestFight(ctx, elvarg, { magicOnly: !hasMeleeWeapon(ctx) });
+    questPhase('dragon-slayer-bank-before-elvarg', { style: plan.style });
+    const combatRunes: Record<string, number> = plan.style === 'magic' ? { ...plan.spell.runes } : {};
+    const escape = questSkill(ctx, 'Magic') >= 31 && has(ctx, 563) && has(ctx, 557) && held(ctx, 556) >= 3;
+    const needed = (item: { id: number; name: string; count: number }) =>
+        item.id === 1538 || item.id === 1540 || questFood.test(item.name) ? item.count
+            : combatRunes[item.name] !== undefined ? item.count
+            : escape ? ({ 556: 3, 557: 1, 563: 1 } as Record<number, number>)[item.id] ?? 0 : 0;
+    await walk(ctx, bankLocation[0], bankLocation[1], 4);
+    const staff = sdk.findEquipmentItem(/^dramen staff$/i);
+    if (staff) {
+        const unequipped = await bot.unequipItem(staff);
+        if (!unequipped.success) throw new Error(unequipped.message);
+    }
+    const opened = await bot.openBank();
+    if (!opened.success) throw new Error(opened.message);
+    try {
+        for (const item of sdk.getInventory()) {
+            const extra = item.count - needed(item);
+            if (extra <= 0) continue;
+            await auditOperation('dragon-slayer-bank-unneeded-item', 'Bank an item or surplus stack before boarding for Elvarg',
+                { id: item.id, item: item.name, amount: extra }, () => sdk.getState(), async () => {
+                    const deposited = await bot.depositItem(item, extra);
+                    if (!deposited.success) throw new Error(deposited.message);
+                    return deposited;
+                }, result => ({ outcome: 'complete', message: result.message }));
+        }
+    } finally {
+        await bot.closeBank();
+    }
+    if (sdk.getInventory().some(item => item.count > needed(item)) || sdk.findEquipmentItem(/^dramen staff$/i)) {
+        throw new Error('The pre-Elvarg bank check still shows unnecessary items');
+    }
+    auditEvent('check', 'dragon-slayer-bank-verified', {
+        outcome: 'complete', inventory: sdk.getInventory().map(item => ({ id: item.id, name: item.name, count: item.count })),
+    });
+}
+
 async function fightElvarg(ctx: QuestContext, page: string) {
     const { sdk, bot } = ctx;
     const onCrandor = () => area(ctx, 2845, 3246, 29);
     const inLair = () => area(ctx, 2847, 9645, 30);
     if (!onCrandor() && !inLair()) {
         questPhase('dragon-slayer-prepare-elvarg');
-        if (!area(ctx, 3047, 9640, 5)) await prepareCombat(ctx, elvarg.hitpoints);
+        if (inShipHold(ctx) || onShipDeck(ctx)) await leaveShip(ctx);
+        await prepareCombat(ctx, elvarg.hitpoints);
         if (!shieldEquipped(ctx)) {
             const shield = inventory(ctx, 1540);
             if (!shield) throw new Error('The anti-dragonbreath shield must be carried before sailing');
             const result = await bot.equipItem(shield);
             if (!result.success || !shieldEquipped(ctx)) throw new Error(`Could not equip the anti-dragonbreath shield: ${result.message}`);
         }
-        planQuestFight(ctx, elvarg, { magicOnly: !hasMeleeWeapon(ctx) });
+        await bankBeforeElvarg(ctx);
         questPhase('dragon-slayer-sail-crandor');
         if (!nedHired.test(page) && !finishedSailing.test(page)) {
             await talkAt(ctx, 3100, 3258, /^ned$/i, [
@@ -644,6 +686,7 @@ const result = await runScript(async ctx => {
         if (has(ctx, 1537) || has(ctx, 1538)) await leaveDwarvenMine(ctx);
         if (shipRepaired.test(page)) await leaveShip(ctx);
         if (!inMazeBasement(ctx) && !area(ctx, 2930, 3248, 14) && !inDwarvenMine(ctx) && !inShipHold(ctx)) {
+            questPhase('dragon-slayer-map-preflight');
             await prepareQuestStep(ctx, { slots: 13, withdraw: [
                 { name: 'Maze key', count: 1 }, ...mapPieces, { name: 'Crandor map', count: 1 },
             ] });
