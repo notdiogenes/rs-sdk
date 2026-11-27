@@ -17,6 +17,9 @@ type Activity = {
 const level = (skill: TrainingSkill, minimum: number): Requirement => ({ type: 'level', skill, level: minimum });
 
 export const activityCatalog = {
+    'lost-city': {
+        label: 'Lost City', category: 'Quests', usage: 'once', script: 'quests/lost-city.ts', journal: 7367,
+    },
     'romeo-and-juliet': {
         label: 'Romeo & Juliet', category: 'Quests', usage: 'once', script: 'quests/romeo-and-juliet.ts', journal: 7343,
     },
