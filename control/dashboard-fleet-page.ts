@@ -185,9 +185,11 @@ export function fleetPage({ nonce, data, questCatalog, fleetStyle, controls, ref
   <p id="inventory-action-status" class="inventory-action-status" role="status"></p>
 </div></dialog>
 <dialog id="banks-dialog" aria-labelledby="bank-title"><div class="dialog-body">
-  <div class="dialog-header"><h2 id="bank-title">Bank snapshots</h2><button type="button" data-close>Close</button></div>
-  <p>Balances are recorded when a bot opens its bank in-game.</p>
+  <div class="dialog-header"><h2 id="bank-title" tabindex="-1">Bank snapshots</h2><button type="button" data-close>Close</button></div>
+  <p id="bank-status" role="status"></p>
   <div id="bank-panel"></div>
+  <p id="bank-item-detail" class="inventory-item-detail" aria-live="polite" hidden></p>
+  <button type="button" id="bank-back" hidden>All bank snapshots</button>
 </div></dialog>
 <dialog aria-labelledby="activity-title"><form class="dialog-body">
   <h2 id="activity-title"></h2>

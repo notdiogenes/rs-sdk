@@ -40,6 +40,12 @@
     const auto = document.querySelector('#auto');
     const banks = document.querySelector('#banks');
     const banksDialog = document.querySelector('#banks-dialog');
+    const bankPanel = document.querySelector('#bank-panel');
+    const bankStatus = document.querySelector('#bank-status');
+    const bankTitle = document.querySelector('#bank-title');
+    const bankDetail = document.querySelector('#bank-item-detail');
+    const bankBack = document.querySelector('#bank-back');
+    let bankVersion = 0;
     const detailsDialog = document.querySelector('#fleet-details');
     const inventoryDialog = document.querySelector('#inventory-dialog');
     const inventoryStatus = document.querySelector('#inventory-status');
@@ -287,17 +293,75 @@
         return snapshotsReady;
     }
 
-    function openBanks(name) {
-        const visible = matchingRows().filter(row => name === undefined || row.name === name);
-        document.querySelector('#bank-panel').innerHTML = dataError
+    // The game bank_main:inv component uses 8 columns and 72 scrollable rows.
+    const bankColumns = 8;
+    const bankRows = 72;
+
+    function showBankOverview() {
+        bankVersion++;
+        delete banksDialog.dataset.bankView;
+        bankTitle.textContent = 'Bank snapshots';
+        bankStatus.textContent = 'Balances are recorded when a bot opens its bank in-game.';
+        bankDetail.hidden = true;
+        bankBack.hidden = true;
+        const visible = matchingRows();
+        bankPanel.innerHTML = dataError
             ? `<p class="empty" role="status">${escape(dataError)}</p>` : visible.length
             ? table(['Account', 'Coins', 'Stacks', 'Last observed'], visible.map(row => {
                 const bank = stats.get(row.name)?.bank;
-                return [escape(row.name), number(bank?.coins), number(bank?.stacks), escape(labelTime(bank?.at))];
+                const name = escape(row.name);
+                return [`<button type="button" class="bank-account" data-bank-account="${name}">${name}</button>`,
+                    number(bank?.coins), number(bank?.stacks), escape(labelTime(bank?.at))];
             }), 'Last observed bank balances') : '<p class="empty">No bots match your filters.</p>';
-        document.querySelector('#bank-title').textContent = name ? 'Bank snapshot for ' + name : 'Bank snapshots';
+    }
+
+    function bankGrid(items) {
+        const slots = bankColumns * bankRows;
+        const bySlot = new Map(items.filter(({ slot }) => Number.isInteger(slot) && slot >= 0 && slot < slots)
+            .map(item => [item.slot, item]));
+        const cells = Array.from({ length: slots }, (_, slot) => {
+            const item = bySlot.get(slot);
+            if (!item) return '<li class="inventory-cell inventory-empty" aria-hidden="true"></li>';
+            const description = escape(`Slot ${slot + 1} · ${item.name} · ${number(item.count)}`);
+            return `<li class="inventory-cell"><button type="button" class="inventory-slot" data-bank-slot="${slot}"
+                aria-label="${description}" title="${description}" aria-pressed="false" data-bank-description="${description}">
+                <span class="inventory-fallback" aria-hidden="true">${escape(item.name)}</span>${itemSprite(item, true)}${itemQuantity(item)}</button></li>`;
+        });
+        return `<div class="bank-scroll"><ol class="bank-grid" style="--bank-columns:${bankColumns}" role="list" aria-label="Bank slots">${cells.join('')}</ol></div>`;
+    }
+
+    async function showBank(name, fromOverview = false) {
+        const version = ++bankVersion;
+        banksDialog.dataset.bankView = 'account';
+        bankTitle.textContent = 'Bank snapshot for ' + name;
+        bankStatus.textContent = 'Reading bank snapshot…';
+        bankDetail.hidden = true;
+        bankBack.hidden = !fromOverview;
+        bankPanel.replaceChildren();
+        if (fromOverview) bankTitle.focus();
+        try {
+            const { bank = stats.get(name)?.bank } = await request('/bots/activity?view=bank&bot=' + encodeURIComponent(name));
+            if (!banksDialog.open || version !== bankVersion) return;
+            if (!bank) {
+                bankStatus.textContent = 'Fleet Desk has not observed this bank open yet.';
+                return;
+            }
+            bankStatus.textContent = `Last observed ${labelTime(bank.at)} · ${number(bank.stacks)} stacks · ${number(bank.coins)} coins`;
+            if (!Array.isArray(bank.items)) {
+                bankPanel.innerHTML = '<p class="empty">Item slots will appear after Fleet Desk next observes this bank open.</p>';
+                return;
+            }
+            bankPanel.innerHTML = bankGrid(bank.items);
+        } catch (error) {
+            if (banksDialog.open && version === bankVersion) bankStatus.textContent = error.message;
+        }
+    }
+
+    function openBanks(name) {
         clearTimeout(refresh);
         banksDialog.showModal();
+        if (name) void showBank(name);
+        else showBankOverview();
     }
 
     const backpackSlots = 28;
@@ -344,6 +408,22 @@
         return number(count);
     }
 
+    function itemSprite(item, lazy = false) {
+        const stack = Number.isInteger(item.count) && item.count > 1 && item.count <= 0x7fffffff;
+        const url = stack ? item.spriteUrl?.replace(/(?:-\d+)?\.png$/, `-${item.count}.png`) : item.spriteUrl;
+        return url ? `<img class="inventory-sprite" src="${escape(url)}" ${lazy ? 'loading="lazy"' : ''}
+            width="32" height="32" alt="" decoding="async" referrerpolicy="no-referrer">` : '';
+    }
+
+    function itemQuantity(item) {
+        return item.count > 1 ? `<span class="inventory-quantity" aria-hidden="true">${inventoryQuantity(item.count)}</span>` : '';
+    }
+
+    function showLoadedSprite(event) {
+        const image = event.target;
+        if (image.matches('.inventory-sprite') && image.naturalWidth > 0) image.parentElement.classList.add('has-sprite');
+    }
+
     function renderInventory(items) {
         const previousSlot = inventoryItems.querySelector('[aria-pressed="true"]')?.dataset.inventorySlot;
         inventoryBySlot = new Map(items.filter(({ slot }) => Number.isInteger(slot) && slot >= 0 && slot < backpackSlots)
@@ -352,15 +432,9 @@
             const item = inventoryBySlot.get(slot);
             if (!item) return '<li class="inventory-cell inventory-empty" aria-hidden="true"></li>';
             const description = escape(`Slot ${slot + 1} · ${item.name} · ${number(item.count)}`);
-            const stack = Number.isInteger(item.count) && item.count > 1 && item.count <= 0x7fffffff;
-            const spriteUrl = stack ? item.spriteUrl?.replace(/(?:-\d+)?\.png$/, `-${item.count}.png`) : item.spriteUrl;
-            const sprite = spriteUrl ? `<img class="inventory-sprite" src="${escape(spriteUrl)}"
-                width="32" height="32" alt="" decoding="async" referrerpolicy="no-referrer">` : '';
-            const quantity = item.count > 1
-                ? `<span class="inventory-quantity" aria-hidden="true">${inventoryQuantity(item.count)}</span>` : '';
             return `<li class="inventory-cell"><button type="button" class="inventory-slot" data-inventory-slot="${slot}"
                 aria-label="${description}" title="${description}" aria-pressed="false" data-inventory-description="${description}">
-                <span class="inventory-fallback" aria-hidden="true">${escape(item.name)}</span>${sprite}${quantity}</button></li>`;
+                <span class="inventory-fallback" aria-hidden="true">${escape(item.name)}</span>${itemSprite(item)}${itemQuantity(item)}</button></li>`;
         }).join('');
         inventoryItems.hidden = false;
         inventoryDetail.hidden = true;
@@ -514,10 +588,26 @@
         inventoryEat.addEventListener('click', () => void runInventoryAction('eat'));
         inventoryDrop.addEventListener('click', () => void runInventoryAction('drop'));
         inventoryDialog.addEventListener('close', () => { inventoryVersion++; });
-        inventoryItems.addEventListener('load', event => {
-            const image = event.target;
-            if (image.matches('.inventory-sprite') && image.naturalWidth > 0) image.parentElement.classList.add('has-sprite');
-        }, true);
+        banksDialog.addEventListener('close', () => { bankVersion++; });
+        bankBack.addEventListener('click', () => {
+            showBankOverview();
+            bankTitle.focus();
+        });
+        bankPanel.addEventListener('load', showLoadedSprite, true);
+        bankPanel.addEventListener('click', event => {
+            const account = event.target.closest('[data-bank-account]');
+            if (account) {
+                void showBank(account.dataset.bankAccount, true);
+                return;
+            }
+            const slot = event.target.closest('[data-bank-slot]');
+            if (!slot) return;
+            bankPanel.querySelector('[aria-pressed="true"]')?.setAttribute('aria-pressed', 'false');
+            slot.setAttribute('aria-pressed', 'true');
+            bankDetail.textContent = slot.dataset.bankDescription;
+            bankDetail.hidden = false;
+        });
+        inventoryItems.addEventListener('load', showLoadedSprite, true);
         inventoryItems.addEventListener('click', event => {
             const button = event.target.closest('[data-inventory-slot]');
             if (button) selectInventoryItem(button);

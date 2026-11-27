@@ -3,6 +3,7 @@ import { Database } from 'bun:sqlite';
 import type { Snapshot } from './dashboard-supervisor';
 import type { ControllerStatus } from './dashboard-activity';
 import type { Plan } from './dashboard-plan-runner';
+import type { BankSnapshot } from './dashboard-fleet-stats';
 import { dashboardPresentation } from './dashboard-presentation';
 import { loadQuestCatalog, type QuestColumn } from './dashboard-quests';
 
@@ -109,6 +110,15 @@ export function dashboardWebHandler(worker: CallSupervisor, presentation: LoadPr
                     const headers = new Headers(response.headers);
                     headers.delete('Content-Length');
                     return Response.json(report, { status: response.status, headers });
+                }
+                if (view === 'bank') {
+                    const report = await response.json() as { bot: string; bank: BankSnapshot | null };
+                    const bank = report.bank;
+                    const headers = new Headers(response.headers);
+                    headers.delete('Content-Length');
+                    return Response.json({
+                        ...report, bank: bank?.items ? { ...bank, ...withItemSprites({ items: bank.items }) } : bank,
+                    }, { status: response.status, headers });
                 }
                 if (view !== 'inventory') return response;
                 type Inventory = { items: Item[] };
