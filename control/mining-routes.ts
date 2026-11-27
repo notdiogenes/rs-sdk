@@ -38,6 +38,14 @@ export const miningBanks = {
     ardougne: place('Ardougne North Bank', 2615, 3332),
     shilo: place('Shilo Village Bank', 2852, 2954),
 };
+export const fishingGuildBank = place('Fishing Guild Bank', 2586, 3420);
+export const coalTrucks: MiningSite = {
+    mine: place('Coal Trucks', 2581, 3474), bank: miningBanks.seers, rocks: { coal: 18 },
+};
+
+export function miningSiteBanks(site: MiningSite, fishingLevel: number): [NamedTile, ...NamedTile[]] {
+    return site === coalTrucks && fishingLevel >= 68 ? [fishingGuildBank, site.bank] : [site.bank];
+}
 
 // Rock counts and anchors come from the checked-in 289 map regions. Each
 // route stays south of the Wilderness and uses a surface bank.
@@ -49,7 +57,7 @@ const sites: MiningSite[] = [
     { mine: place('Rimmington mine', 2978, 3239), bank: miningBanks.draynor, rocks: { clay: 2, copper: 5, tin: 2, iron: 6, gold: 2 } },
     { mine: place('Barbarian Village mine', 3088, 3429), bank: miningBanks.west, rocks: { coal: 4, tin: 5 } },
     { mine: place('Lumbridge southwest swamp mine', 3239, 3163), bank: miningBanks.draynor, rocks: { coal: 7, mithril: 5, adamantite: 2 } },
-    { mine: place('Coal Trucks', 2581, 3474), bank: miningBanks.seers, rocks: { coal: 18 } },
+    coalTrucks,
     { mine: place('Monastery mine', 2600, 3229), bank: miningBanks.ardougne, rocks: { coal: 4, iron: 13 } },
     { mine: place('Fight Arena mine', 2634, 3146), bank: miningBanks.yanille,
         rocks: { copper: 4, tin: 9, clay: 4, iron: 9, mithril: 4 } },
@@ -87,14 +95,15 @@ export function inMiningGuild(p: Tile) {
     return p.x >= 3010 && p.x <= 3060 && p.z >= 9722 && p.z <= 9755;
 }
 
-export function rankMiningSites(resource: MiningResource, mode: MiningMode, from: Tile, level: number) {
+export function rankMiningSites(resource: MiningResource, mode: MiningMode, from: Tile, level: number, fishingLevel = 0) {
     const respawn = miningResources[resource].respawn;
     const score = (site: MiningSite) => {
         const stock = site.rocks[resource]!;
         const start = site.guild ? guildLadder : site.mine;
         const origin = inMiningGuild(from) ? guildLadder : from;
         const ladder = site.guild ? 25 : 0;
-        const banking = mode === 'bank' ? 2 * (miningTravelDistance(start, site.bank) + ladder) / 27 : 0;
+        const bank = miningSiteBanks(site, fishingLevel)[0];
+        const banking = mode === 'bank' ? 2 * (miningTravelDistance(start, bank) + ladder) / 27 : 0;
         return Math.max(0, respawn / stock - 2) + banking + (miningTravelDistance(origin, start) + ladder) / 55;
     };
     return sites.filter(site => site.rocks[resource] && (!site.guild || level >= 60)).sort((a, b) => score(a) - score(b));

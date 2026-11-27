@@ -3,8 +3,9 @@ import { throwIfExecutionAborted } from '../../sdk/execution-context';
 import { findLongPath, isTileWalkable } from '../../sdk/pathfinding';
 import type { ScriptContext } from '../../sdk/runner';
 import type { BotWorldState, InventoryItem, NearbyLoc } from '../../sdk/types';
-import { alKharidTollGate, guildLadder, inMiningGuild, miningBanks, miningDistance, miningResources, miningSelection,
-    miningTravelDistance, miningTravelTimeout, miningTravelVia, rankMiningSites, type MiningSite, type Tile } from '../mining-routes';
+import { alKharidTollGate, coalTrucks, fishingGuildBank, guildLadder, inMiningGuild, miningBanks, miningDistance,
+    miningResources, miningSelection, miningSiteBanks, miningTravelDistance, miningTravelTimeout, miningTravelVia,
+    rankMiningSites, type MiningSite, type Tile } from '../mining-routes';
 
 const pickaxe = 1275;
 const capacity = 28;
@@ -12,6 +13,7 @@ const insideEssenceMine = (p: Tile) => Math.floor(p.x / 64) === 45 && Math.floor
 const canEat = (item: InventoryItem) => item.optionsWithIndex.some(option => /^eat$/i.test(option.text));
 const tile = (state: BotWorldState) => ({ x: state.player!.worldX, z: state.player!.worldZ });
 const skill = (state: BotWorldState) => state.skills.find(entry => entry.name === 'Mining');
+const fishingLevel = (state: BotWorldState) => state.skills.find(entry => entry.name === 'Fishing')?.level ?? 0;
 const hasPick = (state: BotWorldState) => [...state.inventory, ...state.equipment].some(item => item.id === pickaxe);
 
 export async function mineResources({ bot, sdk }: ScriptContext, task = process.env.RS_ACTIVITY ?? 'mine-iron-bank',
@@ -122,32 +124,40 @@ export async function mineResources({ bot, sdk }: ScriptContext, task = process.
         if (current().bank.isOpen) return;
         await leaveEssenceMine();
         if (inMiningGuild(tile(current()))) await guildTransition(false);
-        await walk(bank, 4);
+        await walk(bank, bank === fishingGuildBank ? 1 : 4);
         await act('mining-open-bank', `Open ${bank.name}`, bank, () => bot.openBank());
         if (!current().bank.isOpen) throw new Error('The game did not confirm bank access.');
+    }
+
+    async function openFirstBank(banks: readonly (typeof miningBanks.west)[], quantity?: number) {
+        let lastError: unknown;
+        for (const bank of banks) {
+            try {
+                if (quantity !== undefined) phase('mining-bank-trip', { bank: bank.name, quantity });
+                await openBank(bank);
+                return;
+            } catch (error) {
+                current();
+                lastError = error;
+                auditEvent('setback', quantity === undefined ? 'mining-setup-bank-failed' : 'mining-haul-bank-failed', {
+                    bank: bank.name, message: error instanceof Error ? error.message : String(error),
+                });
+            }
+        }
+        throw lastError;
     }
 
     async function openSetupBank() {
         if (current().bank.isOpen) return;
         await leaveEssenceMine();
         if (inMiningGuild(tile(current()))) await guildTransition(false);
-        const start = tile(current());
-        const banks = Object.values(miningBanks).filter(bank => bank !== miningBanks.shilo || miningDistance(start, bank) < 75)
+        const state = current();
+        const start = tile(state);
+        const preferred = resource === 'coal' && selection.mode === 'bank' && miningDistance(start, coalTrucks.mine) <= 25
+            ? miningSiteBanks(coalTrucks, fishingLevel(state)) : [];
+        const nearby = Object.values(miningBanks).filter(bank => bank !== miningBanks.shilo || miningDistance(start, bank) < 75)
             .sort((a, b) => miningTravelDistance(start, a) - miningTravelDistance(start, b));
-        let lastError: unknown;
-        for (const bank of banks.slice(0, 3)) {
-            try {
-                await openBank(bank);
-                return;
-            } catch (error) {
-                current();
-                lastError = error;
-                auditEvent('setback', 'mining-setup-bank-failed', {
-                    bank: bank.name, message: error instanceof Error ? error.message : String(error),
-                });
-            }
-        }
-        throw lastError;
+        await openFirstBank([...new Set([...preferred, ...nearby])].slice(0, 3));
     }
 
     async function closeBank() {
@@ -258,8 +268,7 @@ export async function mineResources({ bot, sdk }: ScriptContext, task = process.
         const began = Date.now();
         let complete = false;
         if (selection.mode === 'bank') {
-            phase('mining-bank-trip', { bank: site.bank.name, quantity: count });
-            await openBank(site.bank);
+            await openFirstBank(miningSiteBanks(site, fishingLevel(current())), count);
             await bankItems(item => !isProduct(item));
             complete = checkStock();
             await closeBank();
@@ -298,7 +307,9 @@ export async function mineResources({ bot, sdk }: ScriptContext, task = process.
         const visited = new Set<MiningSite>();
         let produced = false;
         for (;;) {
-            const site = rankMiningSites(resource, selection.mode, tile(current()), level).find(candidate => !visited.has(candidate));
+            const state = current();
+            const site = rankMiningSites(resource, selection.mode, tile(state), level, fishingLevel(state))
+                .find(candidate => !visited.has(candidate));
             if (!site) break;
             visited.add(site);
             try {

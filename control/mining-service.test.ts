@@ -2,7 +2,8 @@ import { expect, test } from 'bun:test';
 import type { ScriptContext } from '../sdk/runner';
 import type { BotWorldState, InventoryItem } from '../sdk/types';
 import { activity, isActivity } from './dashboard-task-catalog';
-import { miningBanks, miningResources, miningTravelDistance, miningTravelTimeout, miningTravelVia, rankMiningSites } from './mining-routes';
+import { coalTrucks, fishingGuildBank, miningBanks, miningResources, miningTravelDistance, miningTravelTimeout,
+    miningTravelVia, rankMiningSites } from './mining-routes';
 import { mineResources } from './tasks/mine-resources';
 
 test('every supported resource has both modes and resource-specific routes', () => {
@@ -72,6 +73,74 @@ for (const firstBankFails of [false, true]) {
         await mineResources(context, 'mine-coal-bank', 6000);
         expect(walks).toEqual(firstBankFails ? [[3092, 3243], [3253, 3420]] : [[3092, 3243]]);
         expect(dialoguesClosed).toBe(1);
+        expect(state.bank.isOpen).toBe(false);
+    });
+}
+
+for (const { name, fishing, guildUnavailable, expected } of [
+    { name: 'below the requirement', fishing: 67, guildUnavailable: false, expected: [miningBanks.seers, miningBanks.seers] },
+    { name: 'at the requirement', fishing: 68, guildUnavailable: false, expected: [fishingGuildBank, fishingGuildBank] },
+    { name: 'when the guild bank fails', fishing: 68, guildUnavailable: true, expected: [fishingGuildBank, fishingGuildBank, miningBanks.seers] },
+]) {
+    test(`Coal Trucks selects the bank at setup and unloading ${name}`, async () => {
+        const start = { x: 2576, z: 3479 };
+        const rock = { id: 2096, x: start.x + 1, z: start.z, distance: 1, optionsWithIndex: [{ text: 'Mine', opIndex: 1 }] };
+        const ore = { id: 453, name: 'Coal', count: 1, slot: 0, optionsWithIndex: [] };
+        const state = {
+            inGame: true, tick: 1,
+            player: { worldX: start.x, worldZ: start.z, level: 0, hp: 99, maxHp: 99, isDead: false },
+            skills: [{ name: 'Mining', baseLevel: 59, experience: 250000 },
+                { name: 'Fishing', level: fishing, baseLevel: 67 }],
+            inventory: [],
+            equipment: [{ id: 1275, name: 'Rune pickaxe' }],
+            bank: { isOpen: false, items: [{ ...ore, count: 5999 }] },
+            nearbyPlayers: [], nearbyLocs: [],
+        } as unknown as BotWorldState;
+        const success = { success: true, message: '' };
+        const bankAttempts: number[][] = [];
+        const context = {
+            sdk: {
+                getState: () => state,
+                getStateAge: () => 0,
+                scanNearbyLocs: async () => state.nearbyLocs,
+                sendInteractLoc: async () => {
+                    state.inventory.push(ore);
+                    state.skills[0]!.experience += 50;
+                    return success;
+                },
+                waitForCondition: async (check: (value: BotWorldState) => boolean) => {
+                    expect(check(state)).toBe(true);
+                    return state;
+                },
+            },
+            bot: {
+                walkTo: async (x: number, z: number) => {
+                    const atMine = x === coalTrucks.mine.x && z === coalTrucks.mine.z;
+                    state.player!.worldX = atMine ? start.x : x;
+                    state.player!.worldZ = atMine ? start.z : z;
+                    state.nearbyLocs = atMine ? [rock as BotWorldState['nearbyLocs'][number]] : [];
+                    return success;
+                },
+                openBank: async () => {
+                    const { worldX, worldZ } = state.player!;
+                    bankAttempts.push([worldX, worldZ]);
+                    if (guildUnavailable && bankAttempts.length === 2 && worldX === fishingGuildBank.x) {
+                        return { success: false, message: 'Bank unavailable' };
+                    }
+                    state.bank.isOpen = true;
+                    return success;
+                },
+                closeBank: async () => { state.bank.isOpen = false; return success; },
+                depositItem: async () => {
+                    state.bank.items[0]!.count += state.inventory.length;
+                    state.inventory = [];
+                    return success;
+                },
+            },
+        } as unknown as ScriptContext;
+        await mineResources(context, 'mine-coal-bank', 6000);
+        expect(bankAttempts).toEqual(expected.map(({ x, z }) => [x, z]));
+        expect(state.bank.items[0]!.count).toBe(6000);
         expect(state.bank.isOpen).toBe(false);
     });
 }
