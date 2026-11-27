@@ -477,11 +477,24 @@ async function makeUnfiredBowl(ctx: QuestContext) {
             await walk(ctx, 3231, 3203);
             await buyQuestSupply(ctx, /^bob$/i, 'Bronze pickaxe', 12);
         }
-        await walk(ctx, 2987, 3240, 3);
-        const rock = (await sdk.scanNearbyLocs(10)).find(loc => [2108, 2109].includes(loc.id) && loc.reachable !== false);
-        if (!rock) throw new Error('Could not locate the Rimmington clay rocks');
-        const mined = await bot.mineRock(rock);
-        if (!mined.success || !has(ctx, 434)) throw new Error(`Clay mining: ${mined.message}`);
+        const clayRocks = [{ id: 2108, x: 2986, z: 3239 }, { id: 2109, x: 2987, z: 3240 }];
+        for (const target of [...clayRocks, ...clayRocks]) {
+            await walk(ctx, target.x, target.z - 1, 0);
+            const rock = (await sdk.scanNearbyLocs(4)).find(loc =>
+                loc.id === target.id && loc.x === target.x && loc.z === target.z && loc.reachable !== false);
+            if (!rock) {
+                auditEvent('check', 'dragon-slayer-mine-clay', { ...target, outcome: 'rock-unavailable' });
+                continue;
+            }
+            await auditOperation('dragon-slayer-mine-clay', 'Mine clay to make the Oracle’s unfired bowl',
+                target, () => sdk.getState(), async () => {
+                    const mined = await bot.mineRock(rock, { timeout: 12000 });
+                    if (!has(ctx, 434)) await sdk.waitForTicks(3);
+                    return mined;
+                }, mined => ({ outcome: has(ctx, 434) ? 'complete' : 'failed', message: mined.message, xp: mined.xpGained }));
+            if (has(ctx, 434)) break;
+        }
+        if (!has(ctx, 434)) throw new Error('No clay was obtained from either Rimmington rock after a retry');
     }
     if (!has(ctx, 1761)) {
         if (!has(ctx, 1929)) {
