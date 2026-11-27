@@ -10,11 +10,11 @@ const skillGlyphs: Record<string, string> = {
 
 const actionGlyphs = {
     details: '<circle cx="10" cy="10" r="7"/><path d="M10 9v4.5m0-7v.2"/>',
-    inventory: '<path d="M7 5.5V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v1.5M6 5.5h8a2 2 0 0 1 2 2V16a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7.5a2 2 0 0 1 2-2Z"/><path d="M7 13h6v4M4 9h12"/>',
+    inventory: '<path fill="#a97544" stroke="#dda878" stroke-width="1.2" d="M7.1 8 5.5 3.1c1.8 1 3.2.8 4.5.1 1.4.7 2.8.9 4.5-.1L12.9 8c2.7 1.6 4.4 4.1 4.3 6.7-.2 2.4-3.2 3.3-7.2 3.3s-7-.9-7.2-3.3C2.7 12.1 4.4 9.6 7.1 8Z"/><path stroke="#ebcb96" stroke-width="1.3" d="M7.1 8h5.8l1 2.3"/><path stroke="#ce9666" stroke-width="1.2" d="M7.2 11.1c-1.1.8-1.7 2-1.6 3.2"/>',
     diagnostics: '<rect x="2.5" y="4" width="15" height="10.5" rx="2"/><path d="M7 17h6m-3-2.5V17m-5-7h2l1.4-2.8 2.1 5 1.4-2.2H15"/>',
-    audit: '<path d="M6 2.8h6l3.5 3.5v9.4a1.5 1.5 0 0 1-1.5 1.5H6a1.5 1.5 0 0 1-1.5-1.5V4.3A1.5 1.5 0 0 1 6 2.8Z"/><path d="M12 3v4h3.4m-8 3h5.1m-5.1 3h5.1"/>',
-    bank: '<ellipse cx="10" cy="5.7" rx="5.5" ry="2.5"/><path d="M4.5 5.7v8.5c0 1.4 2.5 2.5 5.5 2.5s5.5-1.1 5.5-2.5V5.7M4.5 10c0 1.4 2.5 2.5 5.5 2.5s5.5-1.1 5.5-2.5"/>',
-    plan: '<rect x="4" y="4.8" width="12" height="12.7" rx="1.7"/><rect x="7" y="2.5" width="6" height="4" rx="1.3" fill="var(--card-action-bg)"/><path d="m6.8 11 1.3 1.3 2.3-2.4m1.6 1.5h1.5m-6.7 3.2h6.7"/>',
+    audit: '<path d="M8.2 17H4.6a1.4 1.4 0 0 1-1.4-1.4V4.4A1.4 1.4 0 0 1 4.6 3h8.2a1.4 1.4 0 0 1 1.4 1.4v3.2M6 6.5h5.4M6 9.6h3.6"/><circle cx="14.2" cy="14.2" r="4.2"/><path d="M14.2 11.8v2.6l1.6.8"/>',
+    bank: '<circle cx="10" cy="10" r="7.1" stroke="#b58c4c"/><path stroke="#edc779" d="M10 4.7v10.6m2.4-8.4H8.9a1.55 1.55 0 0 0 0 3.1h2.2a1.55 1.55 0 0 1 0 3.1H7.6"/>',
+    plan: '<circle cx="4.5" cy="15.5" r="1.8"/><path d="M6.3 15.5h6a2.2 2.2 0 0 0 0-4.4H9.5a2.2 2.2 0 0 1 0-4.4h1.6M12 9V2.8h5.6l-1.4 2 1.4 2H12"/>',
     pause: '<path d="M7 5v10m6-10v10" stroke-width="2.6"/>',
     stop: '<rect x="5" y="5" width="10" height="10" rx="2" fill="currentColor" stroke="none"/>',
     watch: '<path d="M2 10c2.2-3.4 5-5.1 8-5.1s5.8 1.7 8 5.1c-2.2 3.4-5 5.1-8 5.1S4.2 13.4 2 10Z"/><circle cx="10" cy="10" r="2.3"/>',
