@@ -39,39 +39,72 @@ const result = await runScript(async ctx => {
         await talkAt(ctx, 2960, 3336, /^sir amik varze$/i, questChoice, 3_000);
         await castleExit();
     };
-    const player = sdk.getState()?.player;
-    if (player && Math.abs(player.worldX - 2960) < 15 && Math.abs(player.worldZ - 3338) < 15) await castleExit();
-    if (floor() > 0) throw new Error('A Pirate is upstairs away from Sir Amik’s tower. Exit the fortress before retrying.');
-    await bankForQuest(ctx, [
-        { name: chain, count: 1 }, { name: helm, count: 1 }, { name: 'Coins', count: 350 }, { name: 'Cabbage', count: 1 },
-    ], [2946, 3369]);
-    questPhase('fortress-briefing');
-    if (readQuest(ctx, journal) === 'not-started') { questLog('quest-start', { quest }); await sirAmik(); }
+    const crossLadderRoomDoor = async (direction: 'east' | 'west') => {
+        const westX = 3021;
+        const eastX = 3022;
+        const z = 3515;
+        const fromX = direction === 'east' ? westX : eastX;
+        const toX = direction === 'east' ? eastX : westX;
+        await walk(ctx, fromX, z, 0);
+        const door = (await sdk.scanNearbyLocs(3)).find(loc => loc.id === 1530 && loc.x === westX && loc.z === z && loc.level === 1);
+        if (door) {
+            const opened = await bot.openDoor(door);
+            if (!opened.success) throw new Error(`Could not open the fortress ladder-room door: ${opened.message}`);
+        }
+        await walk(ctx, toX, z, 0);
+    };
+    const climbEavesdropLadder = async () => {
+        const player = sdk.getState()?.player;
+        if (player && player.worldX <= 3021) await crossLadderRoomDoor('east');
+        await walk(ctx, 3023, 3514, 0);
+        await changeFloor(ctx, 'up', 3023, 3513, 1, { requireReachable: true });
+    };
     const story = () => journalText(ctx, journal, /^black knight.s fortress$/i);
-    const page = await story();
+    const player = sdk.getState()?.player;
+    const nearEavesdropLadder = player?.level === 1 && player.worldX >= 3021 && player.worldX <= 3023 &&
+        player.worldZ >= 3513 && player.worldZ <= 3516;
+    const savedPage = nearEavesdropLadder && readQuest(ctx, journal) === 'in-progress' ? await story() : undefined;
+    const resumeEavesdrop = savedPage !== undefined && !/eavesdropped on a witch|sabotaged the witch.s potion/i.test(savedPage);
+    if (!resumeEavesdrop) {
+        if (player && Math.abs(player.worldX - 2960) < 15 && Math.abs(player.worldZ - 3338) < 15) await castleExit();
+        if (floor() > 0) throw new Error('A Pirate is upstairs away from Sir Amik’s tower. Exit the fortress before retrying.');
+        await bankForQuest(ctx, [
+            { name: chain, count: 1 }, { name: helm, count: 1 }, { name: 'Coins', count: 350 }, { name: 'Cabbage', count: 1 },
+        ], [2946, 3369]);
+        questPhase('fortress-briefing');
+        if (readQuest(ctx, journal) === 'not-started') { questLog('quest-start', { quest }); await sirAmik(); }
+    }
+    const page = savedPage ?? await story();
     questPhase('fortress-infiltration');
     if (!/sabotaged the witch.s potion/i.test(page)) {
-        if (!sdk.findInventoryItem(itemNamed(chain)) && !sdk.findEquipmentItem(itemNamed(chain))) {
-            await walk(ctx, 2973, 3312, 3); await buyQuestSupply(ctx, /^wayne$/i, chain, 300);
+        if (!resumeEavesdrop) {
+            if (!sdk.findInventoryItem(itemNamed(chain)) && !sdk.findEquipmentItem(itemNamed(chain))) {
+                await walk(ctx, 2973, 3312, 3); await buyQuestSupply(ctx, /^wayne$/i, chain, 300);
+            }
+            if (!sdk.findInventoryItem(itemNamed(helm)) && !sdk.findEquipmentItem(itemNamed(helm))) {
+                await walk(ctx, 3076, 3429, 3); await buyQuestSupply(ctx, /^peksa$/i, helm, 50);
+            }
+            for (const name of [chain, helm]) {
+                if (!sdk.findEquipmentItem(itemNamed(name)) && !(await bot.equipItem(itemNamed(name))).success) throw new Error(`Could not equip ${name}`);
+            }
+            if (!sdk.getInventory().some(i => i.id === cabbageId)) {
+                await walk(ctx, 3053, 3295, 2);
+                await bot.interactLoc(await questLoc(ctx, /^cabbage$/i, /^pick$/i), /^pick$/i);
+                await sdk.waitForCondition(s => s.inventory.some(i => i.id === cabbageId), 8000);
+            }
+            await passage(2337, /^open$/i, 3016, 3513);
         }
-        if (!sdk.findInventoryItem(itemNamed(helm)) && !sdk.findEquipmentItem(itemNamed(helm))) {
-            await walk(ctx, 3076, 3429, 3); await buyQuestSupply(ctx, /^peksa$/i, helm, 50);
-        }
-        for (const name of [chain, helm]) {
-            if (!sdk.findEquipmentItem(itemNamed(name)) && !(await bot.equipItem(itemNamed(name))).success) throw new Error(`Could not equip ${name}`);
-        }
-        if (!sdk.getInventory().some(i => i.id === cabbageId)) {
-            await walk(ctx, 3053, 3295, 2);
-            await bot.interactLoc(await questLoc(ctx, /^cabbage$/i, /^pick$/i), /^pick$/i);
-            await sdk.waitForCondition(s => s.inventory.some(i => i.id === cabbageId), 8000);
-        }
-        await passage(2337, /^open$/i, 3016, 3513);
         questPhase('fortress-eavesdrop');
         if (!/eavesdropped on a witch/i.test(page)) {
-            await passage(2341, /^push$/i, 3016, 3516);
-            await climb('up', 3015, 3519); await climb('up', 3016, 3519);
-            await climb('down', 3017, 3516);
-            await climb('up', 3023, 3513); await climb('down', 3025, 3513);
+            if (resumeEavesdrop) {
+                questLog('fortress-eavesdrop-resumed', { x: player?.worldX, z: player?.worldZ, plane: player?.level });
+            } else {
+                await passage(2341, /^push$/i, 3016, 3516);
+                await climb('up', 3015, 3519); await climb('up', 3016, 3519);
+                await climb('down', 3017, 3516);
+            }
+            await climbEavesdropLadder();
+            await climb('down', 3025, 3513);
             await passage(2339, /^open$/i, 3025, 3512);
             await climb('down', 3021, 3510);
             await passage(2342, /^listen.at$/i, 3025, 3507);
@@ -79,6 +112,7 @@ const result = await runScript(async ctx => {
             await climb('up', 3021, 3510);
             await passage(2339, /^open$/i, 3025, 3511);
             await climb('up', 3025, 3513); await climb('down', 3023, 3513);
+            await crossLadderRoomDoor('west');
             await climb('up', 3017, 3516); await climb('down', 3016, 3519);
             await climb('down', 3015, 3519);
             await passage(2341, /^push$/i, 3016, 3517);

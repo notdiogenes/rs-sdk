@@ -35,7 +35,8 @@ export async function walk({ bot, sdk }: QuestContext, x: number, z: number, tol
     if (!arrived) throw new Error(`Could not walk to ${x}, ${z}: ${result.message}`);
 }
 
-export async function changeFloor(ctx: QuestContext, direction: 'up' | 'down', x: number, z: number, radius = 7) {
+export async function changeFloor(ctx: QuestContext, direction: 'up' | 'down', x: number, z: number, radius = 7,
+    { requireReachable = false }: { requireReachable?: boolean } = {}) {
     const { bot, sdk } = ctx;
     const before = sdk.getState()?.player;
     if (!before) throw new Error('No location for floor change');
@@ -58,6 +59,7 @@ export async function changeFloor(ctx: QuestContext, direction: 'up' | 'down', x
     };
     for (const { loc, option } of candidates) {
         if (moved(sdk.getState())) return;
+        if (requireReachable && loc.reachable !== true) continue;
         // Surface-to-dungeon ladders can change region while retaining plane zero.
         const began = performance.now();
         const tick = sdk.getState()?.tick ?? 0;
@@ -73,7 +75,7 @@ export async function changeFloor(ctx: QuestContext, direction: 'up' | 'down', x
         if (arrived) return;
     }
     auditEvent('check', 'floor-change', { outcome: 'failed', direction, candidateCount: candidates.length,
-        expected: 'plane or region change', anchor: { x, z, radius }, after: auditFrame(sdk.getState()) });
+        expected: 'plane or region change', anchor: { x, z, radius }, requireReachable, after: auditFrame(sdk.getState()) });
     throw new Error(`Could not climb ${direction} near ${x}, ${z} on plane ${before.level}`);
 }
 
