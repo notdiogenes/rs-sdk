@@ -6,7 +6,11 @@ const coins = /^coins$/i;
 const banana = /^banana$/i;
 const luthas = /^luthas$/i;
 const crate = { id: 2072, x: 2943, z: 3151 };
-const arrival = { x: 3069, z: 3517 };
+const arrival = { x: 3070, z: 3514 };
+
+function onPortSarimFerry({ worldX, worldZ, level }: { worldX: number; worldZ: number; level: number }) {
+    return level === 1 && Math.abs(worldX - 3032) <= 4 && Math.abs(worldZ - 3217) <= 3;
+}
 
 function inCrandorCaves({ worldX, worldZ }: { worldX: number; worldZ: number }) {
     return worldX >= 2825 && worldX <= 2890 && worldZ >= 9550 && worldZ <= 9680;
@@ -119,15 +123,19 @@ export async function returnToOziachsHouse(ctx: QuestContext) {
             { fare, destination: 'Port Sarim' }, () => sdk.getState(), async () => {
                 await talkAt(ctx, 2954, 3147, /^customs officer$/i,
                     [/^can i journey on this ship/i, /^search away/i, /^ok\.$/i], 10000);
-                const state = await sdk.waitForCondition(s => !!s.player && s.player.worldX >= 3000
-                    && s.player.worldZ >= 3150 && s.player.worldZ <= 3300 && s.player.level === 0, 45000);
+                const state = await sdk.waitForCondition(s => !!s.player && onPortSarimFerry(s.player), 45000);
                 return state.player;
             }, player => ({ outcome: 'complete', player }));
+    }
+    if (onPortSarimFerry(position())) {
+        questPhase('dragon-slayer-return-disembark');
+        await travelThrough(ctx, 'dragon-slayer-return-disembark', 'Cross the gangplank onto the Port Sarim dock',
+            { id: 2084, x: 3031, z: 3217 }, player => !!player && player.level === 0);
     }
     questPhase('dragon-slayer-return-oziach-house', arrival);
     await auditOperation('dragon-slayer-return-oziach-house', 'Reach Oziach’s house and end the activity there', arrival,
         () => sdk.getState(), async () => {
-            await walk(ctx, arrival.x, arrival.z, 1);
+            await walk(ctx, arrival.x, arrival.z, 0);
             return position();
         }, player => ({ outcome: 'complete', x: player.worldX, z: player.worldZ, plane: player.level }));
 }
