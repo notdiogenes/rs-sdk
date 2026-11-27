@@ -60,13 +60,44 @@ const result = await runScript(async ctx => {
         await walk(ctx, 3023, 3514, 0);
         await changeFloor(ctx, 'up', 3023, 3513, 1, { requireReachable: true });
     };
+    const leaveGrillRoute = async () => {
+        if (floor() === 0) await climb('up', 3021, 3510);
+        if (floor() === 1) {
+            const here = sdk.getState()?.player;
+            if (here && here.worldX <= 3025 && here.worldZ <= 3512) {
+                await walk(ctx, 3025, 3511, 0);
+                const door = (await sdk.scanNearbyLocs(3)).find(loc => loc.id === 2339 &&
+                    loc.x === 3025 && loc.z === 3511 && loc.level === 1);
+                if (door) {
+                    const opened = await bot.interactLoc(door, /^open$/i);
+                    if (!opened.success) throw new Error(`Could not open the grill-room door: ${opened.message}`);
+                }
+                await walk(ctx, 3026, 3511, 0);
+            }
+            // The wall south of the directional ladder blocks the two-tile approach.
+            await walk(ctx, 3026, 3513, 0);
+            await walk(ctx, 3025, 3514, 0);
+            await changeFloor(ctx, 'up', 3025, 3513, 0, { requireReachable: true });
+        }
+        await walk(ctx, 3023, 3514, 0);
+        await changeFloor(ctx, 'down', 3023, 3513, 0, { requireReachable: true });
+        await crossLadderRoomDoor('west');
+        await climb('up', 3017, 3516); await climb('down', 3016, 3519);
+        await climb('down', 3015, 3519);
+        await passage(2341, /^push$/i, 3016, 3517);
+    };
     const story = () => journalText(ctx, journal, /^black knight.s fortress$/i);
     const player = sdk.getState()?.player;
     const nearEavesdropLadder = player?.level === 1 && player.worldX >= 3021 && player.worldX <= 3023 &&
         player.worldZ >= 3513 && player.worldZ <= 3516;
-    const savedPage = nearEavesdropLadder && readQuest(ctx, journal) === 'in-progress' ? await story() : undefined;
-    const resumeEavesdrop = savedPage !== undefined && !/eavesdropped on a witch|sabotaged the witch.s potion/i.test(savedPage);
-    if (!resumeEavesdrop) {
+    const nearGrillReturn = player?.level === 1 && player.worldX >= 3024 && player.worldX <= 3027 &&
+        player.worldZ >= 3510 && player.worldZ <= 3515;
+    const savedPage = (nearEavesdropLadder || nearGrillReturn) && readQuest(ctx, journal) === 'in-progress' ? await story() : undefined;
+    const resumeEavesdrop = nearEavesdropLadder && savedPage !== undefined && !/eavesdropped on a witch|sabotaged the witch.s potion/i.test(savedPage);
+    const resumeReturn = nearGrillReturn && savedPage !== undefined &&
+        /eavesdropped on a witch/i.test(savedPage) && !/sabotaged the witch.s potion/i.test(savedPage);
+    const resumingInside = resumeEavesdrop || resumeReturn;
+    if (!resumingInside) {
         if (player && Math.abs(player.worldX - 2960) < 15 && Math.abs(player.worldZ - 3338) < 15) await castleExit();
         if (floor() > 0) throw new Error('A Pirate is upstairs away from Sir Amik’s tower. Exit the fortress before retrying.');
         questPhase('fortress-briefing');
@@ -81,7 +112,7 @@ const result = await runScript(async ctx => {
     };
     questPhase('fortress-infiltration');
     if (!/sabotaged the witch.s potion/i.test(page)) {
-        if (!resumeEavesdrop) {
+        if (!resumingInside) {
             const needsGear = (name: string) => !sdk.findInventoryItem(itemNamed(name)) && !sdk.findEquipmentItem(itemNamed(name));
             const needChain = needsGear(chain);
             const needHelm = needsGear(helm);
@@ -118,13 +149,10 @@ const result = await runScript(async ctx => {
             await climb('down', 3021, 3510);
             await passage(2342, /^listen.at$/i, 3025, 3507);
             if (!/eavesdropped on a witch/i.test(await story())) throw new Error('The journal did not confirm the conversation at the grill');
-            await climb('up', 3021, 3510);
-            await passage(2339, /^open$/i, 3025, 3511);
-            await climb('up', 3025, 3513); await climb('down', 3023, 3513);
-            await crossLadderRoomDoor('west');
-            await climb('up', 3017, 3516); await climb('down', 3016, 3519);
-            await climb('down', 3015, 3519);
-            await passage(2341, /^push$/i, 3016, 3517);
+            await leaveGrillRoute();
+        } else if (resumeReturn) {
+            questLog('fortress-return-resumed', { x: player?.worldX, z: player?.worldZ, plane: player?.level });
+            await leaveGrillRoute();
         }
         questPhase('fortress-sabotage');
         if (!hasCabbage()) {
