@@ -1,8 +1,9 @@
 import { expect, test } from 'bun:test';
 import { Database } from 'bun:sqlite';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { dashboardAudit } from './dashboard-audit';
+import { dashboardPresentation } from './dashboard-presentation';
 import { dashboardSessions } from './dashboard-session';
 
 test('groups matching breakpoints and preserves bounded evidence beyond trace eviction', () => {
@@ -146,6 +147,14 @@ test('keeps a pickpocket intent, dispatch, and outcome linked in the live trace 
         expect(live?.events?.filter(event => event.data.operationId === 7).map(event => event.data.outcome))
             .toEqual(['pending', 'dispatched', 'not-started', 'not-started']);
         expect(live?.events?.find(event => event.kind === 'intent' && event.data.operationId === 8)?.data.parentOperationId).toBe(7);
+        const operation = audit.read(new URLSearchParams(`run=${run}&operation=7&event=unrelated&kind=failure`));
+        expect(operation?.events?.map(event => event.name))
+            .toEqual(['pickpocket-npc', 'interactNpc', 'wait-ticks', 'wait-ticks', 'pickpocket-attempt-not-started', 'pickpocket-npc']);
+        expect(operation?.matchingEvents).toBe(6);
+        const matched = audit.read(new URLSearchParams(`run=${run}&event=pickpocket-attempt-not-started&kind=setback&limit=1`));
+        expect(matched?.events?.map(event => event.name)).toEqual(['pickpocket-attempt-not-started']);
+        expect(matched?.nextBefore).toBeNull();
+        expect(() => audit.read(new URLSearchParams(`run=${run}&operation=0`))).toThrow('Invalid operation');
         expect(live?.signals).toContainEqual(expect.objectContaining({
             evidence: expect.arrayContaining([expect.objectContaining({
                 data: expect.objectContaining({ operationId: 7, intent, outcome: 'not-started' }),
@@ -193,7 +202,11 @@ test('reports whole-activity rates and splits durable trend time at Eastern midn
         const database = new Database(join(directory, 'activity-audit.sqlite'));
         database.exec('DELETE FROM audit_events');
         database.close();
-        expect(audit.read(params)).toEqual(report);
+        expect(audit.read(params)).toEqual({
+            ...report,
+            attempts: report.attempts.map(row => ({ ...row, trace_run_id: null })),
+            setbacks: report.setbacks.map(row => ({ ...(row as object), trace_run_id: null })),
+        });
         expect(audit.read(new URLSearchParams('mode=insights&task=pickpocket-knights&phase=thieving-pickpocket')))
             .toMatchObject({ throughput: { xp: 100, xpPerHour: null } });
         expect(audit.read(new URLSearchParams('mode=insights&task=pickpocket-knights&revision=abcdef0')))
@@ -203,6 +216,92 @@ test('reports whole-activity rates and splits durable trend time at Eastern midn
         rmSync(directory, { recursive: true, force: true });
     }
 });
+
+test('compares two revisions in the same scope and retains links only to matching evidence', () => {
+    const directory = mkdtempSync(join(process.cwd(), '.audit-test-'));
+    let now = 1_800_000_000_000;
+    const audit = dashboardAudit(directory, () => now);
+    try {
+        const old = audit.begin('Scout', 'pickpocket-knights', 'abcdef0', null, []);
+        audit.append(old, { kind: 'setback', name: 'pickpocket-attempt-timeout', elapsedMs: 1000 });
+        now += 5000;
+        audit.finish(old, 0, false);
+        const current = audit.begin('Scout', 'pickpocket-knights', '123abcd', null, []);
+        audit.append(current, { kind: 'milestone', name: 'pickpocket-attempt-succeeded', elapsedMs: 100, xpGained: 50 });
+        now += 5000;
+        audit.finish(current, 0, false);
+        const other = audit.begin('Other', 'pickpocket-knights', '123abcd', null, []);
+        audit.append(other, { kind: 'setback', name: 'pickpocket-attempt-timeout', elapsedMs: 1000 });
+
+        const params = new URLSearchParams('mode=insights&task=pickpocket-knights&bot=Scout&revision=123abcd&baseline=abcdef0');
+        expect(audit.read(params)).toMatchObject({
+            sample: { runs: 1 }, attempts: [{ name: 'pickpocket-attempt-succeeded', trace_run_id: current }],
+            revisions: [{ revision: '123abcd', runs: 1 }, { revision: 'abcdef0', runs: 1 }],
+            baseline: { sample: { runs: 1 }, attempts: [{ name: 'pickpocket-attempt-timeout', trace_run_id: old }] },
+        });
+        params.set('baseline', '123abcd0');
+        expect(() => audit.read(params)).toThrow('Invalid baseline');
+    } finally {
+        audit.close();
+        rmSync(directory, { recursive: true, force: true });
+    }
+});
+
+test('reloads a committed Fleet Desk presentation while the same audit writer keeps a run active', async () => {
+    const directory = mkdtempSync(join(process.cwd(), '.audit-test-'));
+    const source = join(directory, 'control');
+    mkdirSync(source);
+    const git = (...args: string[]) => {
+        const result = Bun.spawnSync(['git', '-c', 'user.name=Fleet Desk test', '-c', 'user.email=fleet@example.test',
+            '-c', 'commit.gpgSign=false', '-c', 'core.hooksPath=/dev/null', ...args], { cwd: directory });
+        if (!result.success) throw new Error(result.stderr.toString());
+    };
+    const audit = dashboardAudit(directory);
+    const reports = new Database(join(directory, 'activity-audit.sqlite'), { readonly: true });
+    try {
+        for (const file of [
+            'dashboard-presentation-entry.ts', 'dashboard-fleet-page.ts', 'dashboard-fleet.css',
+            'public-status-controls.js', 'dashboard-fleet-stats.ts', 'dashboard-quests.ts', 'dashboard-task-catalog.ts',
+            'dashboard-audit-report.ts', 'dashboard-audit-insights-report.ts', 'dashboard-audit-schema.ts',
+        ]) copyFileSync(join(import.meta.dir, file), join(source, file));
+        git('init', '-q');
+        git('add', 'control');
+        git('commit', '-qm', 'First presentation');
+
+        const run = audit.begin('Scout', 'pickpocket-knights', null, null, []);
+        audit.append(run, { kind: 'phase', name: 'thieving-pickpocket' });
+        const fixture = dashboardPresentation(source, directory);
+        const inputs = { nonce: 'fixture', questCatalog: [], refreshSeconds: 15, displayTimeZone: 'America/New_York' };
+        const first = await fixture();
+        expect(first.fleetPage({ ...inputs, ...first })).toContain('Activity audit');
+        expect(first.readDashboardAudit(reports, Date.now(), new URLSearchParams(`run=${run}`))).toMatchObject({
+            run: { status: 'running' },
+        });
+
+        writeFileSync(join(source, 'dashboard-fleet.css'), '/* second presentation */');
+        writeFileSync(join(source, 'public-status-controls.js'), '/* second controls */');
+        const template = join(source, 'dashboard-fleet-page.ts');
+        writeFileSync(template, readFileSync(template, 'utf8').replace('Activity audit</h2>', 'Updated audit</h2>'));
+        expect(await fixture()).toBe(first);
+        git('add', 'control');
+        git('commit', '-qm', 'Update presentation');
+        writeFileSync(join(source, 'public-status-controls.js'), '/* uncommitted edit */');
+
+        const second = await fixture();
+        expect(second.revision).not.toBe(first.revision);
+        expect(second.fleetPage({ ...inputs, ...second })).toContain('Updated audit');
+        expect(second.fleetStyle).toBe('/* second presentation */');
+        expect(second.controls).toBe('/* second controls */');
+        audit.append(run, { kind: 'milestone', name: 'pickpocket-attempt-succeeded', xpGained: 50 });
+        expect(second.readDashboardAudit(reports, Date.now(), new URLSearchParams(`run=${run}`))).toMatchObject({
+            run: { status: 'running' }, signals: [expect.objectContaining({ name: 'pickpocket-attempt-succeeded', count: 1 })],
+        });
+    } finally {
+        reports.close();
+        audit.close();
+        rmSync(directory, { recursive: true, force: true });
+    }
+}, 15_000);
 
 test('password login for audits permits an API client and preserves browser origin checks', async () => {
     const directory = mkdtempSync(join(process.cwd(), '.audit-test-'));

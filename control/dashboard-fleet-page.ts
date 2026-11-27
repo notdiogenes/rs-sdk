@@ -1,5 +1,6 @@
 import { fleetSkills } from './dashboard-fleet-stats';
 import { questHiscore, type QuestColumn } from './dashboard-quests';
+import { activity, activityIds } from './dashboard-task-catalog';
 import type { Bot, ControlActivity, Snapshot } from './public-status';
 
 const escape = (value: string) => value.replaceAll('&', '&amp;').replaceAll('<', '&lt;')
@@ -203,25 +204,45 @@ export function fleetPage({ nonce, data, questCatalog, fleetStyle, controls, ref
   <button type="button" id="diagnostics-close">Close</button>
 </div></dialog>
 <dialog id="audit-dialog" aria-labelledby="audit-title"><div class="dialog-body">
-  <div class="dialog-header"><h2 id="audit-title">Audit history</h2><button type="button" data-close>Close</button></div>
+  <div class="audit-chrome">
+  <div class="dialog-header"><h2 id="audit-title">Activity audit</h2>
+    <div class="audit-actions"><button type="button" id="audit-copy" disabled>Copy link</button><button type="button" data-close>Close</button></div>
+  </div>
   <form id="audit-filters" class="audit-toolbar">
+    <nav id="audit-views" aria-label="Audit views">
+      <button type="button" data-audit-mode="insights" aria-pressed="true">Insights</button>
+      <button type="button" data-audit-mode="runs" aria-pressed="false">Runs</button>
+      <button type="button" data-audit-mode="summary" aria-pressed="false">Summary</button>
+    </nav>
     <label>Bot <input id="audit-bot" list="audit-bots" maxlength="12" placeholder="All bots" autocomplete="off"></label>
     <datalist id="audit-bots">${roster.map(({ bot }) => `<option value="${escape(bot.name)}"></option>`).join('')}</datalist>
-    <label>Task <input id="audit-task" maxlength="64" placeholder="All tasks" autocomplete="off"></label>
+    <label>Task <input id="audit-task" list="audit-tasks" maxlength="64" placeholder="All tasks" autocomplete="off"></label>
+    <datalist id="audit-tasks">${activityIds.map(id => `<option value="${escape(id)}">${escape(activity(id).label)}</option>`).join('')}</datalist>
     <label>Days <input id="audit-days" type="number" min="1" max="35" value="35" required></label>
-    <label>View <select id="audit-mode"><option value="runs">Runs</option><option value="summary">Summary</option><option value="insights">Insights</option></select></label>
     <label id="audit-summary-phase-field" hidden>Phase <input id="audit-summary-phase" maxlength="64" placeholder="All phases"></label>
-    <label id="audit-revision-field" hidden>Revision <input id="audit-revision" maxlength="40" pattern="[0-9a-fA-F]{7,40}" placeholder="Any revision" autocomplete="off"></label>
+    <label id="audit-revision-field">Revision <input id="audit-revision" list="audit-revisions" maxlength="40" pattern="[0-9a-fA-F]{7,40}" placeholder="Any revision" autocomplete="off"></label>
+    <label id="audit-baseline-field">Baseline revision <input id="audit-baseline" list="audit-revisions" maxlength="40" pattern="[0-9a-fA-F]{7,40}" placeholder="Optional" autocomplete="off"></label>
+    <datalist id="audit-revisions"></datalist>
     <button type="submit">Apply</button>
   </form>
   <div id="audit-run-tools" class="audit-toolbar" hidden>
     <button type="button" id="audit-back">Back to runs</button>
+    <button type="button" id="audit-operation-back" hidden>Back to events</button>
     <label>Phase <select id="audit-phase"><option value="">All phases</option></select></label>
+    <label>Event type <select id="audit-kind">
+      <option value="key">Key events</option><option value="">All events</option><option value="setback">Setbacks</option>
+      <option value="failure">Failures</option><option value="milestone">Milestones</option><option value="result">Results</option>
+      <option value="action">Dispatches</option><option value="intent">Intents</option><option value="check">Checks</option>
+      <option value="decision">Decisions</option><option value="phase">Phase changes</option><option value="state">State</option>
+      <option value="worker">Worker</option><option value="task-event">Task events</option>
+    </select></label>
+    <button type="button" id="audit-clear-event" hidden>Clear outcome</button>
     <button type="button" id="audit-refresh">Refresh</button>
   </div>
   <p id="audit-status" role="status" aria-live="polite"></p>
-  <button type="button" id="audit-older" hidden>Load older</button>
+  </div>
   <div id="audit-content"></div>
+  <button type="button" id="audit-older" hidden>Load older</button>
 </div></dialog>
 <script nonce="${nonce}" type="application/json" id="fleet-roster">${JSON.stringify({ rows: rowList, skills: fleetSkills, questCatalog }).replaceAll('<', '\\u003c')}</script>
 <script nonce="${nonce}" data-refresh="${refreshSeconds}" data-time-zone="${displayTimeZone}">${controls}</script>

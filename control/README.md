@@ -256,6 +256,14 @@ client when starting a plan.
 
 ### Activity audit history
 
+Fleet Desk loads its page, browser assets, and read-only audit reports from one
+committed Git revision. A UI update takes effect on the next page load without
+restarting the dashboard service or its bot workers. If a presentation fails
+to load, Fleet Desk keeps serving the previous version. The first deployment that
+installs this loader still needs a dashboard service restart. Schedule that
+deployment between runs. Changes to controller code or audit recording can
+still require a service restart.
+
 Fleet desk stores activity runs in `activity-audit.sqlite` in the dashboard
 runtime directory. Each dashboard-managed task and the Lumbridge demo worker
 record lifecycle events, selected SDK action dispatches, observation timeouts,
