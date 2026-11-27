@@ -87,11 +87,22 @@ const result = await runScript(async ctx => {
         await climb('down', 3015, 3519);
         await passage(2341, /^push$/i, 3016, 3517);
     };
+    const leaveFortress = async () => {
+        if ((sdk.getState()?.player?.worldX ?? 0) >= 3020) {
+            const opened = await bot.interactLoc(await loc(2338), /^open$/i);
+            if (!opened.success) throw new Error(opened.message);
+            await sdk.waitForCondition(s => !!s.player && s.player.level === 0 && s.player.worldX < 3020, 6_000);
+        }
+        await walk(ctx, 3017, 3515, 0);
+        await passage(2337, /^open$/i, 3016, 3515);
+        await sdk.waitForCondition(s => !!s.player && s.player.level === 0 && s.player.worldZ <= 3514, 6_000);
+    };
     const leaveSabotageRoute = async () => {
-        await passage(2341, /^push$/i, 3030, 3510);
-        await climb('down', 3022, 3518);
-        await passage(2338, /^open$/i, 3021, 3515, [/i don.t care.*going in anyway/i]);
-        await passage(2337, /^open$/i, 3016, 3514);
+        if (floor() === 1) {
+            await passage(2341, /^push$/i, 3030, 3510);
+            await climb('down', 3022, 3518);
+        }
+        await leaveFortress();
     };
     const story = () => journalText(ctx, journal, /^black knight.s fortress$/i);
     const player = sdk.getState()?.player;
@@ -101,14 +112,17 @@ const result = await runScript(async ctx => {
         player.worldZ >= 3510 && player.worldZ <= 3515;
     const nearCabbageHole = player?.level === 1 && player.worldX >= 3029 && player.worldX <= 3032 &&
         player.worldZ >= 3507 && player.worldZ <= 3512;
-    const savedPage = (nearEavesdropLadder || nearGrillReturn || nearCabbageHole) && readQuest(ctx, journal) === 'in-progress'
+    const nearBanquetExit = player?.level === 0 && player.worldX >= 3016 && player.worldX <= 3024 &&
+        player.worldZ >= 3515 && player.worldZ <= 3519;
+    const savedPage = (nearEavesdropLadder || nearGrillReturn || nearCabbageHole || nearBanquetExit) && readQuest(ctx, journal) === 'in-progress'
         ? await story() : undefined;
     const resumeEavesdrop = nearEavesdropLadder && savedPage !== undefined && !/eavesdropped on a witch|sabotaged the witch.s potion/i.test(savedPage);
     const resumeReturn = nearGrillReturn && savedPage !== undefined &&
         /eavesdropped on a witch/i.test(savedPage) && !sabotaged.test(savedPage);
     const resumeSabotage = nearCabbageHole && savedPage !== undefined &&
         (/eavesdropped on a witch/i.test(savedPage) || sabotaged.test(savedPage));
-    const resumingInside = resumeEavesdrop || resumeReturn || resumeSabotage;
+    const resumeExit = nearBanquetExit && savedPage !== undefined && sabotaged.test(savedPage);
+    const resumingInside = resumeEavesdrop || resumeReturn || resumeSabotage || resumeExit;
     if (!resumingInside) {
         if (player && Math.abs(player.worldX - 2960) < 15 && Math.abs(player.worldZ - 3338) < 15) await castleExit();
         if (floor() > 0) throw new Error('A Pirate is upstairs away from Sir Amik’s tower. Exit the fortress before retrying.');
@@ -195,7 +209,7 @@ const result = await runScript(async ctx => {
         await continueDialog(ctx);
         if (!sabotaged.test(await story())) throw new Error('The journal did not confirm the weapon was sabotaged');
         await leaveSabotageRoute();
-    } else if (resumeSabotage) {
+    } else if (resumeSabotage || resumeExit) {
         questPhase('fortress-sabotage-exit');
         await leaveSabotageRoute();
     }
