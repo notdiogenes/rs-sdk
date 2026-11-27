@@ -164,8 +164,22 @@ const result = await runScript(async ctx => {
             if (!sdk.findNearbyNpc(/^shamus$/i)) {
                 const tree = (await sdk.scanNearbyLocs(10)).find(loc => loc.id === 2409);
                 if (!tree) throw new Error('The leprechaun tree is outside the current scene');
-                await sdk.sendInteractLoc(tree.x, tree.z, tree.id, 1);
-                await sdk.waitForCondition(s => s.nearbyNpcs.some(n => /^shamus$/i.test(n.name)), 7500);
+                const tool = sdk.findInventoryItem(axe);
+                for (const [dx, dz] of [[0, -1], [1, 0], [0, 1], [-1, 0]]) {
+                    const x = tree.x + dx!, z = tree.z + dz!;
+                    const approach = await bot.walkTo(x, z, 0, { timeout: 9000 });
+                    if (!approach.success || player()?.worldX !== x || player()?.worldZ !== z) continue;
+                    const tick = sdk.getState()?.tick ?? 0;
+                    const sent = tool ? await sdk.sendUseItemOnLoc(tool.slot, tree.x, tree.z, tree.id)
+                        : await sdk.sendInteractLoc(tree.x, tree.z, tree.id, 1);
+                    const spawned = await sdk.waitForCondition(s => s.nearbyNpcs.some(n => /^shamus$/i.test(n.name)), 3600).catch(() => null);
+                    auditEvent('check', 'lost-city-shamus-spawn', {
+                        outcome: spawned ? 'complete' : 'unconfirmed', approach: { x, z }, message: sent.message,
+                        feedback: sdk.getState()?.gameMessages.filter(m => m.type === 0 && m.tick >= tick).slice(-4).map(m => m.text),
+                    });
+                    if (spawned) break;
+                }
+                if (!sdk.findNearbyNpc(/^shamus$/i)) throw new Error('Shamus did not appear from the reachable sides of the leprechaun tree');
             }
             await talk(ctx, /^shamus$/i, [/how does it fit/i]);
         }
