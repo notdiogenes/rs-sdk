@@ -1,11 +1,14 @@
 import { join } from 'node:path';
 import { Database } from 'bun:sqlite';
 import type { Snapshot } from './dashboard-supervisor';
+import type { ControllerStatus } from './dashboard-activity';
+import type { Plan } from './dashboard-plan-runner';
 import { dashboardPresentation } from './dashboard-presentation';
 import { loadQuestCatalog, type QuestColumn } from './dashboard-quests';
 
 type CallSupervisor = (request: Request) => Promise<Response>;
 type LoadPresentation = ReturnType<typeof dashboardPresentation>;
+type ReadPlan = (bot: string) => Plan | null;
 type Item = { id: number; slot: number; name: string; count: number };
 
 const itemSpriteBase = 'https://rs-sdk.maxbittker.com/sprite/item/';
@@ -25,6 +28,16 @@ function jsonError(error: string, status: number) {
     return Response.json({ error }, { status, headers: noStore });
 }
 
+function trainingActivity(label: string, bot: string, readPlan: ReadPlan) {
+    const match = /^(Stopping )?(?:Train Hitpoints|Training Hitpoints(?: to 60)?)$/.exec(label);
+    if (!match) return label;
+    const plan = readPlan(bot);
+    const work = plan?.status === 'running' ? plan.work : undefined;
+    const finish = work?.task === 'train-hitpoints' ? work.finish : undefined;
+    const goal = finish?.type === 'level' && finish.skill === 'Hitpoints' ? ` to ${finish.level}` : '';
+    return `${match[1] ?? ''}Training Hitpoints${goal}`;
+}
+
 async function supervisorRequest(path: string, request?: Request) {
     const headers = new Headers();
     if (request) {
@@ -42,7 +55,7 @@ async function supervisorRequest(path: string, request?: Request) {
 }
 
 export function dashboardWebHandler(worker: CallSupervisor, presentation: LoadPresentation,
-    auditDatabase: () => Database, questCatalog: QuestColumn[]) {
+    auditDatabase: () => Database, questCatalog: QuestColumn[], readPlan: ReadPlan = () => null) {
     const call = async (path: string, request?: Request) => worker(await supervisorRequest(path, request));
 
     async function audit(request: Request, params: URLSearchParams) {
@@ -85,7 +98,19 @@ export function dashboardWebHandler(worker: CallSupervisor, presentation: LoadPr
                 if (dataView && view === 'audit') return await audit(request, searchParams);
 
                 const response = await call('/bots/activity' + search, request);
-                if (!dataView || view !== 'inventory' || !response.ok) return response;
+                if (!dataView || !response.ok) return response;
+                const bot = searchParams.get('bot');
+                if (view === 'diagnostics' && bot && request.method === 'GET') {
+                    const report = await response.json() as { reading?: { bot: string; controller?: Pick<ControllerStatus, 'task'> } };
+                    const task = report.reading?.controller?.task;
+                    if (task?.name === 'train-hitpoints' && task.activity) {
+                        task.activity = trainingActivity(task.activity, report.reading?.bot ?? bot, readPlan);
+                    }
+                    const headers = new Headers(response.headers);
+                    headers.delete('Content-Length');
+                    return Response.json(report, { status: response.status, headers });
+                }
+                if (view !== 'inventory') return response;
                 type Inventory = { items: Item[] };
                 const data = await response.json() as Inventory | { message: string; inventory: Inventory };
                 const { status } = response;
@@ -104,7 +129,14 @@ export function dashboardWebHandler(worker: CallSupervisor, presentation: LoadPr
         let data: Snapshot | undefined;
         try {
             const response = await call('/internal/fleet-snapshot');
-            if (response.ok) data = await response.json() as Snapshot;
+            if (response.ok) {
+                data = await response.json() as Snapshot;
+                for (const bot of data.bots) {
+                    const label = trainingActivity(bot.activity, bot.name, readPlan);
+                    if (bot.control?.label === bot.activity) bot.control.label = label;
+                    bot.activity = label;
+                }
+            }
         } catch { /* Render the unavailable page until the supervisor is reachable. */ }
         const nonce = crypto.randomUUID();
         const { fleetPage, fleetStyle, controls } = await presentation();
@@ -126,8 +158,18 @@ export async function startDashboardWeb(runtimeDir: string, worker: CallSupervis
     const questCatalog = await loadQuestCatalog();
     await presentation();
     let db: Database | undefined;
+    let planDb: Database | undefined;
+    const readPlan: ReadPlan = bot => {
+        try {
+            planDb ??= new Database(join(runtimeDir, 'activity-plans.sqlite'), { readonly: true });
+            const row = planDb.query<{ data: string }, [string]>('SELECT data FROM activity_plan WHERE bot = ?').get(bot);
+            return row ? JSON.parse(row.data) as Plan : null;
+        } catch {
+            return null;
+        }
+    };
     const handle = dashboardWebHandler(worker, presentation, () =>
-        db ??= new Database(join(runtimeDir, 'activity-audit.sqlite'), { readonly: true }), questCatalog);
+        db ??= new Database(join(runtimeDir, 'activity-audit.sqlite'), { readonly: true }), questCatalog, readPlan);
     return Bun.serve({ hostname: '127.0.0.1', port: 3721, maxRequestBodySize: 16_384, fetch: handle });
 }
 
