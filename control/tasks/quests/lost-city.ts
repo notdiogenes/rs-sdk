@@ -1,8 +1,7 @@
 import { auditEvent, auditOperation } from '../../../sdk/audit-trace';
 import { runScript } from '../../../sdk/runner';
-import { PRAYER_INDICES } from '../../../sdk/types';
 import { Spells } from '../../../sdk/spells';
-import { fightQuestNpc, planQuestFight, questFood, questFoodSupplies, questSpellSupplies } from './quest-combat';
+import { fightQuestNpc, planQuestFight, questFood, questFoodSupplies, questSpellSupplies, withQuestProtection } from './quest-combat';
 import {
     buyQuestSupply, changeFloor, continueDialog, groundItem, journalText, lootFromNpc, prepareQuestStep, questLoc,
     questLog, questPhase, readQuest, talk, talkAt, useTogether, waitForQuestJournal, walk, type QuestContext,
@@ -267,29 +266,14 @@ const result = await runScript(async ctx => {
                     const wielded = await bot.equipItem(axe);
                     if (!wielded.success) throw new Error(wielded.message);
                 }
-                const protection = 'protect_from_melee';
-                const prayer = sdk.getPrayerState();
-                const activate = prayer && prayer.prayerLevel >= 43 && prayer.prayerPoints > 0 &&
-                    !prayer.activePrayers[PRAYER_INDICES[protection]];
-                if (activate) {
-                    const protectedState = await bot.activatePrayer(protection);
-                    auditEvent('check', 'lost-city-protect-from-melee', {
-                        outcome: protectedState.success ? 'complete' : 'unavailable', message: protectedState.message,
-                    });
-                }
-                try {
-                    await fightQuestNpc(ctx, spirit, spiritFight, plan, {
-                        retreat: () => walk(ctx, 2854, 9744, 2),
-                        reposition: async (target, retry) => {
-                            const [dx, dz] = [[-2, 0], [2, 0], [0, -2], [0, 2]][(retry - 1) % 4]!;
-                            await sdk.sendWalk(target.x + dx!, target.z + dz!);
-                            await sdk.waitForTicks(3);
-                        },
-                    });
-                } finally {
-                    if (activate) await bot.deactivatePrayer(protection);
-                }
-            });
+                await withQuestProtection(ctx, ['protect_from_melee'], () => fightQuestNpc(ctx, spirit, spiritFight, plan, {
+                    retreat: () => walk(ctx, 2854, 9744, 2),
+                    reposition: async (target, retry) => {
+                        const [dx, dz] = [[-2, 0], [2, 0], [0, -2], [0, 2]][(retry - 1) % 4]!;
+                        await sdk.sendWalk(target.x + dx!, target.z + dz!);
+                        await sdk.waitForTicks(3);
+                    },
+                }));
             }
         }
         if (!has(771)) throw new Error('Could not verify a Dramen branch after the Tree Spirit fight');
@@ -312,7 +296,7 @@ const result = await runScript(async ctx => {
     questPhase('lost-city-enter-zanaris');
     const equip = await bot.equipItem(/^dramen staff$/i);
     if (!equip.success && !sdk.findEquipmentItem(/^dramen staff$/i)) throw new Error(equip.message);
-    await walk(ctx, 3202, 3168, 1);
+    await walk(ctx, 3201, 3169, 0);
     const door = (await sdk.scanNearbyLocs(10)).find(loc => loc.id === 2406);
     if (!door) throw new Error('The Zanaris shed door was not visible');
     await sdk.sendInteractLoc(door.x, door.z, door.id, 1);

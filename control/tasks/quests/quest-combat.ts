@@ -1,6 +1,6 @@
 import { auditEvent, auditOperation } from '../../../sdk/audit-trace';
 import { Spells } from '../../../sdk/spells';
-import type { NearbyNpc } from '../../../sdk/types';
+import { PRAYER_INDICES, PRAYER_LEVELS, type NearbyNpc, type PrayerName } from '../../../sdk/types';
 import { itemNamed, type QuestContext } from './shared';
 
 export const questFood = /^(?:lobster|swordfish|shark|salmon|trout|cooked meat|cooked chicken|cake|2\/3 cake|slice of cake|tuna|bread)$/i;
@@ -74,6 +74,42 @@ export function planQuestFight(ctx: QuestContext, fight: Fight, options: { magic
     });
     if (needs.length || !plan) throw new Error(`${fight.name} loadout needs ${needs.join('; ')}`);
     return plan;
+}
+
+const overheads = ['protect_from_melee', 'protect_from_magic', 'protect_from_missiles'] as const;
+type Overhead = typeof overheads[number];
+
+export async function withQuestProtection(ctx: QuestContext, choices: readonly Overhead[], fight: () => Promise<void>) {
+    const { bot, sdk } = ctx;
+    const prayer = sdk.getPrayerState();
+    const previous = overheads.find(name => prayer?.activePrayers[PRAYER_INDICES[name]]);
+    const preferred: PrayerName | undefined = prayer && prayer.prayerPoints > 0
+        ? choices.find(name => prayer.prayerLevel >= (PRAYER_LEVELS[PRAYER_INDICES[name]] ?? Infinity))
+        : undefined;
+    let changed = false;
+    try {
+        if (preferred && preferred !== previous) {
+            const result = await bot.activatePrayer(preferred);
+            changed = sdk.getPrayerState()?.activePrayers[PRAYER_INDICES[preferred]] === true;
+            auditEvent('check', 'quest-combat-overhead', {
+                outcome: changed ? 'complete' : 'unavailable', prayer: preferred, previous,
+                prayerPoints: sdk.getPrayerState()?.prayerPoints, message: result.message,
+            });
+        } else {
+            auditEvent('check', 'quest-combat-overhead', {
+                outcome: preferred ? 'already-active' : 'unavailable', prayer: preferred, previous,
+                prayerPoints: prayer?.prayerPoints,
+            });
+        }
+        await fight();
+    } finally {
+        if (changed && preferred && sdk.getPrayerState()?.activePrayers[PRAYER_INDICES[preferred]]) {
+            await bot.deactivatePrayer(preferred);
+        }
+        if (changed && previous && (sdk.getPrayerState()?.prayerPoints ?? 0) > 0) {
+            await bot.activatePrayer(previous);
+        }
+    }
 }
 
 export async function fightQuestNpc(ctx: QuestContext, target: NearbyNpc, fight: Fight, plan: FightPlan, {

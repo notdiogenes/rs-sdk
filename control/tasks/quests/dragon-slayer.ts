@@ -2,7 +2,7 @@ import { auditEvent, auditOperation } from '../../../sdk/audit-trace';
 import { runScript } from '../../../sdk/runner';
 import { Spells } from '../../../sdk/spells';
 import {
-    canMeleeQuest, fightQuestNpc, planQuestFight, questFoodSupplies, questSkill, questSpellSupplies,
+    canMeleeQuest, fightQuestNpc, planQuestFight, questFoodSupplies, questSkill, questSpellSupplies, withQuestProtection,
 } from './quest-combat';
 import {
     buyQuestSupply, changeFloor, continueDialog, groundItem, journalText, prepareQuestStep, questLog, questPhase,
@@ -439,13 +439,13 @@ async function fightElvarg(ctx: QuestContext, page: string) {
     const state = await sdk.waitForCondition(s => s.nearbyNpcs.some(n => n.id === 742 && n.hp !== 0), 15000);
     const dragon = state.nearbyNpcs.find(n => n.id === 742 && n.hp !== 0);
     if (!dragon) throw new Error('Could not find Elvarg after reaching the lair');
-    await fightQuestNpc(ctx, dragon, elvarg, plan, {
+    await withQuestProtection(ctx, ['protect_from_melee', 'protect_from_magic'], () => fightQuestNpc(ctx, dragon, elvarg, plan, {
         won: () => readQuest(ctx, journal) === 'complete', protectedFromDamage: () => shieldEquipped(ctx),
         retreat: async () => {
             await activate(ctx, [2607], elvargGate.x, elvargGate.z, 'Retreat through Elvarg’s gate');
             await walk(ctx, 2844, 9636, 0);
         },
-    });
+    }));
     await waitForQuestJournal(ctx, journal, 'complete', 12000);
 }
 
