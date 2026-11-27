@@ -65,6 +65,25 @@ async function activate(ctx: QuestContext, ids: readonly number[], x: number, z:
         }, sent => ({ outcome: 'dispatched', message: sent.message }));
 }
 
+async function takeMapFromChest(ctx: QuestContext, x: number, z: number, ids: readonly number[], piece: number) {
+    const { sdk } = ctx;
+    if (has(ctx, piece)) return;
+    await walk(ctx, x, z - 1, 0);
+    for (let attempt = 1; attempt <= 6 && !has(ctx, piece); attempt++) {
+        const chest = (await sdk.scanNearbyLocs(8)).find(loc => loc.x === x && loc.z === z && ids.includes(loc.id));
+        auditEvent('check', 'dragon-slayer-map-chest', {
+            outcome: chest ? 'present' : 'unconfirmed', attempt, x, z, location: chest?.id, reachable: chest?.reachable, piece,
+        });
+        if (chest) {
+            await activate(ctx, [chest.id], x, z, 'Open or search the current map chest', { walkFirst: false });
+            if (sdk.getDialog()?.isOpen) await continueDialog(ctx);
+        }
+        if (!has(ctx, piece)) await sdk.waitForTicks(3);
+    }
+    if (!has(ctx, piece)) throw new Error(`The map chest at ${x}, ${z} did not yield item ${piece}`);
+    await continueDialog(ctx);
+}
+
 async function exitZanaris(ctx: QuestContext) {
     const p = position(ctx);
     if (p.worldX < 3140 || p.worldX > 3270 || p.worldZ < 9536 || p.worldZ >= 9600) return;
@@ -331,14 +350,14 @@ async function mazeRoom(ctx: QuestContext, room: typeof mazeRooms[number], cross
     const { sdk } = ctx;
     if (crossed()) return;
     questPhase('dragon-slayer-maze-room', { target: room.name, door: { x: room.x, z: room.z } });
-    if (!has(ctx, room.key)) {
-        await walk(ctx, room.nx, room.nz, 2);
-        const fight = { name: room.name, hitpoints: room.hp, incomingHit: room.hit, meleeLevel: Math.min(40, room.hp), minimumFood: 0 };
-        const plan = planQuestFight(ctx, fight, { magicOnly: !hasMeleeWeapon(ctx) });
-        const fallback: readonly [number, number] = room.npc === 752 ? [2929, 9653]
-            : room.npc === 753 ? [2928, 9645] : room.npc === 751 ? [2932, 9640]
-                : room.npc === 750 ? [2933, 3255] : room.npc === 749 ? [2927, 3256] : [2940, 3248];
-        try {
+    const fallback: readonly [number, number] = room.npc === 752 ? [2929, 9653]
+        : room.npc === 753 ? [2928, 9645] : room.npc === 751 ? [2932, 9640]
+            : room.npc === 750 ? [2933, 3255] : room.npc === 749 ? [2927, 3256] : [2940, 3248];
+    try {
+        if (!has(ctx, room.key)) {
+            await walk(ctx, room.nx, room.nz, 2);
+            const fight = { name: room.name, hitpoints: room.hp, incomingHit: room.hit, meleeLevel: Math.min(40, room.hp), minimumFood: 0 };
+            const plan = planQuestFight(ctx, fight, { magicOnly: !hasMeleeWeapon(ctx) });
             for (let attempt = 0; attempt < 5 && !has(ctx, room.key); attempt++) {
                 if (await pickUp(ctx, room.key, 8)) break;
                 const seen = await sdk.waitForCondition(s => !!availableQuestTarget(s, room.npc) ||
@@ -351,16 +370,16 @@ async function mazeRoom(ctx: QuestContext, room: typeof mazeRooms[number], cross
                 await sdk.waitForTicks(3);
                 await pickUp(ctx, room.key, 8);
             }
-        } catch (error) {
-            await escapeMazeFight(ctx, fallback);
-            throw error;
         }
+        if (!has(ctx, room.key)) throw new Error(`No ${room.name} key was recovered`);
+        await activate(ctx, [room.door], room.x, room.z, 'Unlock the door for the next maze room', { item: room.key });
+        if (!crossed()) await walk(ctx, room.x + room.dx, room.z + room.dz, 0);
+        if (!crossed()) throw new Error(`The ${room.name} door did not lead into the expected room`);
+        auditEvent('milestone', 'dragon-slayer-maze-door-passed', { door: room.door, target: room.name });
+    } catch (error) {
+        await escapeMazeFight(ctx, fallback);
+        throw error;
     }
-    if (!has(ctx, room.key)) throw new Error(`No ${room.name} key was recovered`);
-    await activate(ctx, [room.door], room.x, room.z, 'Unlock the door for the next maze room', { item: room.key });
-    if (!crossed()) await walk(ctx, room.x + room.dx, room.z + room.dz, 0);
-    if (!crossed()) throw new Error(`The ${room.name} door did not lead into the expected room`);
-    auditEvent('milestone', 'dragon-slayer-maze-door-passed', { door: room.door, target: room.name });
 }
 
 const inMazeBasement = (ctx: QuestContext) => area(ctx, 2934, 9650, 14);
@@ -396,6 +415,11 @@ async function melzarsMaze(ctx: QuestContext, inspectBasement?: (ctx: QuestConte
         await getReplacementMazeKey(ctx);
         const mazeHealth = mazeRooms.reduce((sum, room) => sum + room.hp, 0);
         await prepareCombat(ctx, mazeHealth);
+        if (questSkill(ctx, 'Magic') >= 31) {
+            await prepareQuestStep(ctx, { slots: 3, withdraw: [
+                { name: 'Law rune', count: 1 }, { name: 'Air rune', count: 3 }, { name: 'Earth rune', count: 1 },
+            ] });
+        }
         planQuestFight(ctx, { name: 'Melzar’s Maze', hitpoints: mazeHealth, incomingHit: 8, meleeLevel: 40, minimumFood: 2 },
             { magicOnly: !hasMeleeWeapon(ctx) });
         questPhase('dragon-slayer-maze-entry');
@@ -432,10 +456,8 @@ async function melzarsMaze(ctx: QuestContext, inspectBasement?: (ctx: QuestConte
     await mazeRoom(ctx, mazeRooms[4], () => p().worldZ >= 9652);
     await inspectBasement?.(ctx);
     await mazeRoom(ctx, mazeRooms[5], () => p().worldZ >= 9655 && p().worldX >= 2933);
-    await activate(ctx, [2603, 2604], 2935, 9657, 'Open or search the Melzar’s Maze map chest');
-    if (!has(ctx, 1535)) await activate(ctx, [2604], 2935, 9657, 'Take the Melzar’s Maze map piece');
-    await ctx.sdk.waitForCondition(() => has(ctx, 1535), 8000);
-    await continueDialog(ctx);
+    questPhase('dragon-slayer-maze-chest');
+    await takeMapFromChest(ctx, 2935, 9657, [2603, 2604], 1535);
     await leaveMazeWithMap(ctx);
 }
 
@@ -513,10 +535,7 @@ async function oracleMap(ctx: QuestContext) {
         await activate(ctx, [2586], 3051, 9840, 'Offer the four items to the Dwarven Mine map room');
         await walk(ctx, 3052, 9840, 0);
     }
-    await activate(ctx, [2587, 2588], 3057, 9841, 'Open or search the Dwarven Mine map chest');
-    if (!has(ctx, 1537)) await activate(ctx, [2588], 3057, 9841, 'Take the Dwarven Mine map piece');
-    await sdk.waitForCondition(() => has(ctx, 1537), 8000);
-    await continueDialog(ctx);
+    await takeMapFromChest(ctx, 3057, 9841, [2587, 2588], 1537);
     await leaveDwarvenMine(ctx);
 }
 
