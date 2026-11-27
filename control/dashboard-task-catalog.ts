@@ -47,6 +47,10 @@ export const activityCatalog = {
         label: 'Pickpocket Ardougne Knights', category: 'Thieving', usage: 'repeatable', script: 'pickpocket.ts',
         requirements: [level('Thieving', 55)], trains: ['Thieving'],
     },
+    'pickpocket-paladins': {
+        label: 'Pickpocket Paladins', category: 'Thieving', usage: 'repeatable', script: 'pickpocket.ts',
+        requirements: [level('Thieving', 70)], trains: ['Thieving'],
+    },
     'pickpocket-heroes': {
         label: 'Pickpocket Heroes', category: 'Thieving', usage: 'repeatable', script: 'pickpocket.ts',
         requirements: [level('Thieving', 80), level('Hitpoints', 80)], trains: ['Thieving'],

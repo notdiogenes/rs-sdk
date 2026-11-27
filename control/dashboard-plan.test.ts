@@ -22,16 +22,23 @@ function world(thieving: number, hp: number, cook = false, tutorial = false) {
 
 test('meets requirements through eligible trainers, and skips training at qualifying levels', () => {
     const [step] = parseSteps([{ task: 'pickpocket-heroes', finish: { type: 'forever' } }]);
-    const actions = [[1, 10], [40, 10], [55, 10], [80, 10], [80, 80]].map(([thieving, hp]) =>
+    const actions = [[1, 10], [40, 10], [55, 10], [70, 10], [80, 10], [80, 80]].map(([thieving, hp]) =>
         nextWork(step!, world(thieving!, hp!)));
     expect(actions.map(x => x?.task)).toEqual([
-        'pickpocket-men', 'pickpocket-guards', 'pickpocket-knights', 'train-hitpoints', 'pickpocket-heroes',
+        'pickpocket-men', 'pickpocket-guards', 'pickpocket-knights', 'pickpocket-paladins', 'train-hitpoints', 'pickpocket-heroes',
     ]);
-    expect(actions.slice(0, 4).map(x => x?.finish)).toEqual([
+    expect(actions.slice(0, 5).map(x => x?.finish)).toEqual([
         { type: 'level', skill: 'Thieving', level: 40 }, { type: 'level', skill: 'Thieving', level: 55 },
-        { type: 'level', skill: 'Thieving', level: 80 }, { type: 'level', skill: 'Hitpoints', level: 80 },
+        { type: 'level', skill: 'Thieving', level: 70 }, { type: 'level', skill: 'Thieving', level: 80 },
+        { type: 'level', skill: 'Hitpoints', level: 80 },
     ]);
-    expect(actions[4]?.inserted).toBe(false);
+    expect(actions[5]?.inserted).toBe(false);
+});
+
+test('a Paladin activity uses Knights up to 70 Thieving and then targets Paladins', () => {
+    const [step] = parseSteps([{ task: 'pickpocket-paladins', finish: { type: 'minutes', minutes: 45 } }]);
+    expect(nextWork(step!, world(69, 50))?.task).toBe('pickpocket-knights');
+    expect(nextWork(step!, world(70, 50))?.task).toBe('pickpocket-paladins');
 });
 
 test('checks tutorial, quest prerequisites, and timed completion in order', () => {

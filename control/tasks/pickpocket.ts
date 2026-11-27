@@ -4,7 +4,8 @@ import { leaveTutorial } from './tutorial';
 
 const targets: Record<string, PickpocketTarget> = {
     'pickpocket-men': 'men', 'pickpocket-guards': 'guards',
-    'pickpocket-knights': 'knights', 'pickpocket-heroes': 'heroes',
+    'pickpocket-knights': 'knights', 'pickpocket-paladins': 'paladins',
+    'pickpocket-heroes': 'heroes',
 };
 const target = targets[process.env.RS_ACTIVITY ?? ''];
 

@@ -17,6 +17,7 @@ const activityLabels: Record<string, string> = {
 const targetLabels: Record<string, string> = {
     Guard: 'Pickpocketing Guards',
     'Knight of Ardougne': 'Pickpocketing Ardougne Knights',
+    Paladin: 'Pickpocketing Paladins',
     Hero: 'Pickpocketing Heroes',
 };
 const digest = (value: string) => createHash('sha256').update(value).digest();
@@ -177,7 +178,7 @@ export function dashboardDemo(runtimeDir: string, botsDir: string, configDir: st
             thieving: skills.find(skill => skill.name === 'Thieving') ?? null,
             hitpoints: skills.find(skill => skill.name === 'Hitpoints') ?? null,
             melee: skills.filter(skill => /^(Attack|Strength|Defence)$/.test(skill.name)),
-            targets: nearbyNpcs.filter(npc => /^(Chicken|Cow(?: Calf)?|Guard|Knight of Ardougne|Hero)$/i.test(npc.name))
+            targets: nearbyNpcs.filter(npc => /^(Chicken|Cow(?: Calf)?|Guard|Knight of Ardougne|Paladin|Hero)$/i.test(npc.name))
                 .slice(0, 12).map(({ name, index, x, z, distance, reachable, inCombat }) =>
                     ({ name, index, x, z, distance, reachable, inCombat })),
             coins: inventory.filter(item => item.id === 995).reduce((count, item) => count + item.count, 0),

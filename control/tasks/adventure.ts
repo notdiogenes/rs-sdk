@@ -1,4 +1,5 @@
 import type { ScriptContext } from '../../sdk/runner';
+import { activity } from '../dashboard-task-catalog';
 
 const swords = [
     [30, 'Adamant longsword'], [20, 'Mithril longsword'], [5, 'Steel longsword'], [1, 'Iron longsword'],
@@ -8,15 +9,17 @@ const attackable = /^attack$/i;
 const pocket = /^pickpocket$/i;
 const guards = /^guard$/i;
 const knights = /^knight of ardougne$/i;
+const paladins = /^paladin$/i;
 const heroes = /^hero$/i;
 const guardSpots = [[2651, 3307], [2660, 3308], [2635, 3339]] as const;
+const paladinSpots = [[2653, 3315], [2657, 3307]] as const;
 const heroSpots = [[2630, 3288], [2642, 3297], [2652, 3318]] as const;
 const log = (stage: string, fields: object = {}) =>
     console.log('[pickpocket-demo] ' + JSON.stringify({ stage, ...fields }));
 
 const men = /^man$/i;
 const manSpots = [[3222, 3218], [3221, 3228], [3231, 3237]] as const;
-export type PickpocketTarget = 'men' | 'guards' | 'knights' | 'heroes' | 'adaptive';
+export type PickpocketTarget = 'men' | 'guards' | 'knights' | 'paladins' | 'heroes' | 'adaptive';
 
 export function adventure({ bot, sdk }: ScriptContext) {
     const level = (name: string) => sdk.getSkill(name)?.baseLevel ?? 0;
@@ -202,7 +205,9 @@ export function adventure({ bot, sdk }: ScriptContext) {
         let successes = 0;
         let lastTarget = '';
         const lumbridge = focus === 'men';
-        const required = focus === 'heroes' ? 80 : focus === 'knights' ? 55 : lumbridge ? 1 : 40;
+        const requirement = activity(focus === 'adaptive' ? 'pickpocket-guards' : `pickpocket-${focus}`).requirements
+            ?.find(entry => entry.type === 'level' && entry.skill === 'Thieving');
+        const required = requirement?.type === 'level' ? requirement.level : 1;
         if (level('Thieving') < required) throw new Error(`This activity needs at least ${required} Thieving`);
         const goToArea = async () => {
             if (!lumbridge) return goToArdougne();
@@ -228,10 +233,11 @@ export function adventure({ bot, sdk }: ScriptContext) {
             const adaptive = focus === 'adaptive';
             const hero = adaptive && thieving >= 80 ? closest(heroes, pocket) : undefined;
             const knight = adaptive && thieving >= 55 ? closest(knights, pocket) : undefined;
-            const fixedTarget = focus === 'heroes' ? heroes : focus === 'knights' ? knights : focus === 'men' ? men : guards;
+            const fixedTarget = { men, guards, knights, paladins, heroes, adaptive: guards }[focus];
             const target = adaptive ? hero ?? knight ?? (thieving < 55 ? closest(guards, pocket) : undefined) : closest(fixedTarget, pocket);
             if (!target || (adaptive && thieving >= 80 && !hero && nextScan % 12 === 0)) {
-                const locations = lumbridge ? manSpots : focus === 'guards' || (adaptive && thieving < 55) ? guardSpots : heroSpots;
+                const locations = lumbridge ? manSpots : focus === 'paladins' ? paladinSpots
+                    : focus === 'guards' || (adaptive && thieving < 55) ? guardSpots : heroSpots;
                 const spot = locations[nextScan % locations.length] ?? locations[0];
                 nextScan++;
                 if (adaptive && thieving >= 80 && knight && !hero && distance(2630, 3288) > 8) {
