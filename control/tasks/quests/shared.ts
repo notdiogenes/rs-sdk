@@ -16,13 +16,13 @@ export async function walk({ bot, sdk }: QuestContext, x: number, z: number, tol
     }
 }
 
-export async function changeFloor(ctx: QuestContext, direction: 'up' | 'down', x: number, z: number) {
+export async function changeFloor(ctx: QuestContext, direction: 'up' | 'down', x: number, z: number, radius = 7) {
     const { bot, sdk } = ctx;
     const before = sdk.getState()?.player;
     if (!before) throw new Error('No location for floor change');
     const search = direction === 'up' ? /climb.up|go.up|walk.up/i : /climb.down|go.down|walk.down/i;
     const candidates = (await sdk.scanNearbyLocs(12)).flatMap(loc => {
-        if (!/ladder|stair|trapdoor/i.test(loc.name) || Math.max(Math.abs(loc.x - x), Math.abs(loc.z - z)) > 7) return [];
+        if (!/ladder|stair|trapdoor/i.test(loc.name) || Math.max(Math.abs(loc.x - x), Math.abs(loc.z - z)) > radius) return [];
         const option = loc.optionsWithIndex.find(entry => search.test(entry.text));
         return option ? [{ loc, option }] : [];
     }).sort((a, b) => a.loc.distance - b.loc.distance);
@@ -69,17 +69,17 @@ export async function continueDialog({ sdk }: QuestContext, choices: RegExp[] = 
     throw new Error('Quest dialogue did not finish');
 }
 
-export async function groundItem(ctx: QuestContext, item: RegExp, x: number, z: number) {
+export async function groundItem(ctx: QuestContext, item: RegExp, x: number, z: number, count = 1) {
     const { bot, sdk } = ctx;
-    if (sdk.findInventoryItem(item)) return;
+    if (sdk.countInventoryItems(item) >= count) return;
     await walk(ctx, x, z, 4);
-    for (let attempt = 0; attempt < 9; attempt++) {
+    for (let attempt = 0; attempt < (count > 1 ? 25 : 9); attempt++) {
         const next = (await sdk.scanGroundItems(12))
             .filter(entry => item.test(entry.name) && Math.max(Math.abs(entry.x - x), Math.abs(entry.z - z)) <= 10)
             .sort((a, b) => Number(b.reachable) - Number(a.reachable) || a.distance - b.distance)[0];
         if (next) {
             await bot.pickupItem(next);
-            if (sdk.findInventoryItem(item)) return;
+            if (sdk.countInventoryItems(item) >= count) return;
         }
         await sdk.waitForTicks(5);
     }

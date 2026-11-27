@@ -23,6 +23,24 @@ export const activityCatalog = {
     'vampire-slayer': {
         label: 'Vampire Slayer', category: 'Quests', usage: 'once', script: 'quests/vampire-slayer.ts', journal: 7347,
     },
+    'ernest-the-chicken': {
+        label: 'Ernest the Chicken', category: 'Quests', usage: 'once', script: 'quests/ernest-the-chicken.ts', journal: 7339,
+    },
+    'goblin-diplomacy': {
+        label: 'Goblin Diplomacy', category: 'Quests', usage: 'once', script: 'quests/goblin-diplomacy.ts', journal: 7338,
+    },
+    'druidic-ritual': {
+        label: 'Druidic Ritual', category: 'Quests', usage: 'once', script: 'quests/druidic-ritual.ts', journal: 7355,
+    },
+    'witchs-house': {
+        label: 'Witch’s House', category: 'Quests', usage: 'once', script: 'quests/witchs-house.ts', journal: 7351,
+    },
+    'black-knights-fortress': {
+        label: 'Black Knight’s Fortress', category: 'Quests', usage: 'once', script: 'quests/black-knights-fortress.ts', journal: 7332,
+    },
+    'dorics-quest': {
+        label: 'Doric’s Quest', category: 'Quests', usage: 'once', script: 'quests/dorics-quest.ts', journal: 7336,
+    },
     'cooks-assistant': {
         label: 'Cook’s Assistant', category: 'Quests', usage: 'once', script: 'quests/cooks-assistant.ts', journal: 7333,
     },
