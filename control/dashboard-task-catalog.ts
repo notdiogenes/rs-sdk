@@ -1,6 +1,6 @@
 import { miningResources, miningSelection, type MiningTask } from './mining-routes';
 
-export const trainingSkills = ['Hitpoints', 'Thieving', 'Attack', 'Strength', 'Defence', 'Runecraft', 'Mining'] as const;
+export const trainingSkills = ['Hitpoints', 'Thieving', 'Attack', 'Strength', 'Defence', 'Runecraft', 'Mining', 'Fishing', 'Cooking'] as const;
 export type TrainingSkill = typeof trainingSkills[number];
 export type Requirement =
     | { type: 'level'; skill: TrainingSkill; level: number }
@@ -8,7 +8,7 @@ export type Requirement =
 
 type Activity = {
     label: string;
-    category: 'Quests' | 'Combat' | 'Thieving' | 'Runecraft' | 'Mining' | 'Setup' | 'Legacy';
+    category: 'Quests' | 'Combat' | 'Thieving' | 'Runecraft' | 'Mining' | 'Fishing' | 'Setup' | 'Legacy';
     usage: 'once' | 'repeatable';
     script: string;
     requirements?: Requirement[];
@@ -103,6 +103,13 @@ export const activityCatalog = {
         label: 'Craft Body runes', category: 'Runecraft', usage: 'repeatable', script: 'craft-body-runes.ts', trains: ['Runecraft'],
     },
     ...miningActivities,
+    'fish-sharks': {
+        label: 'Fish sharks', category: 'Fishing', usage: 'repeatable', script: 'fish-sharks.ts', trains: ['Fishing'],
+    },
+    'fish-sharks-cook': {
+        label: 'Fish sharks and cook them', category: 'Fishing', usage: 'repeatable',
+        script: 'fish-sharks.ts', trains: ['Fishing', 'Cooking'],
+    },
     'skip-tutorial': { label: 'Skip Tutorial Island', category: 'Setup', usage: 'once', script: 'skip-tutorial.ts' },
     'train-hp-pickpocket': {
         label: 'Train Hitpoints, then pickpocket', category: 'Legacy', usage: 'repeatable', script: 'train-hp-pickpocket.ts',
