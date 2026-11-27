@@ -39,6 +39,7 @@ button:disabled{opacity:.6;cursor:default}
 #inventory-dialog .dialog-header{align-items:center;margin-bottom:8px}
 #inventory-dialog h2{font-size:19px;overflow-wrap:anywhere}
 #inventory-status{min-height:1.35em;font-size:12px;margin-bottom:12px}
+#inventory-status[data-state=warning]{color:var(--amber)}
 .inventory-header-actions{display:flex;gap:6px;flex:none}
 .inventory-header-actions button{display:inline-grid;place-items:center;min-width:38px;min-height:38px}
 .inventory-action-icon{width:15px;height:15px;flex:none;fill:none;stroke:currentColor;stroke-width:1.4;stroke-linecap:round;stroke-linejoin:round}
@@ -62,6 +63,8 @@ button:disabled{opacity:.6;cursor:default}
 .inventory-read-only{margin-top:8px}
 .inventory-confirmation{margin-top:10px;padding:9px;background:#32241e;border:1px solid #775141;border-radius:6px}
 .inventory-confirmation p{color:#efc9b6;font-size:13px;overflow-wrap:anywhere}
+.inventory-confirmation p:first-child{font-weight:700}
+.inventory-confirmation .inventory-selection-meta{color:var(--muted);font-size:12px}
 .inventory-confirmation .inventory-toolbar{margin-top:8px}
 @media(max-width:570px){
   #inventory-dialog .dialog-body{padding:12px}
@@ -86,11 +89,14 @@ button:disabled{opacity:.6;cursor:default}
 .inventory-quantity{position:absolute;top:3px;left:4px;color:#ffe07d;text-shadow:0 1px 2px #160f08,1px 0 #160f08;
   font:700 10px/1 ui-monospace,monospace;pointer-events:none}
 .inventory-item-detail{margin-top:10px;min-height:2.5em;color:#ead2a8;font-size:12px;overflow-wrap:anywhere}
-.inventory-action-status{margin:10px 0 0;font-size:12px;overflow-wrap:anywhere}
-.inventory-action-status:empty{margin:0}
-.inventory-action-status[data-outcome=pending]{color:var(--gold)}
-.inventory-action-status[data-outcome=success]{color:var(--green)}
-.inventory-action-status[data-outcome=error]{color:var(--amber)}
+.inventory-action-status p:empty{display:none}
+.inventory-action-status[data-outcome]{margin-top:10px;padding:8px 9px;border:1px solid var(--line);
+  border-inline-start:2px solid var(--inventory-feedback-color);border-radius:6px;background:#211d18;font-size:12px;overflow-wrap:anywhere}
+.inventory-action-status[data-outcome=pending]{--inventory-feedback-color:var(--gold)}
+.inventory-action-status[data-outcome=success]{--inventory-feedback-color:var(--green)}
+.inventory-action-status[data-outcome=error]{--inventory-feedback-color:var(--amber)}
+#inventory-action-title{color:var(--inventory-feedback-color);font-weight:700}
+#inventory-action-detail:not(:empty){margin-top:3px}
 #banks-dialog[data-bank-view=account]{max-width:min(747px,calc(100vw - 24px))}
 #bank-status{font-size:12px}
 #bank-back{margin-top:10px}

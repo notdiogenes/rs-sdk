@@ -200,15 +200,20 @@ export function fleetPage({ nonce, data, questCatalog, fleetStyle, controls, ref
           <svg class="inventory-action-icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2v8m-3-3 3 3 3-3M3 11v2.5h10V11"/></svg>Drop
         </button>
       </div>
-      <p class="inventory-selection-meta inventory-read-only" id="inventory-read-only" hidden>Item actions are unavailable.</p>
-      <div class="inventory-confirmation" id="inventory-drop-confirmation" role="group" aria-labelledby="inventory-drop-question" hidden>
+      <p class="inventory-selection-meta inventory-read-only" id="inventory-read-only" hidden>Item actions are unavailable for this client.</p>
+      <div class="inventory-confirmation" id="inventory-drop-confirmation" role="group"
+           aria-labelledby="inventory-drop-question" aria-describedby="inventory-drop-context" hidden>
         <p id="inventory-drop-question"></p>
+        <p id="inventory-drop-context" class="inventory-selection-meta"></p>
         <div class="inventory-toolbar">
           <button type="button" id="inventory-drop-cancel">Cancel</button>
           <button type="button" id="inventory-drop-submit" class="inventory-destructive">Confirm drop</button>
         </div>
       </div>
-      <p id="inventory-action-status" class="inventory-action-status" role="status"></p>
+      <div id="inventory-action-status" class="inventory-action-status" role="status" aria-atomic="true">
+        <p id="inventory-action-title"></p>
+        <p id="inventory-action-detail"></p>
+      </div>
     </section>
   </div>
 </div></dialog>
