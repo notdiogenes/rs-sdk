@@ -22,12 +22,24 @@ const actionGlyphs = {
 
 export type FleetActionIcon = keyof typeof actionGlyphs;
 
+const actionColors: Record<FleetActionIcon, string> = {
+    details: '#aabfe3',
+    inventory: '#dda878',
+    diagnostics: '#a1cd96',
+    audit: '#c8afe0',
+    bank: '#edc779',
+    plan: '#8fbfe2',
+    pause: '#ebb38c',
+    stop: '#ed9284',
+    watch: '#8ecbc0',
+};
+
 export function fleetSkillIcon(name: string) {
     const glyph = skillGlyphs[name];
     return glyph ? `<svg class="skill-icon" viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false">${glyph}</svg>` : '';
 }
 
 export function fleetActionIcon(icon: FleetActionIcon) {
-    return `<svg viewBox="0 0 20 20" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.5"
+    return `<svg viewBox="0 0 20 20" width="17" height="17" color="${actionColors[icon]}" fill="none" stroke="currentColor" stroke-width="1.5"
       stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">${actionGlyphs[icon]}</svg>`;
 }
