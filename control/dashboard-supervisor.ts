@@ -188,7 +188,8 @@ export async function createDashboardSupervisor(botsDir: string, configDir: stri
             if (body.action === 'pause') plan = await plans.pause(profile.name);
             else if (body.action === 'resume') plan = plans.resume(profile.name);
             else if (body.action === 'start') plan = plans.start(profile.name, parseSteps(body.steps));
-            else return reply({ error: 'Choose start, pause, or resume.' }, 400);
+            else if (body.action === 'queue-mining') plan = plans.queueMining(profile.name, parseSteps([body.step])[0]!);
+            else return reply({ error: 'Choose start, pause, resume, or queue mining.' }, 400);
             expiresAt = 0;
             return reply({ bot: profile.name, plan }, body.action === 'pause' ? 200 : 202);
         } catch (error) {

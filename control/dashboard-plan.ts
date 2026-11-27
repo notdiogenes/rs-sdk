@@ -3,6 +3,7 @@ import { activity, activityIds, isActivity, inTutorialDestination, onTutorial, t
 
 export type Finish =
     | { type: 'complete' }
+    | { type: 'essence-exhausted' }
     | { type: 'minutes'; minutes: number }
     | { type: 'level'; skill: TrainingSkill; level: number }
     | { type: 'forever' };
@@ -44,6 +45,9 @@ export function parseSteps(value: unknown): Step[] {
         const meta = activity(task);
         if (meta.usage === 'once' && ending.type === 'complete') return { task, requirements: parsed, finish: { type: 'complete' } };
         if (meta.usage === 'repeatable') {
+            if (task === 'craft-body-runes' && ending.type === 'essence-exhausted') {
+                return { task, requirements: parsed, finish: { type: 'essence-exhausted' } };
+            }
             if (ending.type === 'forever') {
                 if (index !== value.length - 1) throw new Error('An indefinite grind must be the final activity.');
                 return { task, requirements: parsed, finish: { type: 'forever' } };
@@ -77,7 +81,7 @@ export function finished(work: Work, state: BotWorldState, elapsedMs: number) {
     const finish = work.finish;
     if (finish.type === 'level') return skillLevel(state, finish.skill) >= finish.level;
     if (finish.type === 'minutes') return elapsedMs >= finish.minutes * 60_000;
-    if (finish.type === 'forever') return false;
+    if (finish.type === 'forever' || finish.type === 'essence-exhausted') return false;
     return work.task === 'skip-tutorial' ? !!state.player && inTutorialDestination(state.player.worldX, state.player.worldZ, state.player.level)
         : questComplete(state, work.task);
 }

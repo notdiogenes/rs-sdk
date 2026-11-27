@@ -142,7 +142,10 @@ export async function craftBodyRunes({ bot, sdk }: ScriptContext) {
                     () => bot.withdrawItem(stock, amount, { asNote: false }));
             }
             if (!count(current().inventory, essenceId)) {
-                throw new Error(stock?.count ? 'The backpack has no space for unnoted rune essence.' : 'No rune essence remains in the bank.');
+                if (stock?.count) throw new Error('The backpack has no space for unnoted rune essence.');
+                auditEvent('milestone', 'runecraft-essence-exhausted', { essence: 0, bankEssence: 0 });
+                await closeBank();
+                return false;
             }
             auditEvent('milestone', 'runecraft-bank-loaded', {
                 rune: rune.name, essence: count(current().inventory, essenceId), bankEssence: count(current().bank.items, essenceId),
@@ -152,6 +155,7 @@ export async function craftBodyRunes({ bot, sdk }: ScriptContext) {
             throw error;
         }
         await closeBank();
+        return true;
     }
 
     while (runecraft(current()).baseLevel < goal) {
@@ -164,8 +168,11 @@ export async function craftBodyRunes({ bot, sdk }: ScriptContext) {
             continue;
         }
         if (!temple) {
-            if (!essence || !count(state.inventory, rune.talisman) || (rune === air && essence > airNeeded(state))) await restock(rune);
-            else await closeBank();
+            if (!essence || !count(state.inventory, rune.talisman) || (rune === air && essence > airNeeded(state))) {
+                if (!await restock(rune)) {
+                    return;
+                }
+            } else await closeBank();
             phase('runecraft-enter', rune);
             await walk(rune.outside, 4, `${rune.name} ruins`);
             const ruins = await location(rune.ruins, `${rune.name} ruins`);

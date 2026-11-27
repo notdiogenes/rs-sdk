@@ -31,7 +31,7 @@ export function createPlanManager(directory: string, backendFor: (bot: string, s
     db.exec('CREATE TABLE IF NOT EXISTS activity_plan (bot TEXT PRIMARY KEY COLLATE NOCASE, data TEXT NOT NULL)');
     const read = db.query<{ data: string }, [string]>('SELECT data FROM activity_plan WHERE bot = ?');
     const write = db.query('INSERT OR REPLACE INTO activity_plan (bot, data) VALUES (?, ?)');
-    const jobs = new Map<string, { cancel: AbortController; done: Promise<void> }>();
+    const jobs = new Map<string, { plan: Plan; cancel: AbortController; done: Promise<void> }>();
     const get = (bot: string): Plan | null => {
         const row = read.get(bot);
         return row ? JSON.parse(row.data) as Plan : null;
@@ -127,6 +127,12 @@ export function createPlanManager(directory: string, backendFor: (bot: string, s
                     if (done && (work.finish.type !== 'complete' || !status.task)) break;
                     if (!status.task) {
                         const exit = status.lastTask;
+                        if (work.finish.type === 'essence-exhausted' && exit?.name === work.task &&
+                            exit.exitCode === 0 && exit.completion === 'essence-exhausted') {
+                            plan.index++;
+                            plan.elapsedMs = 0;
+                            break;
+                        }
                         if (exit?.name === work.task && exit.exitCode !== 0) {
                             throw new Error(`${activity(work.task).label} exited with code ${exit.exitCode}.`);
                         }
@@ -165,7 +171,7 @@ export function createPlanManager(directory: string, backendFor: (bot: string, s
         const key = plan.bot.toLowerCase();
         const cancel = new AbortController();
         const done = run(plan, cancel.signal).finally(() => jobs.delete(key));
-        jobs.set(key, { cancel, done });
+        jobs.set(key, { plan, cancel, done });
         return plan;
     }
 
@@ -185,6 +191,21 @@ export function createPlanManager(directory: string, backendFor: (bot: string, s
         return launch(plan);
     }
 
+    function queueMining(bot: string, next: Step) {
+        const plan = jobs.get(bot.toLowerCase())?.plan;
+        const step = plan?.steps[plan.index];
+        if (!plan || plan.status !== 'running' || plan.index !== plan.steps.length - 1 || step?.task !== 'craft-body-runes') {
+            throw new Error('Mining can be queued after the current final runecrafting step.');
+        }
+        if (plan.steps.length >= 12 || activity(next.task).category !== 'Mining') throw new Error('Choose a mining activity to queue.');
+        const finish = { type: 'essence-exhausted' } as const;
+        step.finish = finish;
+        if (plan.work?.task === step.task) plan.work.finish = finish;
+        plan.steps.push(next);
+        save(plan);
+        return plan;
+    }
+
     async function pause(bot: string) {
         const job = jobs.get(bot.toLowerCase());
         if (!job) return get(bot);
@@ -201,5 +222,5 @@ export function createPlanManager(directory: string, backendFor: (bot: string, s
         }
     }
 
-    return { get, active, start, resume, pause, restore, close: () => db.close() };
+    return { get, active, start, resume, pause, queueMining, restore, close: () => db.close() };
 }

@@ -31,7 +31,7 @@ const json = (body: unknown, status = 200) => Response.json(body, { status, head
 type Process = { process: Bun.Subprocess; startedAt: string; stopping?: boolean };
 type Event = { id: number; at: string; stage: string; [key: string]: unknown };
 type Exit = { at: string; exitCode: number };
-type Task = Process & { auditId?: string; name: DemoTaskName; activity: string; recovery?: { since: string; resumeAt: number } };
+type Task = Process & { auditId?: string; name: DemoTaskName; activity: string; recovery?: { since: string; resumeAt: number }; completion?: 'essence-exhausted' };
 
 async function stopProcess(handle: Process | undefined, signal: 'SIGINT' | 'SIGTERM') {
     if (!handle || handle.process.exitCode !== null) return;
@@ -55,7 +55,7 @@ export function dashboardDemo(runtimeDir: string, botsDir: string, configDir: st
     let client: (Process & { inventory: ReturnType<typeof inventoryControls>; feed: ReturnType<typeof dashboardClientFeed> }) | undefined;
     let task: Task | undefined;
     let clientExit: Exit | null = null;
-    let taskExit: (Exit & { name: DemoTaskName }) | null = null;
+    let taskExit: (Exit & { name: DemoTaskName; completion?: Task['completion'] }) | null = null;
     let busy = false;
     let taskStopped = false;
     let startingPlanTask = false;
@@ -77,7 +77,14 @@ export function dashboardDemo(runtimeDir: string, botsDir: string, configDir: st
             for (const line of lines) {
                 if (line.startsWith(auditPrefix)) {
                     if (running.auditId) {
-                        try { audit?.append(running.auditId, JSON.parse(line.slice(auditPrefix.length))); }
+                        try {
+                            const entry = JSON.parse(line.slice(auditPrefix.length));
+                            if (running.name === 'craft-body-runes' && entry.kind === 'milestone' &&
+                                entry.name === 'runecraft-essence-exhausted' && entry.essence === 0 && entry.bankEssence === 0) {
+                                running.completion = 'essence-exhausted';
+                            }
+                            audit?.append(running.auditId, entry);
+                        }
                         catch { /* Malformed task output cannot interrupt its stream. */ }
                     }
                     continue;
@@ -220,7 +227,7 @@ export function dashboardDemo(runtimeDir: string, botsDir: string, configDir: st
         void child.exited.then(async exitCode => {
             const errorOutput = await readErrors;
             await readEvents;
-            taskExit = { name, exitCode, at: new Date().toISOString() };
+            taskExit = { name, exitCode, at: new Date().toISOString(), completion: running.completion };
             if (task === running) task = undefined;
             event('task-exited', { exitCode });
             if (auditId) {
@@ -264,7 +271,8 @@ export function dashboardDemo(runtimeDir: string, botsDir: string, configDir: st
             bot, tasks: activityIds,
             client: client ? { startedAt: client.startedAt, stopping: Boolean(client.stopping) } : null,
             task: task ? { name: task.name, startedAt: task.startedAt, stopping: Boolean(task.stopping), activity: task.activity, recovery: task.recovery } : null,
-            lastTask: taskExit && !taskStopped ? { name: taskExit.name, exitCode: taskExit.exitCode, finishedAt: taskExit.at } : null,
+            lastTask: taskExit && !taskStopped ? { name: taskExit.name, exitCode: taskExit.exitCode,
+                finishedAt: taskExit.at, completion: taskExit.completion } : null,
         };
     }
 

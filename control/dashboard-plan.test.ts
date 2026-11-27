@@ -129,3 +129,39 @@ test('holds one activity at a time, pauses, and resumes with the saved cursor', 
         rmSync(scratch, { recursive: true, force: true });
     }
 }, 22_000);
+
+test('appends mining without stopping runecrafting and starts after confirmed essence exhaustion', async () => {
+    const directory = mkdtempSync(join(process.cwd(), '.plan-test-'));
+    const game = world(1, 99);
+    const status: ReturnType<PlanBackend['status']> = { bot: 'Pirate', tasks: [], client: null, task: null };
+    const started: string[] = [];
+    const backend: PlanBackend = {
+        status: () => status,
+        async prepare() { status.client = { startedAt: new Date().toISOString(), stopping: false }; },
+        async observe() { game.tick++; return game; },
+        async start(name) {
+            started.push(name);
+            status.task = { name, startedAt: new Date().toISOString(), stopping: false };
+        },
+        async stop() { status.task = null; },
+    };
+    const manager = createPlanManager(directory, async () => backend);
+    try {
+        manager.start('Pirate', parseSteps([{ task: 'craft-body-runes', finish: { type: 'forever' } }]));
+        await until(() => started.length === 1);
+        const [next] = parseSteps([{ task: 'mine-iron-bank', finish: { type: 'forever' } }]);
+        manager.queueMining('Pirate', next!);
+        expect(manager.get('Pirate')?.work?.finish.type).toBe('essence-exhausted');
+        expect(started).toEqual(['craft-body-runes']);
+        expect(status.task?.name).toBe('craft-body-runes');
+        status.task = null;
+        status.lastTask = { name: 'craft-body-runes', finishedAt: new Date().toISOString(), exitCode: 0, completion: 'essence-exhausted' };
+        await until(() => started.length === 2);
+        expect(started[1]).toBe('mine-iron-bank');
+        expect(manager.get('Pirate')?.index).toBe(1);
+    } finally {
+        await manager.pause('Pirate');
+        manager.close();
+        rmSync(directory, { recursive: true, force: true });
+    }
+}, 16_000);

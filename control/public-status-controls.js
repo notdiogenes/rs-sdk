@@ -1508,6 +1508,7 @@
     const questChoices = () => planCatalog.filter(entry => entry.category === 'Quests');
     const finishLabel = finish => finish.type === 'level' ? `Until ${finish.skill} ${finish.level}`
         : finish.type === 'minutes' ? `${finish.minutes} min`
+        : finish.type === 'essence-exhausted' ? 'Until rune essence runs out'
         : finish.type === 'forever' ? 'Indefinite grind' : 'Until complete';
     const requirementLabel = req => req.type === 'quest' ? labelFor(req.task) : `${req.skill} ${req.level}`;
 
@@ -1608,7 +1609,8 @@
         row.append(head, node('small', meta?.usage === 'once' ? 'One-time quest' : 'Repeatable activity', 'plan-kind'));
         if (meta?.usage === 'repeatable') {
             const stopRow = node('div', '', 'plan-end');
-            const modes = [['minutes', 'Time spent'], ...(meta.trains?.length ? [['level', 'Skill level']] : []), ['forever', 'Indefinite grind']];
+            const modes = [['minutes', 'Time spent'], ...(meta.trains?.length ? [['level', 'Skill level']] : []),
+                ...(step.task === 'craft-body-runes' ? [['essence-exhausted', 'Rune essence runs out']] : []), ['forever', 'Indefinite grind']];
             stopRow.append(planField('Finish when', planSelect(modes, step.finish.type, type => {
                 step.finish = type === 'minutes' ? { type, minutes: 30 }
                     : type === 'level' ? { type, skill: meta.trains[0], level: 40 } : { type };

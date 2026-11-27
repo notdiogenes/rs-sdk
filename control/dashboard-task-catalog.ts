@@ -1,4 +1,6 @@
-export const trainingSkills = ['Hitpoints', 'Thieving', 'Attack', 'Strength', 'Defence', 'Runecraft'] as const;
+import { miningResources, miningSelection, type MiningTask } from './mining-routes';
+
+export const trainingSkills = ['Hitpoints', 'Thieving', 'Attack', 'Strength', 'Defence', 'Runecraft', 'Mining'] as const;
 export type TrainingSkill = typeof trainingSkills[number];
 export type Requirement =
     | { type: 'level'; skill: TrainingSkill; level: number }
@@ -6,7 +8,7 @@ export type Requirement =
 
 type Activity = {
     label: string;
-    category: 'Quests' | 'Combat' | 'Thieving' | 'Runecraft' | 'Setup' | 'Legacy';
+    category: 'Quests' | 'Combat' | 'Thieving' | 'Runecraft' | 'Mining' | 'Setup' | 'Legacy';
     usage: 'once' | 'repeatable';
     script: string;
     requirements?: Requirement[];
@@ -15,6 +17,17 @@ type Activity = {
 };
 
 const level = (skill: TrainingSkill, minimum: number): Requirement => ({ type: 'level', skill, level: minimum });
+
+const miningTasks = Object.keys(miningResources).flatMap(resource =>
+    (['bank', 'power'] as const).map(mode => `mine-${resource}-${mode}` as MiningTask));
+const miningActivities = Object.fromEntries<Activity>(miningTasks.map(id => {
+    const { resource, mode } = miningSelection(id);
+    const name = miningResources[resource].label;
+    return [id, {
+        label: mode === 'bank' ? `Mine and bank ${name.toLowerCase()}` : `Powermine ${name.toLowerCase()}`,
+        category: 'Mining', usage: 'repeatable', script: 'mine-resources.ts', trains: ['Mining'],
+    } satisfies Activity];
+})) as Record<MiningTask, Activity>;
 
 export const activityCatalog = {
     'lost-city': {
@@ -89,6 +102,7 @@ export const activityCatalog = {
     'craft-body-runes': {
         label: 'Craft Body runes', category: 'Runecraft', usage: 'repeatable', script: 'craft-body-runes.ts', trains: ['Runecraft'],
     },
+    ...miningActivities,
     'skip-tutorial': { label: 'Skip Tutorial Island', category: 'Setup', usage: 'once', script: 'skip-tutorial.ts' },
     'train-hp-pickpocket': {
         label: 'Train Hitpoints, then pickpocket', category: 'Legacy', usage: 'repeatable', script: 'train-hp-pickpocket.ts',
