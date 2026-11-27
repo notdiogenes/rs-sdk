@@ -310,6 +310,16 @@ and `hp_lost` fields sum observed attempt costs and gains. Phase duration
 includes separate time for search, stun waits and recovery, and updates as
 events arrive even while the run is active. Setbacks retain sampled evidence.
 
+Pickpocket run details also record decisions and pair each operation's
+`intent` and `result` events. Read `data.intent` for the reason, the intent
+event's parameters and starting state for the selected action, and the result
+event's `outcome`, elapsed time, and end state for what happened. The matching
+`data.operationId` ties both records to underlying SDK dispatches. A nested
+wait includes its `parentOperationId` in the intent event. A pending intent may
+still be in progress. Inspect the run state and adjacent events if its result
+is absent. The trace includes target selection, travel, retries, waits, food,
+banking, and recovery.
+
 ### Separate Lumbridge pickpocket demo
 
 The HTTPS dashboard also exposes a second, isolated client and task for the

@@ -6,8 +6,8 @@ const day = 86_400_000;
 export const auditRetentionDays = 35;
 const detailBudget = 240_000;
 const safeName = /^[a-z0-9][a-z0-9-]{0,63}$/i;
-const kinds = new Set(['phase', 'action', 'check', 'failure', 'state', 'milestone', 'setback', 'worker', 'task-event']);
-type AuditKind = 'phase' | 'action' | 'check' | 'failure' | 'state' | 'milestone' | 'setback' | 'worker' | 'task-event';
+const kinds = new Set(['phase', 'action', 'check', 'failure', 'state', 'milestone', 'setback', 'worker', 'task-event', 'decision', 'intent', 'result']);
+type AuditKind = 'phase' | 'action' | 'check' | 'failure' | 'state' | 'milestone' | 'setback' | 'worker' | 'task-event' | 'decision' | 'intent' | 'result';
 type AuditEvent = { kind: AuditKind; name: string; outcome?: string; [key: string]: unknown };
 type Active = { phase: string; at: number; secrets: readonly string[]; pendingCheck?: string };
 
@@ -83,13 +83,14 @@ export function dashboardAudit(directory: string, clock = Date.now) {
         typeof value === 'number' && Number.isSafeInteger(value) && value > 0 ? value : 0;
     const setbackContext = db.query<{ kind: string; name: string; data: string }, [string, string]>(`
         SELECT kind, name, data FROM audit_events WHERE run_id = ? AND phase = ?
-        AND kind IN ('check', 'action', 'setback') ORDER BY id DESC LIMIT 5
+        AND kind IN ('check', 'action', 'setback', 'decision', 'intent', 'result') ORDER BY id DESC LIMIT 8
     `);
     const recentEvidence = db.query<{ id: number; at: number; phase: string; kind: string; name: string; data: string }, [string]>(`
         SELECT id, at, phase, kind, name, data FROM (
             SELECT *, ROW_NUMBER() OVER (PARTITION BY kind ORDER BY id DESC) AS rank
             FROM (SELECT * FROM audit_events WHERE run_id = ? ORDER BY id DESC LIMIT 500)
-        ) WHERE rank <= CASE kind WHEN 'action' THEN 12 WHEN 'check' THEN 10 WHEN 'state' THEN 2 ELSE 4 END ORDER BY id
+        ) WHERE rank <= CASE kind WHEN 'action' THEN 12 WHEN 'check' THEN 10 WHEN 'intent' THEN 10
+            WHEN 'result' THEN 10 WHEN 'state' THEN 2 ELSE 4 END ORDER BY id
     `);
 
     function prune() {

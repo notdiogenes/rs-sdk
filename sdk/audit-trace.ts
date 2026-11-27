@@ -1,10 +1,35 @@
+import { AsyncLocalStorage } from 'node:async_hooks';
 import type { ActionResult, BotAction, BotWorldState } from './types';
 
 export const auditEnabled = process.env.RS_ACTIVITY_AUDIT === '1';
 export const auditPrefix = '[rs-activity-audit] ';
+const operationScope = new AsyncLocalStorage<{ operationId: number; intent: string }>();
+let nextOperationId = 0;
 
 export function auditEvent(kind: string, name: string, data: object = {}) {
-    if (auditEnabled) console.log(auditPrefix + JSON.stringify({ kind, name, ...data }));
+    if (auditEnabled) console.log(auditPrefix + JSON.stringify({ ...operationScope.getStore(), kind, name, ...data }));
+}
+
+type OperationOutcome = { outcome: string; [key: string]: unknown };
+
+/** Tie script decisions, underlying SDK calls, and observed results together within one run. */
+export async function auditOperation<T>(name: string, intent: string, parameters: object,
+    state: () => BotWorldState | null | undefined, execute: () => Promise<T>, describe: (value: T) => OperationOutcome): Promise<T> {
+    if (!auditEnabled) return execute();
+    const parentOperationId = operationScope.getStore()?.operationId;
+    return operationScope.run({ operationId: ++nextOperationId, intent }, async () => {
+        const began = performance.now();
+        auditEvent('intent', name, { parentOperationId, parameters, outcome: 'pending', before: auditFrame(state()) });
+        try {
+            const value = await execute();
+            auditEvent('result', name, { ...describe(value), elapsedMs: Math.round(performance.now() - began), after: auditFrame(state()) });
+            return value;
+        } catch (error) {
+            auditEvent('result', name, { outcome: 'error', message: error instanceof Error ? error.message : String(error),
+                elapsedMs: Math.round(performance.now() - began), after: auditFrame(state()) });
+            throw error;
+        }
+    });
 }
 
 export function auditFrame(state: BotWorldState | null | undefined) {

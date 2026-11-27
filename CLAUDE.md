@@ -146,10 +146,20 @@ Record observations in `lab_log.md`, then improve the script.
 
 ### Audit Hosted Activities Over HTTPS
 
-For dashboard-managed bots, read from the configured control host first. Use
-the existing dashboard session or authorized control Bearer credential. Keep
-credentials out of URLs, logs, and reports. These GET requests can be used
-while the managed controller is running.
+For this repo's hosted fleet, use [Fleet Desk](https://35-174-14-23.sslip.io/bots).
+Use the configured control host for other deployments.
+
+**Start with the named bot.** Open its run list directly. For example, open
+[A Pirate’s audit runs](https://35-174-14-23.sslip.io/bots/activity?view=audit&mode=runs&bot=A%20Pirate&days=35).
+Use the existing dashboard session or authorized control Bearer credential.
+If you receive `401`, sign in once on that host and retry the same URL with
+the authenticated session. Keep credentials out of URLs, logs, and reports.
+Open the relevant failed run with `GET /bots/activity?view=audit&run=RUN_ID`.
+Report the last confirmed step, the first failed check shown in the trace,
+and the supporting evidence. If no matching failed run is present, check the
+bot's live diagnostics and saved plan for a startup error or blocked step.
+Inspect GitHub source at the recorded revision when needed to explain the
+trace. These GET requests work while the managed controller is running.
 
 | Question | Request | Evidence to inspect |
 | --- | --- | --- |

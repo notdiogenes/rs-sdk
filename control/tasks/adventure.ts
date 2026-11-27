@@ -1,4 +1,4 @@
-import { auditEnabled, auditEvent, auditFrame } from '../../sdk/audit-trace';
+import { auditEnabled, auditEvent, auditFrame, auditOperation } from '../../sdk/audit-trace';
 import type { ScriptContext } from '../../sdk/runner';
 import type { NearbyNpc } from '../../sdk/types';
 import { activity } from '../dashboard-task-catalog';
@@ -30,6 +30,15 @@ function npcEvidence(npc: NearbyNpc, action = pocket) {
 }
 
 export function adventure({ bot, sdk }: ScriptContext) {
+    const world = () => sdk.getState();
+    const actionResult = (result: { success: boolean; message: string; reason?: string }) =>
+        ({ outcome: result.success ? 'confirmed' : 'failed', sdk: { success: result.success, message: result.message, reason: result.reason } });
+    const waitTicks = (ticks: number, intent: string, auditing: boolean) => {
+        const until = (sdk.getState()?.tick ?? 0) + ticks;
+        const wait = () => sdk.waitForTicks(ticks);
+        return auditing ? auditOperation('wait-ticks', intent, { ticks, until }, world, wait,
+            () => ({ outcome: 'elapsed', tick: sdk.getState()?.tick, hp: sdk.getState()?.player?.hp })) : wait();
+    };
     const level = (name: string) => sdk.getSkill(name)?.baseLevel ?? 0;
     const distance = (x: number, z: number) => {
         const p = sdk.getState()?.player;
@@ -50,11 +59,19 @@ export function adventure({ bot, sdk }: ScriptContext) {
         sdk.getState()?.nearbyNpcs.filter(npc => name.test(npc.name) && npc.reachable !== false &&
             npc.optionsWithIndex.some(entry => option.test(entry.text)) && (!combat || !npc.inCombat))
             .sort((a, b) => a.distance - b.distance)[0];
-    const travel = async (x: number, z: number, tolerance: number, timeout: number, auditing = false) => {
-        if (distance(x, z) <= tolerance) return true;
+    const travel = async (x: number, z: number, tolerance: number, timeout: number, auditing = false, intent = 'Reach the next activity waypoint') => {
+        if (distance(x, z) <= tolerance) {
+            if (auditing) auditEvent('decision', 'walk-to', { intent, outcome: 'skipped', reason: 'already-within-tolerance', x, z, tolerance });
+            return true;
+        }
         const before = auditing ? auditFrame(sdk.getState()) : undefined;
         const began = auditing ? performance.now() : 0;
-        const walked = await bot.walkTo(x, z, tolerance, { timeout });
+        const walk = () => bot.walkTo(x, z, tolerance, { timeout });
+        const destination = { x, z, tolerance, timeout };
+        const walked = await (auditing ? auditOperation('walk-to', intent, destination, world, walk, result => ({
+            outcome: distance(x, z) <= tolerance ? 'arrived' : 'arrival-unconfirmed',
+            distance: distance(x, z), sdk: actionResult(result).sdk,
+        })) : walk());
         const arrived = distance(x, z) <= tolerance;
         if (auditing) auditEvent('check', 'activity-travel', {
             outcome: arrived ? 'complete' : 'failed', destination: { x, z, tolerance, timeout },
@@ -116,17 +133,22 @@ export function adventure({ bot, sdk }: ScriptContext) {
         if (!sdk.getState()?.player?.isDead) return;
         log('death', metrics());
         if (auditing) auditEvent('setback', 'activity-death', { before: auditFrame(sdk.getState()) });
-        await sdk.waitForCondition(s => s.inGame && !!s.player && !s.player.isDead, 90_000);
+        const wait = () => sdk.waitForCondition(s => s.inGame && !!s.player && !s.player.isDead, 90_000);
+        await (auditing ? auditOperation('wait-for-respawn', 'The player is dead. Wait for a living player before resuming the activity.',
+            { timeoutMs: 90_000 }, world, wait, () => ({ outcome: 'respawn-observed' })) : wait());
         if (auditing) auditEvent('milestone', 'activity-respawned', { after: auditFrame(sdk.getState()) });
     };
     const eat = async (auditing = false) => {
         const food = sdk.findInventoryItem(heal);
         if (!food) {
+            if (auditing) auditEvent('decision', 'eat-food', { intent: 'Restore HP before continuing', outcome: 'skipped', reason: 'no-matching-food' });
             if (auditing) auditEvent('setback', 'out-of-food', { before: auditFrame(sdk.getState()) });
             return false;
         }
         const before = auditing ? auditFrame(sdk.getState()) : undefined;
-        const eaten = await bot.eatFood(food);
+        const eatFood = () => bot.eatFood(food);
+        const eaten = await (auditing ? auditOperation('eat-food', 'Restore HP before continuing', { item: food.name, id: food.id, slot: food.slot },
+            world, eatFood, result => ({ ...actionResult(result), hpGained: result.hpGained })) : eatFood());
         if (auditing) auditEvent(eaten.success ? 'milestone' : 'setback', eaten.success ? 'food-eaten' : 'food-eat-failed', {
             item: { id: food.id, name: food.name, count: food.count }, before, after: auditFrame(sdk.getState()), message: eaten.message,
         });
@@ -141,7 +163,7 @@ export function adventure({ bot, sdk }: ScriptContext) {
             await waitAlive(auditing);
             if (!await eat(auditing)) {
                 await resupply?.();
-                await sdk.waitForTicks(12);
+                await waitTicks(12, 'Food did not restore HP. Wait for another recovery opportunity before checking HP again.', auditing);
             }
         }
         log('recovered', metrics());
@@ -233,16 +255,18 @@ export function adventure({ bot, sdk }: ScriptContext) {
         if (distance(2662, 3305) <= 50) return;
         log('travelling-to-ardougne', metrics());
         for (let attempt = 0; attempt < 4; attempt++) {
-            if (await travel(2662, 3305, 8, 210_000, auditing)) return;
+            if (await travel(2662, 3305, 8, 210_000, auditing, 'Reach East Ardougne, where the selected pickpocket targets are located')) return;
             await waitAlive(auditing);
         }
         throw new Error('Could not verify East Ardougne arrival');
     };
     const buyFood = async (auditing = false) => {
-        if (!await travel(2654, 3311, 4, 35_000, auditing)) return;
+        if (!await travel(2654, 3311, 4, 35_000, auditing, 'Reach the baker to buy food for HP recovery')) return;
         const baker = closest(/^baker$/i, /trade/i);
-        const opened = baker && await bot.openShop(baker);
+        const opened = baker && await auditOperation('open-food-shop', 'Inspect the baker’s stock for food within the recovery supplies list',
+            { target: npcEvidence(baker, /trade/i) }, world, () => bot.openShop(baker), actionResult);
         if (!opened?.success) {
+            if (auditing && !baker) auditEvent('decision', 'open-food-shop', { intent: 'Buy recovery food', outcome: 'skipped', reason: 'no-reachable-baker' });
             if (auditing) auditEvent('setback', 'thieving-food-shop-unavailable', { baker: baker?.index, message: opened?.message, state: auditFrame(sdk.getState()) });
             return;
         }
@@ -250,8 +274,16 @@ export function adventure({ bot, sdk }: ScriptContext) {
             let boughtCount = 0;
             for (const [name, limit] of [['Cake', 3], ['Chocolate slice', 8], ['Bread', 10]] as const) {
                 const item = sdk.getState()?.shop.shopItems.find(entry => entry.name === name && entry.count > 0);
-                if (!item) continue;
-                const bought = await bot.buyFromShop(name, Math.min(limit, item.count));
+                if (!item) {
+                    if (auditing) auditEvent('decision', 'buy-food', { intent: 'Restock recovery food', outcome: 'skipped', reason: 'out-of-stock', item: name });
+                    continue;
+                }
+                const quantity = Math.min(limit, item.count);
+                const bought = await auditOperation('buy-food', 'Buy an available recovery food up to its per-trip limit',
+                    { item: name, quantity, stock: item.count, coins: sdk.countInventoryItems(/^coins$/i) }, world,
+                    () => bot.buyFromShop(name, quantity), result => ({ ...actionResult(result),
+                        outcome: result.partial ? 'partially-bought' : result.success ? 'confirmed' : 'failed',
+                        amountBought: result.amountBought }));
                 if (bought.amountBought) log('food-restock', { item: name, bought: bought.amountBought, ...metrics() });
                 boughtCount += bought.amountBought ?? 0;
                 if (auditing && !bought.amountBought) auditEvent('setback', 'thieving-food-purchase-failed', {
@@ -262,12 +294,12 @@ export function adventure({ bot, sdk }: ScriptContext) {
                 bought: boughtCount, after: auditFrame(sdk.getState()),
             });
         } finally {
-            await bot.closeShop();
+            await auditOperation('close-food-shop', 'Leave the shop and restore access to the inventory', {}, world, () => bot.closeShop(), actionResult);
         }
     };
     const bankLoot = async (auditing = false) => {
-        if (!await travel(2656, 3283, 4, 40_000, auditing)) return;
-        const opened = await bot.openBank();
+        if (!await travel(2656, 3283, 4, 40_000, auditing, 'Reach the bank to free inventory slots for pickpocket loot')) return;
+        const opened = await auditOperation('open-bank', 'Open the bank to deposit loot', {}, world, () => bot.openBank(), actionResult);
         if (!opened.success) {
             if (auditing) auditEvent('setback', 'thieving-bank-unavailable', { message: opened.message, state: auditFrame(sdk.getState()) });
             return;
@@ -275,8 +307,15 @@ export function adventure({ bot, sdk }: ScriptContext) {
         const slotsBefore = auditing ? sdk.getInventory().length : 0;
         try {
             for (const name of new Set(sdk.getInventory().map(item => item.name))) {
-                if (/^coins$/i.test(name) || heal.test(name)) continue;
-                const deposited = await bot.depositItem(name, -1);
+                if (/^coins$/i.test(name) || heal.test(name)) {
+                    if (auditing) auditEvent('decision', 'bank-deposit', { intent: 'Keep coins and food available for recovery', outcome: 'skipped', item: name });
+                    continue;
+                }
+                const deposited = await auditOperation('bank-deposit', 'Free slots by depositing all copies of this item',
+                    { item: name, amount: 'all' }, world, () => bot.depositItem(name, -1), result => ({
+                        ...actionResult(result), outcome: result.partial ? 'partially-deposited' : result.success ? 'confirmed' : 'failed',
+                        amountDeposited: result.amountDeposited,
+                    }));
                 if (auditing && !deposited.success) auditEvent('setback', 'thieving-deposit-failed', { item: name, message: deposited.message });
             }
             if (auditing) {
@@ -286,7 +325,7 @@ export function adventure({ bot, sdk }: ScriptContext) {
                     { slotsBefore, slotsAfter, after: auditFrame(sdk.getState()) });
             }
         } finally {
-            await bot.closeBank();
+            await auditOperation('close-bank', 'Close the bank to resume normal actions', {}, world, () => bot.closeBank(), actionResult);
         }
     };
     async function pickpocket(focus: PickpocketTarget) {
@@ -311,6 +350,7 @@ export function adventure({ bot, sdk }: ScriptContext) {
         const required = requirement?.type === 'level' ? requirement.level : 1;
         phase('thieving-requirements');
         if (auditing) auditEvent('check', 'thieving-level-requirement', {
+            intent: 'Verify the level requirement for the chosen pickpocket target',
             outcome: level('Thieving') >= required ? 'complete' : 'failed', required, actual: level('Thieving'),
         });
         if (level('Thieving') < required) throw new Error(`This activity needs at least ${required} Thieving`);
@@ -321,9 +361,18 @@ export function adventure({ bot, sdk }: ScriptContext) {
             }
             if (distance(3222, 3222) <= 25) return;
             phase('thieving-travel');
-            if (!await travel(3222, 3222, 5, 150_000, auditing)) throw new Error('Could not verify Lumbridge arrival');
+            if (!await travel(3222, 3222, 5, 150_000, auditing, 'Reach Lumbridge to look for Men')) throw new Error('Could not verify Lumbridge arrival');
         };
         for (;;) {
+            if (auditing) {
+                const slots = sdk.getInventory().length;
+                auditEvent('decision', 'thieving-readiness', {
+                    intent: 'Check whether the bot needs to respawn, travel, or bank before selecting a target',
+                    outcome: 'evaluated', respawnRequired: !!sdk.getState()?.player?.isDead, slots, bankAt: lumbridge ? null : 26,
+                    bankThresholdMet: !lumbridge && slots >= 26, area: lumbridge ? 'Lumbridge' : 'East Ardougne',
+                    travelRequired: lumbridge ? distance(3222, 3222) > 25 : distance(2662, 3305) > 50,
+                });
+            }
             if (auditing && sdk.getState()?.player?.isDead) phase('thieving-respawn');
             await waitAlive(auditing);
             await goToArea();
@@ -334,10 +383,16 @@ export function adventure({ bot, sdk }: ScriptContext) {
             const p = sdk.getState()?.player;
             if (!p) throw new Error('Player state unavailable in pickpocket phase');
             const low = lumbridge ? 3 : Math.max(8, Math.floor(p.maxHp / 3));
+            if (auditing) auditEvent('decision', 'thieving-hp-check', { intent: 'Check if HP is safe for another attempt',
+                outcome: p.hp <= low ? 'recover-first' : 'continue', hp: p.hp, maxHp: p.maxHp, lowThreshold: low });
             if (p.hp <= low) {
                 phase('thieving-recovery');
                 await rest(Math.min(p.maxHp, lumbridge ? 6 : Math.max(low + 4, Math.ceil(p.maxHp / 2))), lumbridge ? undefined : async () => {
-                    if (Date.now() < nextFood) return;
+                    if (Date.now() < nextFood) {
+                        if (auditing) auditEvent('decision', 'food-resupply', { intent: 'Avoid repeating the shop trip before the resupply cooldown ends',
+                            outcome: 'skipped', retryAfterMs: Math.max(0, nextFood - Date.now()) });
+                        return;
+                    }
                     nextFood = Date.now() + 45_000;
                     phase('thieving-resupply');
                     await buyFood(auditing).catch(error => reportError('thieving-resupply-error', error));
@@ -351,6 +406,18 @@ export function adventure({ bot, sdk }: ScriptContext) {
             const knight = adaptive && thieving >= 55 ? closest(knights, pocket) : undefined;
             const fixedTarget = { men, guards, knights, paladins, heroes, adaptive: guards }[focus];
             const target = adaptive ? hero ?? knight ?? (thieving < 55 ? closest(guards, pocket) : undefined) : closest(fixedTarget, pocket);
+            if (auditing) {
+                const targetNames = adaptive ? /^(?:guard|knight of ardougne|hero)$/i : fixedTarget;
+                const candidates = (sdk.getState()?.nearbyNpcs ?? []).filter(npc => targetNames.test(npc.name));
+                auditEvent('decision', 'select-pickpocket-target', {
+                    intent: adaptive ? 'Pick the highest eligible target tier and prefer the nearest reachable NPC within it'
+                        : 'Choose the nearest matching NPC with a Pickpocket option and no known reachability block',
+                    outcome: target ? 'selected' : 'no-eligible-target', focus, thieving, candidatesSeen: candidates.length,
+                    target: target && npcEvidence(target),
+                    candidates: (!target || target.index !== lastTargetIndex) ? candidates.slice(0, 8).map(npc => npcEvidence(npc)) : undefined,
+                    state: auditFrame(sdk.getState()),
+                });
+            }
             if (!target || (adaptive && thieving >= 80 && !hero && nextScan % 12 === 0)) {
                 const locations = lumbridge ? manSpots : focus === 'paladins' ? paladinSpots
                     : focus === 'guards' || (adaptive && thieving < 55) ? guardSpots : heroSpots;
@@ -367,12 +434,12 @@ export function adventure({ bot, sdk }: ScriptContext) {
                 }
                 if (adaptive && thieving >= 80 && knight && !hero && distance(2630, 3288) > 8) {
                     phase('thieving-search');
-                    await travel(2630, 3288, 6, 35_000, auditing);
+                    await travel(2630, 3288, 6, 35_000, auditing, 'Look for a Hero while an eligible lower-tier target is available');
                 } else if (!target) {
-                    await travel(spot[0], spot[1], 3, 30_000, auditing);
+                    await travel(spot[0], spot[1], 3, 30_000, auditing, 'Check the next search waypoint for a reachable pickpocket target');
                 }
                 if (!target || (knight && !hero && distance(knight.x, knight.z) > 12)) {
-                    await sdk.waitForTicks(3);
+                    await waitTicks(3, 'Give nearby NPC positions time to refresh before searching again', auditing);
                     continue;
                 }
             } else {
@@ -387,36 +454,48 @@ export function adventure({ bot, sdk }: ScriptContext) {
                 lastTarget = target.name;
                 log('pickpocket-target', { npc: target.name, ...metrics() });
             }
-            const before = metrics();
-            const revision = sdk.getState()?.revision;
-            const beforeFrame = auditing ? auditFrame(sdk.getState()) : undefined;
-            const began = auditing ? performance.now() : 0;
-            const action = await bot.pickpocketNpc(target);
-            if (!action.success && action.reason !== 'stunned') await sdk.waitForTicks(5);
-            const after = metrics();
-            const xpGained = (after.thievingXp ?? 0) - (before.thievingXp ?? 0);
-            const messages = sdk.getState()?.gameMessages ?? [];
-            const newSystemMessage = (message: (typeof messages)[number]) => message.type === 0 &&
-                (message.observationId != null && revision != null ? message.observationId > revision : message.tick > (before.tick ?? -1));
-            const success = action.success || xpGained > 0 ||
-                messages.some(message => /^You pick the .*pocket/i.test(message.text) && newSystemMessage(message));
-            if (auditing) {
-                const feedback = messages.filter(message => !message.sender && newSystemMessage(message) &&
-                    /attempt to pick|pick the .*pocket|fail to pick|stun|caught|can.t reach|cannot reach/i.test(message.text))
-                    .slice(-6).map(({ tick, text }) => ({ tick, text }));
-                const outcome = success ? 'succeeded' : action.reason?.replaceAll('_', '-') ?? 'unconfirmed';
-                const observedXp = before.thievingXp != null && after.thievingXp != null ? xpGained : action.xpGained ?? 0;
-                auditEvent(success ? 'milestone' : 'setback', `pickpocket-attempt-${outcome}`, {
-                    target: npcEvidence(target), before: beforeFrame, after: auditFrame(sdk.getState()),
-                    elapsedMs: Math.round(performance.now() - began), xpGained: Math.max(0, observedXp),
-                    coinsGained: Math.max(0, after.coins - before.coins), hpLost: Math.max(0, (before.hp ?? 0) - (after.hp ?? 0)),
-                    sdk: { success: action.success, reason: action.reason, message: action.message }, feedback,
-                });
-            }
+            const { success, action, after } = await auditOperation('pickpocket-npc',
+                'Use Pickpocket on the selected target to gain Thieving XP and loot. Check for XP, coin gain, or game feedback.',
+                { target: npcEvidence(target), focus }, world, async () => {
+                    const before = metrics();
+                    const revision = sdk.getState()?.revision;
+                    const beforeFrame = auditing ? auditFrame(sdk.getState()) : undefined;
+                    const began = auditing ? performance.now() : 0;
+                    const action = await bot.pickpocketNpc(target);
+                    if (!action.success && action.reason !== 'stunned') {
+                        await waitTicks(5, 'The SDK did not confirm the attempt. Wait for late state or game feedback before classifying it.', auditing);
+                    }
+                    const after = metrics();
+                    const xpGained = (after.thievingXp ?? 0) - (before.thievingXp ?? 0);
+                    const messages = sdk.getState()?.gameMessages ?? [];
+                    const newSystemMessage = (message: (typeof messages)[number]) => message.type === 0 &&
+                        (message.observationId != null && revision != null ? message.observationId > revision : message.tick > (before.tick ?? -1));
+                    const successMessage = messages.some(message => !message.sender && /^You pick the .*pocket/i.test(message.text) && newSystemMessage(message));
+                    const success = action.success || xpGained > 0 || successMessage;
+                    const outcome = success ? 'succeeded' : action.reason?.replaceAll('_', '-') ?? 'unconfirmed';
+                    const observedXp = before.thievingXp != null && after.thievingXp != null ? xpGained : action.xpGained ?? 0;
+                    const evidence = {
+                        xpGained: Math.max(0, observedXp), coinsGained: Math.max(0, after.coins - before.coins),
+                        hpLost: Math.max(0, (before.hp ?? 0) - (after.hp ?? 0)),
+                        confirmation: xpGained > 0 ? 'xp-gain' : successMessage ? 'game-message' : action.success ? 'sdk-observation' : undefined,
+                        sdk: actionResult(action).sdk,
+                        feedback: auditing ? messages.filter(message => !message.sender && newSystemMessage(message) &&
+                            /attempt to pick|pick the .*pocket|fail to pick|stun|caught|can.t reach|cannot reach/i.test(message.text))
+                            .slice(-6).map(({ tick, text }) => ({ tick, text })) : undefined,
+                    };
+                    if (auditing) auditEvent(success ? 'milestone' : 'setback', `pickpocket-attempt-${outcome}`, {
+                        outcome, target: npcEvidence(target), before: beforeFrame, after: auditFrame(sdk.getState()),
+                        elapsedMs: Math.round(performance.now() - began), ...evidence,
+                    });
+                    return { success, action, after, outcome, evidence };
+                }, result => ({ outcome: result.outcome, ...result.evidence }));
             if (success) successes++;
             log('pickpocket', { npc: target.name, success, reason: action.reason, successes, ...after });
             if (action.reason === 'stunned') phase('thieving-stun');
-            await sdk.waitForTicks(action.reason === 'stunned' ? 11 : success ? 1 : 3);
+            await waitTicks(action.reason === 'stunned' ? 11 : success ? 1 : 3,
+                action.reason === 'stunned' ? 'Let the stun cooldown elapse before trying again'
+                    : success ? 'Wait one tick after a confirmed attempt before retrying'
+                        : 'Pause after an unconfirmed attempt before retrying', auditing);
         }
     }
 

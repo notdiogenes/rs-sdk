@@ -125,3 +125,38 @@ test('keeps thieving success, stun costs, and live phase time for an ongoing gri
         rmSync(directory, { recursive: true, force: true });
     }
 });
+
+test('keeps a pickpocket intent, dispatch, and outcome linked in the live trace and preserved failure evidence', () => {
+    const directory = mkdtempSync(join(process.cwd(), '.audit-test-'));
+    const audit = dashboardAudit(directory);
+    try {
+        const run = audit.begin('Scout', 'pickpocket-knights', 'revision-a', 'script-a', []);
+        audit.append(run, { kind: 'phase', name: 'thieving-pickpocket' });
+        const intent = 'Gain Thieving XP from the selected reachable knight';
+        audit.append(run, { kind: 'intent', name: 'pickpocket-npc', operationId: 7, intent, outcome: 'pending' });
+        audit.append(run, { kind: 'action', name: 'interactNpc', operationId: 7, intent, outcome: 'dispatched' });
+        audit.append(run, { kind: 'intent', name: 'wait-ticks', operationId: 8, parentOperationId: 7,
+            intent: 'Give delayed game feedback time to arrive', outcome: 'pending' });
+        audit.append(run, { kind: 'result', name: 'wait-ticks', operationId: 8, outcome: 'elapsed' });
+        audit.append(run, { kind: 'setback', name: 'pickpocket-attempt-not-started', operationId: 7, intent, outcome: 'not-started' });
+        audit.append(run, { kind: 'result', name: 'pickpocket-npc', operationId: 7, intent, outcome: 'not-started' });
+        const params = new URLSearchParams(`run=${run}`);
+        const live = audit.read(params);
+        expect(live?.events?.filter(event => event.data.operationId === 7).map(event => event.data.outcome))
+            .toEqual(['pending', 'dispatched', 'not-started', 'not-started']);
+        expect(live?.events?.find(event => event.kind === 'intent' && event.data.operationId === 8)?.data.parentOperationId).toBe(7);
+        expect(live?.signals).toContainEqual(expect.objectContaining({
+            evidence: expect.arrayContaining([expect.objectContaining({
+                data: expect.objectContaining({ operationId: 7, intent, outcome: 'not-started' }),
+            })]),
+        }));
+        audit.finish(run, 1, false);
+        expect(audit.read(params)?.failureEvidence).toContainEqual(expect.objectContaining({
+            kind: 'result',
+            data: expect.objectContaining({ operationId: 7, intent, outcome: 'not-started' }),
+        }));
+    } finally {
+        audit.close();
+        rmSync(directory, { recursive: true, force: true });
+    }
+});
