@@ -232,6 +232,8 @@ async function handleBotActivity(request: Request, name: string, session?: strin
     }
 }
 
+const itemSpriteBase = 'https://rs-sdk.maxbittker.com/sprite/item/';
+
 async function inventory(name: string) {
     const profile = await botProfile(name);
     if (!profile) return null;
@@ -242,7 +244,10 @@ async function inventory(name: string) {
     if (!isFreshBotState(result.stateAge)) return { ...empty, availability: 'stale' };
     return {
         bot: profile.name, availability: 'live', capturedAt: Date.now() - result.stateAge,
-        items: result.state.inventory.map(({ slot, name, count }) => ({ slot, name, count })).sort((a, b) => a.slot - b.slot),
+        items: result.state.inventory.map(({ id, slot, name, count }) => ({
+            id, slot, name, count,
+            spriteUrl: Number.isInteger(id) && id >= 0 && id <= 999_999 ? `${itemSpriteBase}${id}.png` : null,
+        })).sort((a, b) => a.slot - b.slot),
     };
 }
 
@@ -491,7 +496,7 @@ Bun.serve({
             headers: {
                 'Content-Type': 'text/html; charset=utf-8',
                 'Cache-Control': 'no-store',
-                'Content-Security-Policy': `default-src 'none'; style-src 'unsafe-inline'; script-src 'nonce-${nonce}'; connect-src 'self'; form-action 'none'; base-uri 'none'; frame-ancestors 'none'`,
+                'Content-Security-Policy': `default-src 'none'; style-src 'unsafe-inline'; script-src 'nonce-${nonce}'; connect-src 'self'; img-src ${itemSpriteBase}; form-action 'none'; base-uri 'none'; frame-ancestors 'none'`,
                 'X-Content-Type-Options': 'nosniff',
                 'X-Robots-Tag': 'noindex',
             },

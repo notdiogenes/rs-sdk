@@ -44,6 +44,7 @@
     const inventoryDialog = document.querySelector('#inventory-dialog');
     const inventoryStatus = document.querySelector('#inventory-status');
     const inventoryItems = document.querySelector('#inventory-items');
+    const inventoryDetail = document.querySelector('#inventory-item-detail');
     const inventoryRefresh = document.querySelector('#inventory-refresh');
     let inventoryBot;
     let inventoryVersion = 0;
@@ -292,34 +293,80 @@
         banksDialog.showModal();
     }
 
+    const backpackSlots = 28;
+
+    function resetInventory() {
+        inventoryItems.replaceChildren();
+        inventoryItems.hidden = true;
+        inventoryDetail.hidden = true;
+    }
+
+    function selectInventoryItem(button) {
+        inventoryItems.querySelector('[aria-pressed="true"]')?.setAttribute('aria-pressed', 'false');
+        button.setAttribute('aria-pressed', 'true');
+        inventoryDetail.textContent = button.dataset.inventoryDescription;
+        inventoryDetail.hidden = false;
+    }
+
+    function inventoryQuantity(count) {
+        if (count >= 1_000_000) return `${number(Math.floor(count / 1_000_000))}M`;
+        if (count >= 100_000) return `${number(Math.floor(count / 1_000))}K`;
+        return number(count);
+    }
+
+    function renderInventory(items) {
+        const previousSlot = inventoryItems.querySelector('[aria-pressed="true"]')?.dataset.inventorySlot;
+        const bySlot = new Map(items.filter(({ slot }) => Number.isInteger(slot) && slot >= 0 && slot < backpackSlots)
+            .map(item => [item.slot, item]));
+        inventoryItems.innerHTML = Array.from({ length: backpackSlots }, (_, slot) => {
+            const item = bySlot.get(slot);
+            if (!item) return '<li class="inventory-cell inventory-empty" aria-hidden="true"></li>';
+            const description = escape(`Slot ${slot + 1} · ${item.name} · ${number(item.count)}`);
+            const sprite = item.spriteUrl ? `<img class="inventory-sprite" src="${escape(item.spriteUrl)}"
+                width="32" height="32" alt="" decoding="async" referrerpolicy="no-referrer">` : '';
+            const quantity = item.count > 1
+                ? `<span class="inventory-quantity" aria-hidden="true">${inventoryQuantity(item.count)}</span>` : '';
+            return `<li class="inventory-cell"><button type="button" class="inventory-slot" data-inventory-slot="${slot}"
+                aria-label="${description}" title="${description}" aria-pressed="false" data-inventory-description="${description}">
+                <span class="inventory-fallback" aria-hidden="true">${escape(item.name)}</span>${sprite}${quantity}</button></li>`;
+        }).join('');
+        inventoryItems.hidden = false;
+        inventoryDetail.hidden = true;
+        const buttons = [...inventoryItems.querySelectorAll('[data-inventory-slot]')];
+        const selected = buttons.find(button => button.dataset.inventorySlot === previousSlot) ?? buttons[0];
+        if (selected) selectInventoryItem(selected);
+        return bySlot.size;
+    }
+
     async function loadInventory() {
         const version = ++inventoryVersion;
         inventoryRefresh.disabled = true;
         inventoryStatus.textContent = 'Reading inventory…';
-        inventoryItems.replaceChildren();
+        inventoryItems.setAttribute('aria-busy', 'true');
         try {
             const snapshot = await request('/bots/activity?view=inventory&bot=' + encodeURIComponent(inventoryBot));
             if (version !== inventoryVersion || !inventoryDialog.open) return;
             if (snapshot.availability !== 'live') {
+                resetInventory();
                 inventoryStatus.textContent = snapshot.availability === 'offline'
                     ? 'This bot is offline.' : 'The game has not published a fresh inventory.';
                 return;
             }
-            inventoryStatus.textContent = snapshot.items.length
-                ? `Snapshot ${labelTime(snapshot.capturedAt)}` : 'The backpack is empty.';
-            if (snapshot.items.length) {
-                inventoryItems.innerHTML = table(['Slot', 'Item', 'Quantity'], snapshot.items.map(item =>
-                    [number(item.slot + 1), escape(item.name), number(item.count)]), 'Current backpack inventory');
-            }
+            const used = renderInventory(snapshot.items);
+            inventoryStatus.textContent = `${used}/${backpackSlots} slots used · Snapshot ${labelTime(snapshot.capturedAt)}`;
         } catch (error) {
             if (version === inventoryVersion && inventoryDialog.open) inventoryStatus.textContent = error.message;
         } finally {
-            if (version === inventoryVersion) inventoryRefresh.disabled = false;
+            if (version === inventoryVersion) {
+                inventoryRefresh.disabled = false;
+                inventoryItems.removeAttribute('aria-busy');
+            }
         }
     }
 
     function openInventory(name) {
         inventoryBot = name;
+        resetInventory();
         document.querySelector('#inventory-title').textContent = `Current inventory · ${name}`;
         clearTimeout(refresh);
         inventoryDialog.showModal();
@@ -387,6 +434,14 @@
         }
         inventoryRefresh.addEventListener('click', loadInventory);
         inventoryDialog.addEventListener('close', () => { inventoryVersion++; });
+        inventoryItems.addEventListener('load', event => {
+            const image = event.target;
+            if (image.matches('.inventory-sprite') && image.naturalWidth > 0) image.parentElement.classList.add('has-sprite');
+        }, true);
+        inventoryItems.addEventListener('click', event => {
+            const button = event.target.closest('[data-inventory-slot]');
+            if (button) selectInventoryItem(button);
+        });
         document.addEventListener('click', async event => {
             const button = event.target.closest('button');
             if (!button) return;
