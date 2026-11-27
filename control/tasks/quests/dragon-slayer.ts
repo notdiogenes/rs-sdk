@@ -717,7 +717,9 @@ async function wormbrainMap(ctx: QuestContext) {
 }
 
 async function shipMaterials(ctx: QuestContext) {
-    await prepareQuestStep(ctx, { slots: 9, withdraw: [
+    const { worldX, worldZ } = position(ctx);
+    const bank = worldX < 3020 && worldZ >= 3310 && worldZ <= 3500 ? [2947, 3368] as const : bankLocation;
+    await prepareQuestStep(ctx, { bank, slots: 9, withdraw: [
         { name: 'Coins', count: 2000 }, { name: 'Plank', count: 3 }, { name: 'Nails', count: 12 },
         { name: 'Hammer', count: 1 }, { name: 'Steel bar', count: 6 },
     ] });

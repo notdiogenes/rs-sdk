@@ -1,7 +1,7 @@
 import { auditEvent, auditOperation } from '../../../sdk/audit-trace';
 import { findLongPath, isTileWalkable } from '../../../sdk/pathfinding';
 import { questSkill } from './quest-combat';
-import { buyQuestSupply, itemNamed, prepareQuestStep, questPhase, readQuest, walk, type QuestContext } from './shared';
+import { buyQuestSupply, continueDialog, itemNamed, prepareQuestStep, questPhase, readQuest, walk, type QuestContext } from './shared';
 
 const faladorBank = [2947, 3368] as const;
 const westVarrockBank = [3185, 3435] as const;
@@ -98,15 +98,25 @@ async function smithAvailable(ctx: QuestContext, metal: 'Bronze' | 'Iron' | 'Ste
     if (!count(ctx, name) || enough()) return;
     const anvil = canUseDoricAnvil(ctx) ? doricAnvil : varrockAnvil;
     await walk(ctx, anvil[0], anvil[1], 1);
+    let misses = 0;
     while (count(ctx, name) && !enough()) {
+        await ctx.sdk.waitForTicks(2);
+        if (ctx.sdk.getDialog()?.isOpen) await continueDialog(ctx);
         const before = count(ctx, name);
         const result = await auditOperation('dragon-slayer-smith-ship-supply', 'Work a bar at the anvil',
             { metal, product, smithing: questSkill(ctx, 'Smithing') }, () => ctx.sdk.getState(),
             () => ctx.bot.smithAtAnvil(product, { barPattern: itemNamed(name) }), action => ({
                 outcome: count(ctx, name) < before ? 'complete' : 'unconfirmed', message: action.message,
+                reason: action.reason, remainingBars: count(ctx, name), smithing: questSkill(ctx, 'Smithing'),
+                dialogOptions: ctx.sdk.getDialog()?.options.map(option => option.text),
             }));
-        if (!result.success || count(ctx, name) >= before) throw new Error(`Could not smith ${product}: ${result.message}`);
+        if (count(ctx, name) < before) misses = 0;
+        else if (++misses >= 3 || result.reason === 'no_bars' || result.reason === 'level_too_low') {
+            throw new Error(`Could not smith ${product}: ${result.message}`);
+        }
     }
+    await ctx.sdk.waitForTicks(2);
+    if (ctx.sdk.getDialog()?.isOpen) await continueDialog(ctx);
 }
 
 export async function makeShipNails(ctx: QuestContext) {
@@ -115,6 +125,10 @@ export async function makeShipNails(ctx: QuestContext) {
     if (!needed()) return;
     questPhase('dragon-slayer-smith-ship-nails');
     const qualified = () => questSkill(ctx, 'Smithing') >= 34;
+    if (!qualified()) {
+        await smithAvailable(ctx, 'Iron', 'iron dagger', () => qualified() || questSkill(ctx, 'Smithing') < 15);
+        await smithAvailable(ctx, 'Bronze', 'bronze dagger', qualified);
+    }
     if (!qualified()) {
         await prepareQuestStep(ctx, { bank: canUseDoricAnvil(ctx) ? faladorBank : westVarrockBank, slots: 16, keep, withdraw: [
             { name: 'Bronze bar', count: 8 }, { name: 'Iron bar', count: 8 },
@@ -131,7 +145,7 @@ export async function makeShipNails(ctx: QuestContext) {
         }
     }
     while (!qualified()) {
-        const bars = 6;
+        const bars = 9;
         const missing = Math.max(0, bars - count(ctx, 'Bronze bar'));
         const oreSlots = Math.max(0, missing - count(ctx, 'Copper ore')) + Math.max(0, missing - count(ctx, 'Tin ore'));
         await prepareQuestStep(ctx, { bank: faladorBank, slots: oreSlots, keep });
