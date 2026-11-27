@@ -88,7 +88,7 @@ async function earnFare(ctx: QuestContext) {
         }, held => ({ outcome: 'complete', held }));
 }
 
-export async function returnToOziachsHouse(ctx: QuestContext) {
+export async function returnToOziach(ctx: QuestContext) {
     const { bot, sdk } = ctx;
     const position = () => {
         const player = sdk.getState()?.player;
@@ -133,9 +133,19 @@ export async function returnToOziachsHouse(ctx: QuestContext) {
             { id: 2084, x: 3031, z: 3217 }, player => !!player && player.level === 0);
     }
     questPhase('dragon-slayer-return-oziach-house', arrival);
-    await auditOperation('dragon-slayer-return-oziach-house', 'Reach Oziach’s house and end the activity there', arrival,
+    await auditOperation('dragon-slayer-return-oziach-house', 'Reach Oziach’s front door for the final conversation', arrival,
         () => sdk.getState(), async () => {
             await walk(ctx, arrival.x, arrival.z, 0);
             return position();
         }, player => ({ outcome: 'complete', x: player.worldX, z: player.worldZ, plane: player.level }));
+
+    questPhase('dragon-slayer-final-oziach-dialogue');
+    await auditOperation('dragon-slayer-final-oziach-dialogue', 'Tell Oziach that Elvarg was slain and verify that he opens his armour shop',
+        { npc: 'Oziach' }, () => sdk.getState(), async () => {
+            await talkAt(ctx, arrival.x, arrival.z, /^oziach$/i, [/^can i buy a rune plate mail body now please/i], 10000);
+            const { shop } = await sdk.waitForCondition(s => s.shop.isOpen && /oziach/i.test(s.shop.title), 10000);
+            const closed = await bot.closeShop();
+            if (!closed.success) throw new Error(closed.message);
+            return shop.title;
+        }, shop => ({ outcome: 'complete', shop }));
 }
