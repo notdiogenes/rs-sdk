@@ -1,4 +1,5 @@
 import { dirname, join } from 'node:path';
+import { Database } from 'bun:sqlite';
 import { hostedBotName, hostedBotState, isFreshBotState } from './hosted-bot';
 import { controllerRequest, dashboardActivity, handleActivity, type ControllerStatus } from './dashboard-activity';
 import { dashboardSessions } from './dashboard-session';
@@ -8,7 +9,7 @@ import type { BotObservation, LastActivity } from './dashboard-last-activity';
 import type { BotWorldState } from '../sdk/types';
 import { dashboardFleetStats } from './dashboard-fleet-stats';
 import { dashboardQuestPoints, loadQuestCatalog } from './dashboard-quests';
-import { fleetPage } from './dashboard-fleet-page';
+import { dashboardPresentation } from './dashboard-presentation';
 import { dashboardAudit } from './dashboard-audit';
 import { dashboardDemo, isBundledTask } from './dashboard-demo';
 import { activity, planCatalog, trainingSkills } from './dashboard-task-catalog';
@@ -23,11 +24,12 @@ const configDir = controlConfig;
 const token = (await Bun.file(join(configDir, 'token')).text()).trim();
 if (!/^[a-f0-9]{64}$/.test(token)) throw new Error('Invalid control API token');
 const questCatalog = await loadQuestCatalog();
-const fleetStyle = await Bun.file(join(import.meta.dir, 'dashboard-fleet.css')).text();
-const controls = await Bun.file(join(import.meta.dir, 'public-status-controls.js')).text();
 const runtimeDir = join(dirname(configDir), 'rs-sdk-public-status');
+const presentation = dashboardPresentation(import.meta.dir, runtimeDir);
+await presentation();
 const diagnostics = dashboardDiagnostics(runtimeDir, token);
 const audit = dashboardAudit(runtimeDir);
+const auditReportDb = new Database(join(runtimeDir, 'activity-audit.sqlite'), { readonly: true });
 const git = Bun.spawnSync(['git', 'rev-parse', 'HEAD'], { cwd: import.meta.dir, stderr: 'ignore' });
 const revision = git.success ? git.stdout.toString().trim() : undefined;
 const demo = dashboardDemo(runtimeDir, botsDir, configDir, token, undefined, audit, revision);
@@ -406,17 +408,13 @@ Bun.serve({
                 }
                 if (auditSession) headers['Set-Cookie'] = auditSession;
                 if (format === 'html') {
-                    const dashboard = new URLSearchParams({ audit: '1' });
-                    for (const key of ['bot', 'task', 'run', 'phase', 'mode', 'days', 'before', 'limit', 'revision',
-                        'baseline', 'event', 'kind', 'operation', 'runPhase']) {
-                        const value = searchParams.get(key);
-                        if (value) dashboard.set(key, value);
-                    }
-                    return new Response(null, { status: 303, headers: { ...headers, Location: '/bots?' + dashboard } });
+                    const { auditDashboardLocation } = await presentation();
+                    return new Response(null, { status: 303, headers: { ...headers, Location: auditDashboardLocation(searchParams) } });
                 }
                 if (!auditSession && !await demo.allowed(request)) return reply({ error: 'Sign in to view audit history.' }, 401);
                 try {
-                    const report = audit.read(searchParams);
+                    const { readDashboardAudit } = await presentation();
+                    const report = readDashboardAudit(auditReportDb, Date.now(), searchParams);
                     return report ? reply(report) : reply({ error: 'Run not found.' }, 404);
                 } catch (error) {
                     const message = error instanceof Error ? error.message : '';
@@ -487,6 +485,7 @@ Bun.serve({
         let data: Snapshot | undefined;
         try { data = await snapshot(); } catch { /* display the unavailable page */ }
         const nonce = crypto.randomUUID();
+        const { fleetPage, fleetStyle, controls } = await presentation();
         return new Response(request.method === 'HEAD' ? null : fleetPage({ nonce, data, questCatalog, fleetStyle, controls, refreshSeconds, displayTimeZone }), {
             status: data ? 200 : 503,
             headers: {

@@ -1,8 +1,9 @@
 import { expect, test } from 'bun:test';
 import { Database } from 'bun:sqlite';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { dashboardAudit } from './dashboard-audit';
+import { dashboardPresentation } from './dashboard-presentation';
 import { dashboardSessions } from './dashboard-session';
 
 test('groups matching breakpoints and preserves bounded evidence beyond trace eviction', () => {
@@ -245,6 +246,62 @@ test('compares two revisions in the same scope and retains links only to matchin
         rmSync(directory, { recursive: true, force: true });
     }
 });
+
+test('reloads a committed Fleet Desk presentation while the same audit writer keeps a run active', async () => {
+    const directory = mkdtempSync(join(process.cwd(), '.audit-test-'));
+    const source = join(directory, 'control');
+    mkdirSync(source);
+    const git = (...args: string[]) => {
+        const result = Bun.spawnSync(['git', '-c', 'user.name=Fleet Desk test', '-c', 'user.email=fleet@example.test',
+            '-c', 'commit.gpgSign=false', '-c', 'core.hooksPath=/dev/null', ...args], { cwd: directory });
+        if (!result.success) throw new Error(result.stderr.toString());
+    };
+    const audit = dashboardAudit(directory);
+    const reports = new Database(join(directory, 'activity-audit.sqlite'), { readonly: true });
+    try {
+        for (const file of [
+            'dashboard-presentation-entry.ts', 'dashboard-fleet-page.ts', 'dashboard-fleet.css',
+            'public-status-controls.js', 'dashboard-fleet-stats.ts', 'dashboard-quests.ts', 'dashboard-task-catalog.ts',
+            'dashboard-audit-report.ts', 'dashboard-audit-insights-report.ts', 'dashboard-audit-schema.ts',
+        ]) copyFileSync(join(import.meta.dir, file), join(source, file));
+        git('init', '-q');
+        git('add', 'control');
+        git('commit', '-qm', 'First presentation');
+
+        const run = audit.begin('Scout', 'pickpocket-knights', null, null, []);
+        audit.append(run, { kind: 'phase', name: 'thieving-pickpocket' });
+        const fixture = dashboardPresentation(source, directory);
+        const inputs = { nonce: 'fixture', questCatalog: [], refreshSeconds: 15, displayTimeZone: 'America/New_York' };
+        const first = await fixture();
+        expect(first.fleetPage({ ...inputs, ...first })).toContain('Activity audit');
+        expect(first.readDashboardAudit(reports, Date.now(), new URLSearchParams(`run=${run}`))).toMatchObject({
+            run: { status: 'running' },
+        });
+
+        writeFileSync(join(source, 'dashboard-fleet.css'), '/* second presentation */');
+        writeFileSync(join(source, 'public-status-controls.js'), '/* second controls */');
+        const template = join(source, 'dashboard-fleet-page.ts');
+        writeFileSync(template, readFileSync(template, 'utf8').replace('Activity audit</h2>', 'Updated audit</h2>'));
+        expect(await fixture()).toBe(first);
+        git('add', 'control');
+        git('commit', '-qm', 'Update presentation');
+        writeFileSync(join(source, 'public-status-controls.js'), '/* uncommitted edit */');
+
+        const second = await fixture();
+        expect(second.revision).not.toBe(first.revision);
+        expect(second.fleetPage({ ...inputs, ...second })).toContain('Updated audit');
+        expect(second.fleetStyle).toBe('/* second presentation */');
+        expect(second.controls).toBe('/* second controls */');
+        audit.append(run, { kind: 'milestone', name: 'pickpocket-attempt-succeeded', xpGained: 50 });
+        expect(second.readDashboardAudit(reports, Date.now(), new URLSearchParams(`run=${run}`))).toMatchObject({
+            run: { status: 'running' }, signals: [expect.objectContaining({ name: 'pickpocket-attempt-succeeded', count: 1 })],
+        });
+    } finally {
+        reports.close();
+        audit.close();
+        rmSync(directory, { recursive: true, force: true });
+    }
+}, 15_000);
 
 test('password login for audits permits an API client and preserves browser origin checks', async () => {
     const directory = mkdtempSync(join(process.cwd(), '.audit-test-'));
