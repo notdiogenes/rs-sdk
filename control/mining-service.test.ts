@@ -25,10 +25,11 @@ test('every supported resource has both modes and resource-specific routes', () 
     expect(miningTravelTimeout(8)).toBeLessThan(150000);
 });
 
-for (const scenario of ['bank', 'power', 'partial-bank'] as const) {
+for (const scenario of ['bank', 'power', 'partial-bank', 'stock-target'] as const) {
     test(`mining ${scenario} confirms pick withdrawal, switches sites, mines, and unloads`, async () => {
-        const mode = scenario === 'partial-bank' ? 'bank' : scenario;
-        const partial = scenario === 'partial-bank';
+        const mode = scenario === 'power' ? 'power' : 'bank';
+        const target = scenario === 'stock-target' ? 1000 : undefined;
+        const partial = scenario === 'partial-bank' || target !== undefined;
         const item = (id: number, name: string, slot: number, eat = false): InventoryItem => ({
             id, name, slot, count: 1, optionsWithIndex: eat ? [{ text: 'Eat', opIndex: 1 }] : [],
         });
@@ -43,6 +44,7 @@ for (const scenario of ['bank', 'power', 'partial-bank'] as const) {
             nearbyPlayers: [],
             opFeedback: { opRejectedCount: 0 },
         } as unknown as BotWorldState;
+        if (target !== undefined) state.bank.items.push({ slot: 1, id: 440, name: 'Iron ore', count: 999 });
         const success = { success: true, message: '' };
         const trips: string[] = [];
         let mine = 0;
@@ -90,6 +92,8 @@ for (const scenario of ['bank', 'power', 'partial-bank'] as const) {
                 },
                 depositItem: async (entry: InventoryItem) => {
                     expect(entry.id).toBe(440);
+                    const existing = state.bank.items.find(i => i.id === entry.id);
+                    if (existing) existing.count += entry.count;
                     state.inventory = state.inventory.filter(i => i.id !== entry.id);
                     haul++;
                     trips.push('bank ore');
@@ -104,7 +108,13 @@ for (const scenario of ['bank', 'power', 'partial-bank'] as const) {
                 },
             },
         } as unknown as ScriptContext;
-        await expect(mineResources(context, `mine-iron-${mode}`)).rejects.toThrow('living player');
+        const run = mineResources(context, `mine-iron-${mode}`, target);
+        if (target === undefined) await expect(run).rejects.toThrow('living player');
+        else {
+            await run;
+            expect(state.bank.items.find(item => item.id === 440)?.count).toBe(target);
+            expect(state.bank.isOpen).toBe(false);
+        }
         expect(mine).toBeGreaterThanOrEqual(2);
         expect(trips).toEqual(['withdraw rune pick', 'verified ore', mode === 'bank' ? 'bank ore' : 'drop ore']);
         expect(state.inventory.some(entry => entry.id === 1275)).toBe(true);

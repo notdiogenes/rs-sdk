@@ -58,6 +58,13 @@ test('rejects invalid plans and respects the game finish condition of one-time q
     expect(nextWork(parseSteps([cook])[0]!, world(1, 10, true))).toBeNull();
 });
 
+test('accepts bank totals only for mining tasks in banking mode', () => {
+    const finish = { type: 'bank-stock', quantity: 6000 } as const;
+    expect(parseSteps([{ task: 'mine-coal-bank', finish }])[0]?.finish).toEqual(finish);
+    expect(() => parseSteps([{ task: 'mine-coal-power', finish }])).toThrow('valid finish condition');
+    expect(() => parseSteps([{ task: 'mine-iron-bank', finish: { ...finish, quantity: 0 } }])).toThrow('valid finish condition');
+});
+
 test('creates private profiles and rejects duplicate names case-insensitively', async () => {
     const scratch = mkdtempSync(join(process.cwd(), '.plan-test-'));
     try {

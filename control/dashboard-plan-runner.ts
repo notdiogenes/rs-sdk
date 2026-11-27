@@ -19,7 +19,7 @@ export type PlanBackend = {
     status(): ControllerStatus;
     prepare(signal: AbortSignal): Promise<void>;
     observe(): Promise<BotWorldState | null>;
-    start(task: ActivityId, skill?: string): Promise<void>;
+    start(task: ActivityId, skill?: string, bankTarget?: number): Promise<void>;
     stop(): Promise<void>;
 };
 
@@ -89,7 +89,8 @@ export function createPlanManager(directory: string, backendFor: (bot: string, s
                 plan.work = work;
                 save(plan);
                 signal.throwIfAborted();
-                await backend.start(work.task, work.finish.type === 'level' ? work.finish.skill : undefined);
+                await backend.start(work.task, work.finish.type === 'level' ? work.finish.skill : undefined,
+                    work.finish.type === 'bank-stock' ? work.finish.quantity : undefined);
                 owned = true;
                 let lastLive = Date.now();
                 let previous = lastLive;
@@ -127,8 +128,8 @@ export function createPlanManager(directory: string, backendFor: (bot: string, s
                     if (done && (work.finish.type !== 'complete' || !status.task)) break;
                     if (!status.task) {
                         const exit = status.lastTask;
-                        if (work.finish.type === 'essence-exhausted' && exit?.name === work.task &&
-                            exit.exitCode === 0 && exit.completion === 'essence-exhausted') {
+                        if ((work.finish.type === 'essence-exhausted' || work.finish.type === 'bank-stock') &&
+                            exit?.name === work.task && exit.exitCode === 0 && exit.completion === work.finish.type) {
                             plan.index++;
                             plan.elapsedMs = 0;
                             break;

@@ -9,7 +9,7 @@ export type ControllerStatus = {
         activity?: string;
         recovery?: { since: string; resumeAt: number };
     } | null;
-    lastTask?: { name: string; exitCode: number; finishedAt: string; completion?: 'essence-exhausted' } | null;
+    lastTask?: { name: string; exitCode: number; finishedAt: string; completion?: 'essence-exhausted' | 'bank-stock' } | null;
 };
 
 export function controllerRequest(path: string, authorization: string, payload?: object, signal?: AbortSignal) {

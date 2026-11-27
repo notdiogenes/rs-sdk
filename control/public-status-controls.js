@@ -1509,6 +1509,7 @@
     const finishLabel = finish => finish.type === 'level' ? `Until ${finish.skill} ${finish.level}`
         : finish.type === 'minutes' ? `${finish.minutes} min`
         : finish.type === 'essence-exhausted' ? 'Until rune essence runs out'
+        : finish.type === 'bank-stock' ? `Until ${finish.quantity.toLocaleString('en-US')} in bank`
         : finish.type === 'forever' ? 'Indefinite grind' : 'Until complete';
     const requirementLabel = req => req.type === 'quest' ? labelFor(req.task) : `${req.skill} ${req.level}`;
 
@@ -1610,10 +1611,13 @@
         if (meta?.usage === 'repeatable') {
             const stopRow = node('div', '', 'plan-end');
             const modes = [['minutes', 'Time spent'], ...(meta.trains?.length ? [['level', 'Skill level']] : []),
-                ...(step.task === 'craft-body-runes' ? [['essence-exhausted', 'Rune essence runs out']] : []), ['forever', 'Indefinite grind']];
+                ...(step.task === 'craft-body-runes' ? [['essence-exhausted', 'Rune essence runs out']] : []),
+                ...(meta.category === 'Mining' && step.task.endsWith('-bank') ? [['bank-stock', 'Bank stock']] : []),
+                ['forever', 'Indefinite grind']];
             stopRow.append(planField('Finish when', planSelect(modes, step.finish.type, type => {
                 step.finish = type === 'minutes' ? { type, minutes: 30 }
-                    : type === 'level' ? { type, skill: meta.trains[0], level: 40 } : { type };
+                    : type === 'level' ? { type, skill: meta.trains[0], level: 40 }
+                    : type === 'bank-stock' ? { type, quantity: 100 } : { type };
                 renderPlan();
             })));
             if (step.finish.type === 'minutes') {
@@ -1621,6 +1625,9 @@
             } else if (step.finish.type === 'level') {
                 stopRow.append(planField('Skill', planSelect(meta.trains.map(skill => [skill, skill]), step.finish.skill, skill => { step.finish.skill = skill; })),
                     planField('Target level', planNumber(step.finish.level, 1, 99, value => { step.finish.level = value; })));
+            } else if (step.finish.type === 'bank-stock') {
+                stopRow.append(planField('Quantity in bank',
+                    planNumber(step.finish.quantity, 1, 100000, value => { step.finish.quantity = value; })));
             }
             row.append(stopRow);
         }

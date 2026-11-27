@@ -13,8 +13,12 @@ const tile = (state: BotWorldState) => ({ x: state.player!.worldX, z: state.play
 const skill = (state: BotWorldState) => state.skills.find(entry => entry.name === 'Mining');
 const hasPick = (state: BotWorldState) => [...state.inventory, ...state.equipment].some(item => item.id === pickaxe);
 
-export async function mineResources({ bot, sdk }: ScriptContext, task = process.env.RS_ACTIVITY ?? 'mine-iron-bank') {
+export async function mineResources({ bot, sdk }: ScriptContext, task = process.env.RS_ACTIVITY ?? 'mine-iron-bank',
+    bankTarget = process.env.RS_ACTIVITY_BANK_TARGET ? Number(process.env.RS_ACTIVITY_BANK_TARGET) : undefined) {
     const selection = miningSelection(task);
+    if (bankTarget !== undefined && (selection.mode !== 'bank' || !Number.isSafeInteger(bankTarget) || bankTarget < 1 || bankTarget > 100_000)) {
+        throw new Error('A bank stock target must be between 1 and 100,000 and requires banking mode.');
+    }
     function current() {
         const state = sdk.getState();
         if (!state?.inGame || !state.player || state.player.isDead || sdk.getStateAge() > 10_000) {
@@ -118,15 +122,31 @@ export async function mineResources({ bot, sdk }: ScriptContext, task = process.
         }
     }
 
+    let remaining = Infinity;
+    function checkStock() {
+        if (bankTarget === undefined) return false;
+        const { bank } = current();
+        if (!bank.isOpen) throw new Error('Open the bank before checking the mining stock target.');
+        const banked = bank.items.filter(item => products.includes(item.id)).reduce((sum, item) => sum + item.count, 0);
+        remaining = Math.max(0, bankTarget - banked);
+        auditEvent('milestone', remaining ? 'mining-bank-target-progress' : 'mining-bank-target-confirmed',
+            { resource, banked, target: bankTarget, remaining });
+        return remaining === 0;
+    }
+
     phase('mining-setup');
     const keep = (item: InventoryItem) => item.id === pickaxe || canEat(item);
     const bag = current();
-    if (bag.bank.isOpen || !hasPick(bag) || bag.inventory.some(item => !keep(item))) {
+    if (bankTarget !== undefined || bag.bank.isOpen || !hasPick(bag) || bag.inventory.some(item => !keep(item))) {
         const bank = Object.values(miningBanks).filter(candidate => candidate !== miningBanks.shilo
             || miningDistance(candidate, tile(bag)) < 75)
             .sort((a, b) => miningDistance(tile(bag), a) - miningDistance(tile(bag), b))[0]!;
         await openBank(insideEssenceMine(tile(bag)) ? miningBanks.east : inMiningGuild(tile(bag)) ? miningBanks.falador : bank);
         await bankItems(keep);
+        if (checkStock()) {
+            await closeBank();
+            return;
+        }
         if (!hasPick(current())) {
             const stored = current().bank.items.find(item => item.id === pickaxe);
             if (!stored) throw new Error('The rune pickaxe was not found in the backpack, equipment, or bank.');
@@ -183,10 +203,12 @@ export async function mineResources({ bot, sdk }: ScriptContext, task = process.
         const count = quantity(current());
         if (!count) throw new Error('The backpack is full with supplies and has no space for ore.');
         const began = Date.now();
+        let complete = false;
         if (selection.mode === 'bank') {
             phase('mining-bank-trip', { bank: site.bank.name, quantity: count });
             await openBank(site.bank);
             await bankItems(item => !isProduct(item));
+            complete = checkStock();
             await closeBank();
         } else {
             phase('mining-drop-haul', { quantity: count });
@@ -197,6 +219,7 @@ export async function mineResources({ bot, sdk }: ScriptContext, task = process.
         }
         if (quantity(current()) !== 0) throw new Error('The game did not confirm unloading the full haul.');
         auditEvent('milestone', 'mining-haul-confirmed', { resource, mode: selection.mode, quantity: count, elapsedMs: Date.now() - began });
+        return complete;
     }
 
     async function travel(site: MiningSite) {
@@ -239,8 +262,8 @@ export async function mineResources({ bot, sdk }: ScriptContext, task = process.
                         if (!food) throw new Error('Low HP and no food in the backpack.');
                         await act('mining-eat', 'Recover HP', {}, () => bot.eatFood(food));
                     }
-                    if (state.inventory.length >= capacity) {
-                        await unload(site);
+                    if (state.inventory.length >= capacity || quantity(state) >= remaining) {
+                        if (await unload(site)) return;
                         await travel(site);
                         phase('mining-extract', { site: site.mine.name });
                     }
@@ -283,7 +306,7 @@ export async function mineResources({ bot, sdk }: ScriptContext, task = process.
                         await sdk.waitForTicks(2);
                     }
                 }
-                if (selection.mode === 'bank' && quantity(current()) > 0) await unload(site);
+                if (selection.mode === 'bank' && quantity(current()) > 0 && await unload(site)) return;
             } catch (error) {
                 if (!hasPick(current()) || current().player!.hp <= 8) throw error;
                 auditEvent('setback', 'mining-route-failed', { site: site.mine.name, message: error instanceof Error ? error.message : String(error) });

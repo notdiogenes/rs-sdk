@@ -31,7 +31,14 @@ const json = (body: unknown, status = 200) => Response.json(body, { status, head
 type Process = { process: Bun.Subprocess; startedAt: string; stopping?: boolean };
 type Event = { id: number; at: string; stage: string; [key: string]: unknown };
 type Exit = { at: string; exitCode: number };
-type Task = Process & { auditId?: string; name: DemoTaskName; activity: string; recovery?: { since: string; resumeAt: number }; completion?: 'essence-exhausted' };
+type Task = Process & {
+    auditId?: string;
+    name: DemoTaskName;
+    activity: string;
+    recovery?: { since: string; resumeAt: number };
+    completion?: NonNullable<ControllerStatus['lastTask']>['completion'];
+    bankTarget?: number;
+};
 
 async function stopProcess(handle: Process | undefined, signal: 'SIGINT' | 'SIGTERM') {
     if (!handle || handle.process.exitCode !== null) return;
@@ -82,6 +89,11 @@ export function dashboardDemo(runtimeDir: string, botsDir: string, configDir: st
                             if (running.name === 'craft-body-runes' && entry.kind === 'milestone' &&
                                 entry.name === 'runecraft-essence-exhausted' && entry.essence === 0 && entry.bankEssence === 0) {
                                 running.completion = 'essence-exhausted';
+                            }
+                            if (running.bankTarget !== undefined && entry.kind === 'milestone' &&
+                                entry.name === 'mining-bank-target-confirmed' && entry.target === running.bankTarget &&
+                                Number.isSafeInteger(entry.banked) && entry.banked >= running.bankTarget) {
+                                running.completion = 'bank-stock';
                             }
                             audit?.append(running.auditId, entry);
                         }
@@ -194,7 +206,7 @@ export function dashboardDemo(runtimeDir: string, botsDir: string, configDir: st
         }).catch(() => { event('client-observer-failed'); });
     }
 
-    async function startTask(bot: string, name: DemoTaskName, planned = false, skill?: string) {
+    async function startTask(bot: string, name: DemoTaskName, planned = false, skill?: string, bankTarget?: number) {
         const credentials = await botCredentials(bot, workingDir);
         const script = join(import.meta.dir, 'tasks', activity(name).script);
         const scriptSha = audit ? await Bun.file(script).arrayBuffer()
@@ -208,6 +220,7 @@ export function dashboardDemo(runtimeDir: string, botsDir: string, configDir: st
                 ...process.env, BOT_USERNAME: credentials.username, PASSWORD: credentials.password,
                 SERVER: 'rs-sdk.maxbittker.com', SHOW_CHAT: 'false', GATEWAY_DIRECT: 'false',
                 RS_ACTIVITY: name, RS_ACTIVITY_AUDIT: auditId ? '1' : '0', RS_PLANNED: planned ? '1' : '0', RS_ACTIVITY_SKILL: skill ?? '',
+                RS_ACTIVITY_BANK_TARGET: bankTarget === undefined ? '' : String(bankTarget),
             },
         }); } catch (error) {
             if (auditId) {
@@ -216,7 +229,7 @@ export function dashboardDemo(runtimeDir: string, botsDir: string, configDir: st
             }
             throw error;
         }
-        const running: Task = { auditId, process: child, startedAt: new Date().toISOString(), name, activity: activity(name).label };
+        const running: Task = { auditId, process: child, startedAt: new Date().toISOString(), name, activity: activity(name).label, bankTarget };
         task = running;
         taskExit = null;
         taskStopped = false;
@@ -374,10 +387,10 @@ export function dashboardDemo(runtimeDir: string, botsDir: string, configDir: st
                     sample.botStatus === 'dead' || sample.botStatus === 'stale' || !isFreshBotState(sample.stateAge)) return null;
                 return sample.state;
             },
-            async start(name: ActivityId, skill?: string) {
+            async start(name: ActivityId, skill?: string, bankTarget?: number) {
                 if (!client || task || busy || startingPlanTask) throw new Error('The managed client is busy.');
                 startingPlanTask = true;
-                try { await startTask(bot, name, true, skill); }
+                try { await startTask(bot, name, true, skill, bankTarget); }
                 finally { startingPlanTask = false; }
             },
             stop: () => planCommand(bot, 'task/stop', true),
