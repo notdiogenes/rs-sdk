@@ -146,22 +146,49 @@ Record observations in `lab_log.md`, then improve the script.
 
 ### Audit Hosted Activities Over HTTPS
 
-For this repo's hosted fleet, use [Fleet Desk](https://35-174-14-23.sslip.io/bots).
-Use the configured control host for other deployments.
+Use this workflow when asked to review a dashboard's activity history. When
+the request also asks for a fix, carry the findings through to a tested script
+change. For example, “Audit and improve the scripts at this dashboard” starts
+at fleet scope. Add “for BOT_NAME” or “for ACTIVITY_NAME” to narrow the same
+workflow.
 
-**Start with the named bot.** Open its run list directly. For example, open
-[A Pirate’s audit runs](https://35-174-14-23.sslip.io/bots/activity?view=audit&mode=runs&bot=A%20Pirate&days=35).
-Use the existing dashboard session or authorized control Bearer credential.
-Browser links open the Audit history dialog in Fleet Desk and prompt for
-sign-in if needed. For JSON requests, send `Accept: application/json` and
-retry after authentication if the API returns `401`. Keep credentials out
-of URLs, logs, and reports.
-Open the relevant failed run with `GET /bots/activity?view=audit&run=RUN_ID`.
-Report the last confirmed step, the first failed check shown in the trace,
-and the supporting evidence. If no matching failed run is present, check the
-bot's live diagnostics and saved plan for a startup error or blocked step.
-Inspect GitHub source at the recorded revision when needed to explain the
-trace. These GET requests work while the managed controller is running.
+1. **Start at the supplied dashboard.** Use the origin of the dashboard or
+   audit link the user gives you. If no link is supplied for this repo's fleet,
+   use [Fleet Desk](https://35-174-14-23.sslip.io/bots). Keep any bot, task,
+   phase, or run filters in the link unless the user specifies a different
+   scope. A run link can go straight to the run detail. For a named bot, open
+   its run list first, for example [A Pirate's audit runs](https://35-174-14-23.sslip.io/bots?audit=1&bot=A%20Pirate&days=35).
+   Add `task=TASK_ID` when the user names a script or activity. Use the
+   [activity catalog](control/dashboard-task-catalog.ts) to resolve a name
+   to a task ID if needed. With only a script, start with its fleet summary.
+   With neither filter, start with the fleet summary and pick a recurring
+   failure or a costly phase supported by individual run traces. State the
+   scope you selected.
+2. **Read the evidence first.** Use the existing dashboard session or
+   authorized control Bearer credential. Browser report links open Audit
+   history and prompt for sign-in if needed. For JSON requests, send
+   `Accept: application/json`. If you receive `401`, request sign-in once
+   and retry the same report. Keep credentials out of URLs, logs, and
+   reports. These reads work while the bot is running. Use the audit alone
+   for the initial diagnosis. If asked for an audit-only or logs-only
+   review, stay within that scope. If a bot is blocked and the audit has no
+   corresponding run, use live diagnostics and the saved plan when the
+   request permits them. A blocked plan, an interrupted run, and a failed
+   script are distinct findings.
+3. **Make the supported change when requested.** Identify the script that
+   produced the trace using its task ID and recorded revision. Read that
+   revision to explain the behavior, then check the current implementation
+   before editing. Make the smallest change that addresses the supported
+   failure or inefficiency. Check shared helpers and other callers if the
+   change touches them. If the trace supports several causes, state what is
+   missing and add a focused diagnostic when the request allows it. Treat
+   proposed causes as hypotheses until verified.
+4. **Verify and report.** Exercise the changed branch with a focused test or
+   controlled reproduction. When a live run is in scope, compare equivalent
+   audit samples using the baseline metric selected in the audit. Keep
+   the bot's current activity intact unless changing it is part of the
+   request. Report the run links or IDs and revision, observed evidence,
+   what changed, tests run, and whether the change has a live result.
 
 | Question | Request | Evidence to inspect |
 | --- | --- | --- |
@@ -180,24 +207,23 @@ includes dashboard-managed tasks and the Lumbridge demo worker from deployment
 onward. For standalone and primary `/v1` scripts, use their own runtime logs.
 
 **Diagnose a repeat failure.** Open representative runs from the breakpoint
-group. Follow the phase, failing check, source frame at the recorded revision,
-and the preceding action. Look for the player and target tiles, candidate
-IDs and available options, the selected option, dispatch result, expected
-effect, then actual game state and system feedback. A successful dispatch
-establishes that the client sent the action. Confirm the result with an
-observed state change. Report sampled run IDs, revision, and the observed
-evidence. State what could not be verified when a sample is missing or
-the evidence supports multiple explanations.
+group. Find the last confirmed step and the first failed or unconfirmed
+check in the attempt. Where available, join the intent, SDK dispatches,
+and observed result by `operationId`. Use `parentOperationId` to follow
+nested waits. Look for player and target tiles, candidate IDs and options,
+the chosen action and expected effect, then the actual state and system
+feedback. Verify the effect with an observed outcome. Check earlier events
+when the final error came from a retry.
 
 **Find inefficiencies before the terminal failure.** Review `totals` and
 `signals` for each relevant phase across successful, running, and failed
 runs. Inspect `in_successful_runs` and `before_later_failure` for setbacks
 that are easy to miss in an exit-status review. Compare revisions or strategies
 using a stated denominator and sample size, such as catches per completed
-crossing or stuns per resolved pickpocket attempt. Include time spent searching,
-recovering, or waiting when comparing throughput. Open setback evidence to
-see why time was lost. A phase can recur within a run, so use the chronological
-events when exact ordering matters.
+crossing, time to reacquire a target, or XP per hour. Include time spent
+searching, recovering, or waiting when comparing throughput. Open setback
+evidence to see why time was lost. A phase can recur within a run, so use
+the chronological events when exact ordering matters.
 
 **Instrument new activities.** Reuse `auditEvent` and `auditFrame` from
 [`sdk/audit-trace.ts`](sdk/audit-trace.ts). Use stable phase and event names.
