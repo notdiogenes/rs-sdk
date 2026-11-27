@@ -392,7 +392,7 @@ async function mazeRoom(ctx: QuestContext, room: typeof mazeRooms[number], cross
 const inMazeBasement = (ctx: QuestContext) => area(ctx, 2934, 9650, 14);
 const inDwarvenMine = (ctx: QuestContext) => area(ctx, 3040, 9846, 42);
 const inShipHold = (ctx: QuestContext) => area(ctx, 3047, 9640, 5);
-const onShipDeck = (ctx: QuestContext) => area(ctx, 3047, 3208, 1);
+const onShipDeck = (ctx: QuestContext) => position(ctx).level === 1 && area(ctx, 3047, 3208, 1);
 
 async function leaveMazeWithMap(ctx: QuestContext) {
     if (inMazeBasement(ctx)) {
@@ -734,26 +734,46 @@ async function collectShipPlanks(ctx: QuestContext) {
     }
 }
 
-async function shipMaterials(ctx: QuestContext) {
+async function shipMaterials(ctx: QuestContext, bought: boolean) {
     const { worldX, worldZ } = position(ctx);
     const bank = worldX < 3020 && worldZ >= 3310 && worldZ <= 3500 ? [2947, 3368] as const : bankLocation;
-    await prepareQuestStep(ctx, { bank, slots: 9, withdraw: [
-        { name: 'Coins', count: 2000 }, { name: 'Plank', count: 3 }, { name: 'Nails', count: 12 },
-        { name: 'Hammer', count: 1 }, { name: 'Steel bar', count: 6 },
-    ] });
-    if (!has(ctx, 2347)) await groundItem(ctx, /^hammer$/i, 2934, 3286);
-    if (held(ctx, 1539) < 12) await makeShipNails(ctx);
+    const price = bought ? 0 : 2000;
+    const missingNails = Math.max(0, 12 - held(ctx, 1539));
+    const ready = held(ctx, 995) >= price && held(ctx, 960) >= 3 && !missingNails && has(ctx, 2347);
+    if (!ready) {
+        await prepareQuestStep(ctx, { bank, slots: 9, keep: /^crandor map$|^dragonfire shield$/i, withdraw: [
+            { name: 'Coins', count: price + (has(ctx, 2347) ? 0 : 5) },
+            { name: 'Plank', count: 3 }, { name: 'Nails', count: 12 }, { name: 'Hammer', count: 1 },
+            { name: 'Steel bar', count: Math.ceil(missingNails / 2) },
+        ] });
+        if (!has(ctx, 2347)) {
+            await walk(ctx, 2947, 3217);
+            await buyQuestSupply(ctx, /^shop (?:keeper|assistant)$/i, 'Hammer', 5);
+        }
+        if (held(ctx, 1539) < 12) await makeShipNails(ctx);
+    }
     await collectShipPlanks(ctx);
+}
+
+async function crossShipGangplank(ctx: QuestContext, board: boolean) {
+    const { sdk } = ctx;
+    const z = board ? 3205 : 3206;
+    const loc = board ? 2593 : 2594;
+    await walk(ctx, 3047, board ? 3204 : 3207, 0);
+    // The gangplank is mapped on the raised deck and can be absent from the dock's location scan.
+    await auditOperation('dragon-slayer-cross-gangplank', board ? 'Board the Lady Lumbridge' : 'Return to Port Sarim dock',
+        { loc, x: 3047, z, board }, () => sdk.getState(), async () => {
+            const clicked = await sdk.sendInteractLoc(3047, z, loc, 1);
+            if (!clicked.success) throw new Error(clicked.message);
+            await sdk.waitForCondition(() => board ? onShipDeck(ctx) :
+                position(ctx).level === 0 && area(ctx, 3047, 3204, 2), 8000);
+        }, () => ({ outcome: 'complete', plane: position(ctx).level }));
 }
 
 async function shipHold(ctx: QuestContext) {
     const { sdk } = ctx;
     if (area(ctx, 3047, 9640, 5)) return;
-    if (!area(ctx, 3047, 3208, 1)) {
-        await walk(ctx, 3047, 3204, 1);
-        await activate(ctx, [2593], 3047, 3205, 'Board the Lady Lumbridge', { walkFirst: false });
-        await sdk.waitForCondition(() => area(ctx, 3047, 3208, 1), 8000);
-    }
+    if (!onShipDeck(ctx)) await crossShipGangplank(ctx, true);
     await activate(ctx, [2590], 3049, 3208, 'Descend to the hold of the Lady Lumbridge');
     await sdk.waitForCondition(() => area(ctx, 3047, 9640, 5), 10000);
 }
@@ -764,18 +784,17 @@ async function leaveShip(ctx: QuestContext) {
         await activate(ctx, [2592], 3048, 9640, 'Climb from the hold to the deck');
         await sdk.waitForCondition(() => position(ctx).worldZ < 4000, 8000);
     }
-    if (onShipDeck(ctx)) {
-        await activate(ctx, [2594], 3047, 3206, 'Return to Port Sarim dock to find a captain', { walkFirst: false });
-        await sdk.waitForCondition(() => !onShipDeck(ctx), 8000);
-    }
+    if (onShipDeck(ctx)) await crossShipGangplank(ctx, false);
 }
 
 async function prepareShip(ctx: QuestContext, page: string) {
     const { sdk } = ctx;
     questPhase('dragon-slayer-buy-and-repair-ship');
     if (!area(ctx, 3047, 9640, 5)) {
-        await shipMaterials(ctx);
-        if (!shipBought.test(page)) {
+        const bought = shipBought.test(page);
+        await shipMaterials(ctx, bought);
+        questPhase('dragon-slayer-buy-and-repair-ship', { bought, planks: held(ctx, 960), nails: held(ctx, 1539) });
+        if (!bought) {
             if (sdk.countInventoryItems(coins) < 2000) throw new Error('Klarense requires 2,000 coins to buy the Lady Lumbridge');
             await talkAt(ctx, 3047, 3204, /^klarense$/i, [/suppose I could buy it/i, /yep.*sounds good/i], 8000);
             const bought = await journalText(ctx, journal, title);
