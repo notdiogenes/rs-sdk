@@ -477,7 +477,7 @@ async function makeUnfiredBowl(ctx: QuestContext) {
             await walk(ctx, 3231, 3203);
             await buyQuestSupply(ctx, /^bob$/i, 'Bronze pickaxe', 12);
         }
-        await walk(ctx, 2938, 3284, 3);
+        await walk(ctx, 2987, 3240, 3);
         const rock = (await sdk.scanNearbyLocs(10)).find(loc => [2108, 2109].includes(loc.id) && loc.reachable !== false);
         if (!rock) throw new Error('Could not locate the Rimmington clay rocks');
         const mined = await bot.mineRock(rock);
@@ -491,17 +491,13 @@ async function makeUnfiredBowl(ctx: QuestContext) {
                 if (!seller) throw new Error('A bucket is required to soften the clay');
                 await buyQuestSupply(ctx, /^shop (?:keeper|assistant)$/i, 'Bucket', 5);
             }
-            await walk(ctx, 3221, 3226, 3);
-            const water = (await sdk.scanNearbyLocs(12)).find(loc => /fountain|sink|waterpump/i.test(loc.name) && loc.reachable !== false);
-            const bucket = inventory(ctx, 1925);
-            if (!water || !bucket) throw new Error('Could not find the Falador water source or an empty bucket');
-            await sdk.sendUseItemOnLoc(bucket.slot, water.x, water.z, water.id);
+            await activate(ctx, [884], 2956, 3212, 'Fill a bucket at the Rimmington well', { item: 1925 });
             await sdk.waitForCondition(() => has(ctx, 1929), 8000);
         }
         await useTogether(ctx, /^bucket of water$/i, /^clay$/i);
         await sdk.waitForCondition(() => has(ctx, 1761), 5000);
     }
-    await activate(ctx, [2642], 2935, 3289, 'Open the pottery wheel with soft clay', { item: 1761 });
+    await activate(ctx, [2642], 3087, 3409, 'Open the Barbarian Village pottery wheel with soft clay', { item: 1761 });
     const state = await sdk.waitForCondition(s => !!s.interface?.options.some(option => /\bbowl\b/i.test(option.text)), 8000);
     const bowl = state.interface?.options.find(option => /\bbowl\b/i.test(option.text));
     if (!bowl) throw new Error('Pottery wheel did not offer Bowl');
