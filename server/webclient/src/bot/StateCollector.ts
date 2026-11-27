@@ -6,7 +6,7 @@ import type ClientNpc from '#/dash3d/ClientNpc.js';
 import type ClientPlayer from '#/dash3d/ClientPlayer.js';
 import type ClientObj from '#/dash3d/ClientObj.js';
 import IfType from '#/config/IfType.js';
-import { collectQuestJournal, QUEST_JOURNAL_ID, QUEST_JOURNAL_TAB, QUEST_POINTS_VARP } from './quest-journal.js';
+import { collectOpenQuestJournal, collectQuestJournal, QUEST_JOURNAL_ID, QUEST_JOURNAL_TAB, QUEST_POINTS_VARP } from './quest-journal.js';
 import { collectGEState } from './ge-state.js';
 import { getDialogPageId } from './dialog-page.js';
 import { specialAttackActive, specialEnergyPercent } from './SpecialAttack.js';
@@ -174,6 +174,7 @@ export class BotStateCollector implements ScanProvider {
             player: this.collectPlayerState(currentTick, clientCycle),
             skills: this.collectSkills(),
             questJournal,
+            openQuestJournal: collectOpenQuestJournal(IfType.list, c.mainModalId ?? -1),
             questPoints: questJournal ? c.var[QUEST_POINTS_VARP] : undefined,
             inventory: this.collectInventory(INVENTORY_INTERFACE_ID),
             equipment: this.collectInventory(EQUIPMENT_INTERFACE_ID),

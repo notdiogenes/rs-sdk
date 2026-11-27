@@ -25,3 +25,17 @@ export function collectQuestJournal(components: IfType[]): QuestJournal | undefi
     }
     return Object.keys(progress).length ? progress : undefined;
 }
+
+const journalModal = 8134;
+const journalTitle = 8144;
+const firstJournalLine = 8145;
+const lastJournalLine = 8195;
+
+export function collectOpenQuestJournal(components: IfType[], modal: number) {
+    if (modal !== journalModal) return undefined;
+    const title = components[journalTitle]?.text;
+    if (!title) return undefined;
+    const text = components.slice(firstJournalLine, lastJournalLine + 1)
+        .map(component => component?.text).filter(Boolean).join(' ');
+    return { title, text };
+}

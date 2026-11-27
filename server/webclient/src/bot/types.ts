@@ -427,6 +427,8 @@ export interface BotState {
     player: PlayerState | null;
     skills: SkillState[];
     questJournal?: QuestJournal;
+    /** Text in the currently open game quest journal window. */
+    openQuestJournal?: { title: string; text: string };
     questPoints?: number;
     inventory: InventoryItem[];
     equipment: InventoryItem[];

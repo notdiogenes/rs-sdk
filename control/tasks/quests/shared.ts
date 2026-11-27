@@ -86,7 +86,8 @@ export async function groundItem(ctx: QuestContext, item: RegExp, x: number, z: 
     throw new Error(`Could not find ${item} near ${x}, ${z}`);
 }
 
-export async function bankForQuest(ctx: QuestContext, supplies: readonly { name: string; count: number }[]) {
+export async function bankForQuest(ctx: QuestContext, supplies: readonly { name: string; count: number }[],
+    bank: readonly [number, number] = [3092, 3243]) {
     const { bot, sdk } = ctx;
     const wanted = new Map(supplies.map(item => [item.name.toLowerCase(), item.count]));
     const current = () => sdk.getInventory();
@@ -103,7 +104,7 @@ export async function bankForQuest(ctx: QuestContext, supplies: readonly { name:
         }
     };
     questLog('banking-quest-loadout');
-    await walk(ctx, 3092, 3243, 4);
+    await walk(ctx, bank[0], bank[1], 4);
     await open();
     try {
         await deposit();
@@ -134,4 +135,17 @@ export async function bankForQuest(ctx: QuestContext, supplies: readonly { name:
         throw new Error('Unexpected items remained after banking');
     }
     questLog('quest-loadout-ready', { items: current().map(item => [item.name, item.count]) });
+}
+
+export async function journalText({ bot, sdk }: QuestContext, component: number, title: RegExp) {
+    const strip = (s: string) => s.replace(/@[a-z0-9]{3}@/gi, '').replace(/\s+/g, ' ').trim();
+    await bot.closeInterface();
+    try {
+        const result = await sdk.sendClickComponent(component);
+        if (!result.success) throw new Error(result.message);
+        const state = await sdk.waitForCondition(s => !!s.openQuestJournal && title.test(strip(s.openQuestJournal.title)), 7000);
+        return strip(state.openQuestJournal?.text ?? '');
+    } finally {
+        await bot.closeInterface();
+    }
 }

@@ -584,6 +584,8 @@ export interface BotWorldState {
     player: PlayerState | null;
     skills: SkillState[];
     questJournal?: QuestJournal;
+    /** Text in the currently open game quest journal window. */
+    openQuestJournal?: { title: string; text: string };
     /** Total quest points reported by the game client. */
     questPoints?: number;
     inventory: InventoryItem[];
