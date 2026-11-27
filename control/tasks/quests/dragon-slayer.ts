@@ -511,6 +511,17 @@ async function makeUnfiredBowl(ctx: QuestContext) {
     await bot.closeInterface();
 }
 
+async function crossAlKharidToll(ctx: QuestContext, east: boolean) {
+    const { sdk } = ctx;
+    const arrived = () => (position(ctx).worldX >= 3268) === east;
+    if (arrived()) return;
+    await walk(ctx, east ? 3267 : 3268, 3227, 0);
+    await activate(ctx, [2882], 3268, 3227, 'Ask the border guard to cross the Al Kharid toll gate', { walkFirst: false });
+    await continueDialog(ctx, [/^yes,?\s+ok\.?$/i]);
+    await sdk.waitForCondition(arrived, 8000);
+    auditEvent('check', 'dragon-slayer-al-kharid-crossing', { outcome: 'complete', east });
+}
+
 async function oracleMap(ctx: QuestContext) {
     const { sdk } = ctx;
     const inMine = () => inDwarvenMine(ctx);
@@ -522,9 +533,11 @@ async function oracleMap(ctx: QuestContext) {
             { name: 'Bronze pickaxe', count: 1 }, { name: 'Bucket of water', count: 1 },
         ] });
         if (!has(ctx, 950)) {
+            await crossAlKharidToll(ctx, true);
             await talkAt(ctx, 3299, 3204, /^silk trader$/i, [/how much are they/i, /sounds good/i], 8000);
             await sdk.waitForCondition(() => has(ctx, 950), 6000);
         }
+        if (position(ctx).worldX >= 3268 && position(ctx).worldZ < 3240) await crossAlKharidToll(ctx, false);
         if (!has(ctx, 1907)) {
             await talkAt(ctx, 2957, 3370, /^barmaid$/i, [/try the mind bomb/i], 8000);
             await sdk.waitForCondition(() => has(ctx, 1907), 6000);
