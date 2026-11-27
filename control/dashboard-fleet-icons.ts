@@ -31,7 +31,7 @@ const actionColors: Record<FleetActionIcon, string> = {
     plan: '#8fbfe2',
     pause: '#ebb38c',
     stop: '#ed9284',
-    watch: '#8ecbc0',
+    watch: '#f2d573',
 };
 
 export function fleetSkillIcon(name: string) {
