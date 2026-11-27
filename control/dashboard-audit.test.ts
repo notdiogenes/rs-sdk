@@ -146,6 +146,14 @@ test('keeps a pickpocket intent, dispatch, and outcome linked in the live trace 
         expect(live?.events?.filter(event => event.data.operationId === 7).map(event => event.data.outcome))
             .toEqual(['pending', 'dispatched', 'not-started', 'not-started']);
         expect(live?.events?.find(event => event.kind === 'intent' && event.data.operationId === 8)?.data.parentOperationId).toBe(7);
+        const operation = audit.read(new URLSearchParams(`run=${run}&operation=7&event=unrelated&kind=failure`));
+        expect(operation?.events?.map(event => event.name))
+            .toEqual(['pickpocket-npc', 'interactNpc', 'wait-ticks', 'wait-ticks', 'pickpocket-attempt-not-started', 'pickpocket-npc']);
+        expect(operation?.matchingEvents).toBe(6);
+        const matched = audit.read(new URLSearchParams(`run=${run}&event=pickpocket-attempt-not-started&kind=setback&limit=1`));
+        expect(matched?.events?.map(event => event.name)).toEqual(['pickpocket-attempt-not-started']);
+        expect(matched?.nextBefore).toBeNull();
+        expect(() => audit.read(new URLSearchParams(`run=${run}&operation=0`))).toThrow('Invalid operation');
         expect(live?.signals).toContainEqual(expect.objectContaining({
             evidence: expect.arrayContaining([expect.objectContaining({
                 data: expect.objectContaining({ operationId: 7, intent, outcome: 'not-started' }),
@@ -193,11 +201,45 @@ test('reports whole-activity rates and splits durable trend time at Eastern midn
         const database = new Database(join(directory, 'activity-audit.sqlite'));
         database.exec('DELETE FROM audit_events');
         database.close();
-        expect(audit.read(params)).toEqual(report);
+        expect(audit.read(params)).toEqual({
+            ...report,
+            attempts: report.attempts.map(row => ({ ...row, trace_run_id: null })),
+            setbacks: report.setbacks.map(row => ({ ...(row as object), trace_run_id: null })),
+        });
         expect(audit.read(new URLSearchParams('mode=insights&task=pickpocket-knights&phase=thieving-pickpocket')))
             .toMatchObject({ throughput: { xp: 100, xpPerHour: null } });
         expect(audit.read(new URLSearchParams('mode=insights&task=pickpocket-knights&revision=abcdef0')))
             .toMatchObject({ sample: { runs: 0 }, trend: { days: [] } });
+    } finally {
+        audit.close();
+        rmSync(directory, { recursive: true, force: true });
+    }
+});
+
+test('compares two revisions in the same scope and retains links only to matching evidence', () => {
+    const directory = mkdtempSync(join(process.cwd(), '.audit-test-'));
+    let now = 1_800_000_000_000;
+    const audit = dashboardAudit(directory, () => now);
+    try {
+        const old = audit.begin('Scout', 'pickpocket-knights', 'abcdef0', null, []);
+        audit.append(old, { kind: 'setback', name: 'pickpocket-attempt-timeout', elapsedMs: 1000 });
+        now += 5000;
+        audit.finish(old, 0, false);
+        const current = audit.begin('Scout', 'pickpocket-knights', '123abcd', null, []);
+        audit.append(current, { kind: 'milestone', name: 'pickpocket-attempt-succeeded', elapsedMs: 100, xpGained: 50 });
+        now += 5000;
+        audit.finish(current, 0, false);
+        const other = audit.begin('Other', 'pickpocket-knights', '123abcd', null, []);
+        audit.append(other, { kind: 'setback', name: 'pickpocket-attempt-timeout', elapsedMs: 1000 });
+
+        const params = new URLSearchParams('mode=insights&task=pickpocket-knights&bot=Scout&revision=123abcd&baseline=abcdef0');
+        expect(audit.read(params)).toMatchObject({
+            sample: { runs: 1 }, attempts: [{ name: 'pickpocket-attempt-succeeded', trace_run_id: current }],
+            revisions: [{ revision: '123abcd', runs: 1 }, { revision: 'abcdef0', runs: 1 }],
+            baseline: { sample: { runs: 1 }, attempts: [{ name: 'pickpocket-attempt-timeout', trace_run_id: old }] },
+        });
+        params.set('baseline', '123abcd0');
+        expect(() => audit.read(params)).toThrow('Invalid baseline');
     } finally {
         audit.close();
         rmSync(directory, { recursive: true, force: true });

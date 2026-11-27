@@ -407,7 +407,8 @@ Bun.serve({
                 if (auditSession) headers['Set-Cookie'] = auditSession;
                 if (format === 'html') {
                     const dashboard = new URLSearchParams({ audit: '1' });
-                    for (const key of ['bot', 'task', 'run', 'phase', 'mode', 'days', 'before', 'limit', 'revision']) {
+                    for (const key of ['bot', 'task', 'run', 'phase', 'mode', 'days', 'before', 'limit', 'revision',
+                        'baseline', 'event', 'kind', 'operation', 'runPhase']) {
                         const value = searchParams.get(key);
                         if (value) dashboard.set(key, value);
                     }

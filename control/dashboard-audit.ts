@@ -47,6 +47,7 @@ export function dashboardAudit(directory: string, clock = Date.now) {
             at INTEGER NOT NULL, phase TEXT NOT NULL, kind TEXT NOT NULL, name TEXT NOT NULL, data TEXT NOT NULL
         );
         CREATE INDEX IF NOT EXISTS audit_events_run ON audit_events(run_id, id DESC);
+        CREATE INDEX IF NOT EXISTS audit_events_run_name ON audit_events(run_id, name, id DESC);
         CREATE TABLE IF NOT EXISTS audit_phases (
             run_id TEXT NOT NULL REFERENCES audit_runs(id) ON DELETE CASCADE, phase TEXT NOT NULL,
             visits INTEGER NOT NULL DEFAULT 0, duration_ms INTEGER NOT NULL DEFAULT 0,
@@ -214,28 +215,58 @@ export function dashboardAudit(directory: string, clock = Date.now) {
         if (through && !safeName.test(through)) throw new Error('Invalid phase');
         if (id) {
             if (!/^[a-f0-9-]{36}$/i.test(id)) throw new Error('Invalid run');
-            const row = db.query<{ failure_evidence: string | null }, [string, string | null, string | null]>(
+            const event = params.get('event');
+            const kind = params.get('kind');
+            const operation = params.has('operation') ? bounded('operation', 0, 1, Number.MAX_SAFE_INTEGER) : null;
+            if (event && !safeName.test(event)) throw new Error('Invalid event');
+            if (kind && kind !== 'key' && !kinds.has(kind)) throw new Error('Invalid kind');
+            const row = db.query<{ failure_evidence: string | null; details_available: number }, [string, string | null, string | null]>(
                 `SELECT *, (SELECT COUNT(*) FROM audit_events WHERE run_id = audit_runs.id) AS details_available
                 FROM audit_runs WHERE id = ? AND (? IS NULL OR bot = ?)`).get(id, bot, bot);
             if (!row) return null;
             const { failure_evidence, ...run } = row;
-            const detail = db.query<{ id: number; at: number; phase: string; kind: string; name: string; data: string }, [string, number, string | null, string | null, number]>(
-                `SELECT id, at, phase, kind, name, data FROM audit_events
-                 WHERE run_id = ? AND id < ? AND (? IS NULL OR phase = ?) ORDER BY id DESC LIMIT ?`)
-                .all(id, before, through, through, limit + 1);
+            const conditions = ['run_id = ?'];
+            const values: Array<string | number> = [id];
+            if (operation !== null) {
+                conditions.push(`(json_extract(data, '$.operationId') = ? OR json_extract(data, '$.parentOperationId') = ?
+                    OR json_extract(data, '$.operationId') IN (
+                        SELECT json_extract(data, '$.operationId') FROM audit_events
+                        WHERE run_id = ? AND json_extract(data, '$.parentOperationId') = ?
+                    ))`);
+                values.push(operation, operation, id, operation);
+            } else {
+                if (through) { conditions.push('phase = ?'); values.push(through); }
+                if (event) { conditions.push('name = ?'); values.push(event); }
+                if (kind === 'key') {
+                    conditions.push("kind IN ('phase', 'result', 'setback', 'failure', 'milestone')");
+                } else if (kind) { conditions.push('kind = ?'); values.push(kind); }
+            }
+            const where = conditions.join(' AND ');
+            const matchingEvents = conditions.length > 1
+                ? db.query<{ count: number }, Array<string | number>>(`SELECT COUNT(*) AS count FROM audit_events WHERE ${where}`).get(...values)!.count
+                : run.details_available;
+            const detail = db.query<{ id: number; at: number; phase: string; kind: string; name: string; data: string }, Array<string | number>>(
+                `SELECT id, at, phase, kind, name, data FROM audit_events WHERE ${where} AND id < ? ORDER BY id DESC LIMIT ?`)
+                .all(...values, before, limit + 1);
             return { run, phases: db.query('SELECT * FROM audit_phases WHERE run_id = ? ORDER BY phase').all(id),
                 signals: db.query<{ evidence: string | null }, [string]>(`SELECT s.*, m.elapsed_ms, m.xp_gained,
                     m.coins_gained, m.hp_lost FROM audit_signals s LEFT JOIN audit_attempt_metrics m USING(run_id, phase, kind, name)
                     WHERE s.run_id = ? ORDER BY s.phase, s.kind, s.name`)
                     .all(id).map(row => ({ ...row, evidence: row.evidence && JSON.parse(row.evidence) })),
-                failureEvidence: failure_evidence ? JSON.parse(failure_evidence) : [],
+                 matchingEvents, failureEvidence: failure_evidence ? JSON.parse(failure_evidence) : [],
                 nextBefore: detail.length > limit ? detail[limit - 1]?.id : null,
                 events: detail.slice(0, limit).reverse().map(row => ({ ...row, data: JSON.parse(row.data) })) };
         }
         const since = clock() - days * day;
         if (mode === 'insights') {
             if (revision && !/^[0-9a-f]{7,40}$/i.test(revision)) throw new Error('Invalid revision');
-            return { ...insights.read({ since, bot, task, phase: through, revision: revision || null }) };
+            const baseline = params.get('baseline')?.toLowerCase();
+            const current = revision?.toLowerCase();
+            if (baseline && (!/^[0-9a-f]{7,40}$/.test(baseline) || !current ||
+                current.startsWith(baseline) || baseline.startsWith(current))) throw new Error('Invalid baseline');
+            const scope = { since, bot, task, phase: through, revision: revision || null };
+            const report = insights.read(scope);
+            return baseline ? { ...report, baseline: insights.read({ ...scope, revision: baseline }) } : report;
         }
         const scope = 'r.started_at >= ? AND (? IS NULL OR r.bot = ?) AND (? IS NULL OR r.task = ?)';
         const filters = [since, bot, bot, task, task] as const;

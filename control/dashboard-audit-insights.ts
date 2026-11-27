@@ -59,11 +59,19 @@ export function dashboardAuditInsights(db: Database, startedAt: number) {
         )`;
         const revisionPattern = revision && revision + '%';
         const phaseFilters: Filters = [since, bot, bot, task, task, revision, revisionPattern, phase, phase];
-        const sample = db.query<{ runs: number; bots: number; running: number; interrupted: number; failed: number }, Filters>(
+        const revisions = db.query<{ revision: string; runs: number }, Filters>(
+            `${cohort} SELECT revision, COUNT(*) AS runs FROM runs r
+            WHERE revision IS NOT NULL AND (? IS NULL OR EXISTS (
+                SELECT 1 FROM audit_phases p WHERE p.run_id = r.id AND p.phase = ?
+            )) GROUP BY revision ORDER BY MAX(r.started_at) DESC, revision LIMIT 50`)
+            .all(since, bot, bot, task, task, null, null, phase, phase);
+        const sample = db.query<{ runs: number; bots: number; running: number; interrupted: number; failed: number; stopped: number; succeeded: number }, Filters>(
             `${cohort} SELECT COUNT(*) AS runs, COUNT(DISTINCT bot) AS bots,
             COUNT(CASE WHEN status = 'running' THEN 1 END) AS running,
             COUNT(CASE WHEN status = 'interrupted' THEN 1 END) AS interrupted,
-            COUNT(CASE WHEN status = 'failed' THEN 1 END) AS failed
+            COUNT(CASE WHEN status = 'failed' THEN 1 END) AS failed,
+            COUNT(CASE WHEN status = 'stopped' THEN 1 END) AS stopped,
+            COUNT(CASE WHEN status = 'succeeded' THEN 1 END) AS succeeded
             FROM runs r WHERE (? IS NULL OR EXISTS (SELECT 1 FROM audit_phases p WHERE p.run_id = r.id AND p.phase = ?))`)
             .get(...phaseFilters)!;
         const phases = db.query<{ phase: string; duration_ms: number; run_id: string }, Filters>(
@@ -71,16 +79,21 @@ export function dashboardAuditInsights(db: Database, startedAt: number) {
             FROM audit_phases p JOIN runs r ON p.run_id = r.id
             WHERE (? IS NULL OR p.phase = ?) GROUP BY p.phase ORDER BY duration_ms DESC, p.phase`)
             .all(...phaseFilters);
-        const attempts = db.query<{ name: string; count: number; elapsed_ms: number; xp_gain: number; coin_gain: number; run_id: string }, Filters>(
+        const retainedTrace = `MAX(CASE WHEN EXISTS (
+            SELECT 1 FROM audit_events e WHERE e.run_id = s.run_id AND e.name = s.name AND e.phase = s.phase AND e.kind = s.kind
+        ) THEN s.run_id END)`;
+        const attempts = db.query<{ name: string; count: number; elapsed_ms: number; xp_gain: number; coin_gain: number; run_id: string; trace_run_id: string | null }, Filters>(
             `${cohort} SELECT s.name, SUM(s.count) AS count, SUM(m.elapsed_ms) AS elapsed_ms,
-            SUM(m.xp_gained) AS xp_gain, SUM(m.coins_gained) AS coin_gain, MAX(s.run_id) AS run_id
+            SUM(m.xp_gained) AS xp_gain, SUM(m.coins_gained) AS coin_gain, MAX(s.run_id) AS run_id,
+            ${retainedTrace} AS trace_run_id
             FROM audit_signals s JOIN runs r ON r.id = s.run_id
             JOIN audit_attempt_metrics m USING (run_id, phase, kind, name)
             WHERE (? IS NULL OR s.phase = ?) GROUP BY s.name ORDER BY count DESC, s.name`).all(...phaseFilters);
         const setbacks = db.query(`${cohort} SELECT r.task, s.phase, s.name, SUM(s.count) AS count,
             SUM(CASE WHEN r.status = 'succeeded' THEN s.count ELSE 0 END) AS successful_runs,
             SUM(CASE WHEN r.status = 'failed' AND r.failure_phase <> s.phase THEN s.count ELSE 0 END) AS before_later_failure,
-            COUNT(DISTINCT s.run_id) AS runs, COALESCE(MAX(CASE WHEN r.status = 'succeeded' THEN s.run_id END), MAX(s.run_id)) AS run_id
+            COUNT(DISTINCT s.run_id) AS runs, COALESCE(MAX(CASE WHEN r.status = 'succeeded' THEN s.run_id END), MAX(s.run_id)) AS run_id,
+            ${retainedTrace} AS trace_run_id
             FROM audit_signals s JOIN runs r ON r.id = s.run_id
             WHERE s.kind = 'setback' AND (? IS NULL OR s.phase = ?)
             GROUP BY r.task, s.phase, s.name ORDER BY count DESC, r.task, s.phase, s.name LIMIT 10`).all(...phaseFilters);
@@ -125,7 +138,7 @@ export function dashboardAuditInsights(db: Database, startedAt: number) {
             daily.set(date, data);
         }
         return {
-            since, scope: { bot, task, phase, revision }, sample, durationMs,
+            since, scope: { bot, task, phase, revision }, sample, revisions, durationMs,
             phases: phases.map(row => ({ ...row, share: durationMs ? row.duration_ms / durationMs : null })),
             attempts, setbacks, failures,
             pickpocket: { count: pickpocketCount, successes: pickpocketSuccesses,
