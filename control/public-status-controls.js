@@ -449,15 +449,166 @@
         const needsLink = !configured && !setupCode;
         signInSubmit.disabled = needsLink;
         password.disabled = needsLink;
-        signInMessage.textContent = needsLink ? 'Open your one-time dashboard setup link.' : '';
+        signInMessage.textContent = needsLink ? 'Open your one-time dashboard setup link.'
+            : auditPending || button?.matches('#audit-open,[data-audit-bot]') ? 'Sign in to open the audit history.' : '';
         signIn.showModal();
     }
+
+    const auditDialog = document.querySelector('#audit-dialog');
+    const auditForm = document.querySelector('#audit-filters');
+    const auditBot = document.querySelector('#audit-bot');
+    const auditTask = document.querySelector('#audit-task');
+    const auditDays = document.querySelector('#audit-days');
+    const auditMode = document.querySelector('#audit-mode');
+    const auditSummaryPhase = document.querySelector('#audit-summary-phase');
+    const auditSummaryPhaseField = document.querySelector('#audit-summary-phase-field');
+    const auditPhase = document.querySelector('#audit-phase');
+    const auditStatus = document.querySelector('#audit-status');
+    const auditContent = document.querySelector('#audit-content');
+    const auditOlder = document.querySelector('#audit-older');
+    const auditLink = new URLSearchParams(location.search);
+    let auditPending = auditLink.has('audit');
+    let auditRun = '';
+    let auditCursor = null;
+    let auditVersion = 0;
+    let auditRows = [];
+
+    const auditJson = value => `<details><summary>Evidence</summary><pre>${escape(JSON.stringify(value, null, 2))}</pre></details>`;
+    const auditList = (title, rows, render) => rows?.length
+        ? `<section><h3>${title}</h3><ul>${rows.map(render).join('')}</ul></section>` : '';
+    const auditEventRow = ({ at, phase, kind, name, data }) => `<li class="audit-row">
+        <small>${escape([labelTime(at), phase, kind, data.operationId && 'Operation ' + data.operationId].filter(Boolean).join(' · '))}</small>
+        <p><strong>${escape(name)}</strong>${data.outcome ? ' · ' + escape(data.outcome) : ''}</p>
+        ${data.intent ? '<p>' + escape(data.intent) + '</p>' : ''}
+        ${data.message ? '<p>' + escape(data.message) + '</p>' : ''}${auditJson(data)}</li>`;
+    const auditRunRow = row => `<li class="audit-row"><button type="button" data-audit-run="${escape(row.id)}"
+        aria-label="Open ${escape(row.task)} run for ${escape(row.bot)} at ${escape(labelTime(row.started_at))}">${escape(row.task)}</button>
+        <span> ${escape(row.bot)} · ${escape(row.status)}</span><p><small>${escape(labelTime(row.started_at))}</small></p>
+        ${row.failure_message ? '<p>' + escape(row.failure_message) + '</p>' : ''}</li>`;
+
+    async function loadAudit(older = false, firstBefore, firstLimit) {
+        const version = ++auditVersion;
+        const params = new URLSearchParams({ view: 'audit', limit: firstLimit || '50' });
+        if (auditRun) {
+            params.set('run', auditRun);
+            if (auditPhase.value) params.set('phase', auditPhase.value);
+        } else {
+            params.set('mode', auditMode.value);
+            params.set('days', auditDays.value || '35');
+            if (auditBot.value.trim()) params.set('bot', auditBot.value.trim());
+            if (auditTask.value.trim()) params.set('task', auditTask.value.trim());
+            if (auditMode.value === 'summary' && auditSummaryPhase.value.trim()) params.set('phase', auditSummaryPhase.value.trim());
+        }
+        if (older && auditCursor) params.set('before', auditCursor);
+        if (firstBefore) params.set('before', firstBefore);
+        auditStatus.textContent = 'Loading audit history…';
+        auditOlder.disabled = true;
+        try {
+            const report = await request('/bots/activity?' + params);
+            if (!auditDialog.open || auditVersion !== version) return;
+            auditCursor = report.nextBefore;
+            auditOlder.hidden = !auditCursor;
+            auditOlder.textContent = auditRun ? 'Load older events' : 'Load older runs';
+            if (auditRun) {
+                const row = report.run;
+                if (!auditBot.value) auditBot.value = row.bot;
+                const currentPhase = auditPhase.value;
+                auditPhase.replaceChildren(new Option('All phases', ''), ...report.phases.map(phase => new Option(phase.phase, phase.phase)));
+                auditPhase.value = currentPhase;
+                document.querySelector('#audit-title').textContent = row.bot + ' · ' + row.task;
+                auditRows = older ? [...report.events, ...auditRows] : report.events;
+                auditStatus.textContent = `${row.status} · ${auditRows.length} events shown · ${number(row.details_available)} retained`;
+                auditContent.innerHTML = `<p class="audit-meta">${escape(labelTime(row.started_at))} · Revision ${escape(row.revision ?? 'unreported')}</p>
+                    ${row.failure_message ? '<p>' + escape([row.failure_phase, row.failure_step, row.failure_message].filter(Boolean).join(' · ')) + '</p>' : ''}
+                    ${auditList('Timeline', auditRows, auditEventRow)}
+                    ${auditList('Retained failure evidence', report.failureEvidence, auditEventRow)}
+                    ${auditList('Phase totals', report.phases, phase => `<li class="audit-row">${escape(phase.phase)}
+                        · ${number(Math.round(phase.duration_ms / 1000))} s · ${number(phase.actions)} actions · ${number(phase.setbacks)} setbacks</li>`)}
+                    ${auditList('Milestones and setbacks', report.signals, signal => `<li class="audit-row">${escape(signal.name)}
+                        · ${escape(signal.phase)} · ${number(signal.count)}${signal.evidence ? auditJson(signal.evidence) : ''}</li>`)}`;
+            } else if (auditMode.value === 'summary') {
+                auditStatus.textContent = report.breakpoints.length || report.totals.length || report.signals.length
+                    ? `Runs started within the last ${auditDays.value || 35} days` : 'No audit activity matches these filters.';
+                auditContent.innerHTML = auditList('Recurring failures', report.breakpoints, point => `<li class="audit-row">
+                    <strong>${escape(point.task)}</strong> · ${escape([point.phase, point.step, point.site].filter(Boolean).join(' · '))}
+                    <p>${number(point.runs)} runs · ${number(point.bots)} bots · ${escape(point.example_message ?? '')}</p>
+                    <small>Revision ${escape(point.revision ?? 'unreported')}</small></li>`) +
+                    auditList('Phase totals', report.totals, phase => `<li class="audit-row">${escape([phase.task, phase.phase, phase.run_outcome].join(' · '))}
+                        <p>${number(phase.runs)} runs · ${number(Math.round(phase.duration_ms / 1000))} s · ${number(phase.actions)} actions · ${number(phase.setbacks)} setbacks</p></li>`) +
+                    auditList('Milestones and setbacks', report.signals, signal => `<li class="audit-row">${escape([signal.task, signal.phase, signal.name].join(' · '))}
+                        <p>${number(signal.count)} occurrences · ${number(signal.before_later_failure)} before a later failure</p>
+                        <small>Revision ${escape(signal.revision ?? 'unreported')}</small>${auditJson(signal)}</li>`);
+            } else {
+                auditRows = older ? [...auditRows, ...report.runs] : report.runs;
+                auditStatus.textContent = auditRows.length ? `${auditRows.length} runs shown` : 'No runs match these filters.';
+                auditContent.innerHTML = auditList('Runs', auditRows, auditRunRow);
+            }
+        } catch (error) {
+            if (auditVersion === version) auditStatus.textContent = error.message;
+        } finally {
+            if (auditVersion === version) auditOlder.disabled = false;
+        }
+    }
+
+    function showAuditRun(run = '', phase = '', before, limit) {
+        auditRun = run;
+        auditPhase.replaceChildren(new Option('All phases', ''), ...(phase ? [new Option(phase, phase)] : []));
+        auditPhase.value = phase;
+        auditRows = [];
+        auditCursor = null;
+        auditOlder.hidden = true;
+        auditForm.hidden = Boolean(run);
+        document.querySelector('#audit-run-tools').hidden = !run;
+        document.querySelector('#audit-title').textContent = run ? 'Audit run' : 'Audit history';
+        auditContent.replaceChildren();
+        void loadAudit(false, before, limit);
+    }
+
+    function openAudit(params) {
+        clearTimeout(refresh);
+        auditPending = false;
+        auditBot.value = params.get('bot') || '';
+        auditTask.value = params.get('task') || '';
+        auditDays.value = params.get('days') || '35';
+        auditMode.value = params.get('mode') === 'summary' ? 'summary' : 'runs';
+        auditSummaryPhase.value = auditMode.value === 'summary' ? params.get('phase') || '' : '';
+        auditSummaryPhaseField.hidden = auditMode.value !== 'summary';
+        if (!auditDialog.open) auditDialog.showModal();
+        showAuditRun(params.get('run') || '', params.get('phase') || '', params.get('before'), params.get('limit'));
+    }
+
+    auditForm.addEventListener('submit', event => { event.preventDefault(); showAuditRun(); });
+    auditMode.addEventListener('change', () => { auditSummaryPhaseField.hidden = auditMode.value !== 'summary'; });
+    auditContent.addEventListener('click', event => {
+        const button = event.target.closest('[data-audit-run]');
+        if (button) showAuditRun(button.dataset.auditRun);
+    });
+    auditDialog.querySelector('[data-close]').addEventListener('click', () => auditDialog.close());
+    auditDialog.addEventListener('close', () => {
+        auditVersion++;
+        if (auditLink.has('audit')) history.replaceState(null, '', '/bots');
+        scheduleRefresh();
+    });
+    auditOlder.addEventListener('click', () => loadAudit(true));
+    auditPhase.addEventListener('change', () => loadAudit());
+    document.querySelector('#audit-refresh').addEventListener('click', () => loadAudit());
+    document.querySelector('#audit-back').addEventListener('click', () => {
+        auditMode.value = 'runs';
+        auditSummaryPhaseField.hidden = true;
+        showAuditRun();
+    });
+    document.querySelectorAll('#audit-open,[data-audit-bot]').forEach(button => button.addEventListener('click', async () => {
+        await sessionReady;
+        if (!signedIn) return openSignIn(button);
+        openAudit(new URLSearchParams(button.dataset.auditBot ? { bot: button.dataset.auditBot } : {}));
+    }));
 
     const sessionReady = request('/bots/activity?session=status')
         .then(state => {
             configured = state.configured;
             setSignedIn(state.signedIn);
-            if (!configured && setupCode && !signIn.open) openSignIn();
+            if (auditPending && signedIn) openAudit(auditLink);
+            else if ((auditPending || !configured && setupCode) && !signIn.open) openSignIn();
         }).catch(() => {});
     account.addEventListener('click', async () => {
         await sessionReady;
@@ -485,6 +636,10 @@
     signIn.addEventListener('close', () => {
         signInForm.reset();
         pendingButton = undefined;
+        if (auditPending && !signedIn) {
+            auditPending = false;
+            history.replaceState(null, '', '/bots');
+        }
         if (!dialog.open && !diagnosticsDialog.open) scheduleRefresh();
     });
     signInForm.addEventListener('submit', async event => {
@@ -499,7 +654,8 @@
             setSignedIn(true);
             const button = pendingButton;
             signIn.close();
-            if (button) button.click();
+            if (auditPending) openAudit(auditLink);
+            else if (button) button.click();
         } catch (error) {
             signInMessage.textContent = error.message;
         } finally {
@@ -534,7 +690,7 @@
     });
 
     async function request(path, payload) {
-        const headers = {};
+        const headers = { Accept: 'application/json' };
         const options = {
             headers, credentials: 'same-origin', cache: 'no-store', redirect: 'error',
             signal: AbortSignal.timeout(['stop', 'pause'].includes(payload?.action) ? 45000 : 15000),

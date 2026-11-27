@@ -152,8 +152,10 @@ Use the configured control host for other deployments.
 **Start with the named bot.** Open its run list directly. For example, open
 [A Pirate’s audit runs](https://35-174-14-23.sslip.io/bots/activity?view=audit&mode=runs&bot=A%20Pirate&days=35).
 Use the existing dashboard session or authorized control Bearer credential.
-If you receive `401`, sign in once on that host and retry the same URL with
-the authenticated session. Keep credentials out of URLs, logs, and reports.
+Browser links open the Audit history dialog in Fleet Desk and prompt for
+sign-in if needed. For JSON requests, send `Accept: application/json` and
+retry after authentication if the API returns `401`. Keep credentials out
+of URLs, logs, and reports.
 Open the relevant failed run with `GET /bots/activity?view=audit&run=RUN_ID`.
 Report the last confirmed step, the first failed check shown in the trace,
 and the supporting evidence. If no matching failed run is present, check the

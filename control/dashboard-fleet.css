@@ -27,6 +27,19 @@ button:disabled{opacity:.6;cursor:default}
 .status-online{color:var(--green)}.status-unknown{color:var(--amber)}
 .group-title h2{color:inherit}.group-title h2.attention{color:var(--amber)}.group-title h2.active{color:var(--green)}
 #dashboard-diagnostics{max-width:min(720px,calc(100vw - 24px))}
+#audit-dialog{max-width:min(940px,calc(100vw - 24px))}
+.audit-toolbar{display:flex;flex-wrap:wrap;align-items:end;gap:8px;margin:0 0 8px}
+.audit-toolbar[hidden],.audit-toolbar label[hidden]{display:none}
+.audit-toolbar label{display:grid;gap:4px;font-size:12px;color:var(--muted)}
+#audit-days{width:70px}
+#audit-content h3{margin:12px 0 6px}
+#audit-content ul{list-style:none;margin:0;padding:0}
+.audit-row{border-top:1px solid var(--line);padding:8px 0;overflow-wrap:anywhere}
+.audit-row small,.audit-meta{color:var(--muted)}
+.audit-row p{margin:3px 0}
+.audit-row summary{cursor:pointer;color:var(--muted)}
+.audit-row pre{white-space:pre-wrap;overflow-wrap:anywhere;background:var(--bg);padding:8px;border-radius:6px}
+#audit-older{margin:4px 0 8px}
 #diagnostics-current th,#diagnostics-current td{white-space:normal;overflow-wrap:anywhere}
 #diagnostics-events li{overflow-wrap:anywhere}
 #diagnostics-events time{color:var(--muted)}

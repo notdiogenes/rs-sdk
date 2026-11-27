@@ -264,6 +264,13 @@ It does not import earlier dashboard events or cover standalone and primary
 `/v1` scripts. Requests are read-only and accept a dashboard session or a
 control Bearer credential.
 
+In Fleet Desk, open **Audit history** from the toolbar to browse the fleet, or
+from a bot's card to filter to that bot. Choose **Runs** for the timeline and
+retained evidence, or **Summary** for recurring failures, phase totals, and
+setbacks. Opening a report link in a browser takes you to the relevant audit
+view and prompts for dashboard sign-in when needed. API callers can send
+`Accept: application/json` to retrieve JSON and receive a `401` when signed out.
+
 | HTTPS request | Result |
 | --- | --- |
 | `GET /bots/activity?view=audit&mode=summary&days=35` | Cross-bot phase totals, milestones, setbacks and repeated breakpoints grouped by task and revision |

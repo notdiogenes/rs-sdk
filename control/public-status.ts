@@ -386,9 +386,17 @@ Bun.serve({
             const view = searchParams.get('view');
             const bot = searchParams.get('bot');
             if (view === 'audit') {
-                const headers = { 'Cache-Control': 'no-store', ...(session ? { 'Set-Cookie': session } : {}) };
+                const headers = { 'Cache-Control': 'no-store', Vary: 'Accept', ...(session ? { 'Set-Cookie': session } : {}) };
                 const reply = (data: unknown, status = 200) => Response.json(data, { status, headers });
                 if (request.method !== 'GET') return new Response(null, { status: 405, headers: { ...headers, Allow: 'GET' } });
+                if (/(?:^|,)\s*text\/html(?:\s*;|\s*,|\s*$)/i.test(request.headers.get('Accept') ?? '')) {
+                    const dashboard = new URLSearchParams({ audit: '1' });
+                    for (const key of ['bot', 'task', 'run', 'phase', 'mode', 'days', 'before', 'limit']) {
+                        const value = searchParams.get(key);
+                        if (value) dashboard.set(key, value);
+                    }
+                    return new Response(null, { status: 303, headers: { ...headers, Location: '/bots?' + dashboard } });
+                }
                 if (!session && !await demo.allowed(request)) return reply({ error: 'Sign in to view audit history.' }, 401);
                 try {
                     const report = audit.read(searchParams);
