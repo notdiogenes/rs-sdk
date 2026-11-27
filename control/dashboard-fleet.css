@@ -78,3 +78,24 @@ dialog h3{margin-top:12px}
 #inventory-items { margin: 10px 0; }
 #inventory-items th, #inventory-items td { white-space: normal; overflow-wrap: anywhere; }
 #inventory-items td:nth-child(2) { text-align: left; }
+
+#plan-dialog{max-width:min(680px,calc(100vw - 24px))}
+#plan-error{color:var(--muted);overflow-wrap:anywhere}
+#plan-error:empty{display:none}
+#plan-steps{display:grid;gap:10px;padding-left:23px;margin:0;min-width:0}
+.plan-step{border:1px solid var(--line);border-radius:8px;padding:10px;min-width:0}
+.plan-step::marker{color:var(--muted);font-weight:700}
+.plan-step-head,.plan-end,.plan-requirement{display:flex;flex-wrap:wrap;align-items:end;gap:8px}
+.plan-step-head>label,.plan-end>label,.plan-requirement>label{flex:1 1 8rem;min-width:0}
+.plan-step-head select,.plan-end select,.plan-end input,.plan-requirement select,.plan-requirement input{width:100%;min-width:0}
+.plan-order,.plan-toolbar{display:flex;flex-wrap:wrap;gap:6px}
+.plan-kind,.plan-card-status,.plan-readonly small{color:var(--muted)}
+.plan-kind{display:block;margin:6px 0}
+.plan-end,.plan-requirement{margin-top:8px}
+.plan-requirements{margin-top:8px}
+.plan-requirements>summary{cursor:pointer;color:var(--muted)}
+.plan-requirements>p{margin:8px 0}
+.plan-requirements>button{margin-top:8px}
+.plan-readonly strong,.plan-readonly small{display:block}
+.plan-readonly small{margin-top:4px}
+#plan-save{border-color:var(--gold)}

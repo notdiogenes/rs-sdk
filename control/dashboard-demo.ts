@@ -3,19 +3,12 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { createDashboardActivity, type ControllerStatus } from './dashboard-activity';
 import { botCredentials, hostedBotState, isFreshBotState } from './hosted-bot';
+import type { BotProfile } from './dashboard-roster';
+import { activity, activityIds, isActivity, type ActivityId } from './dashboard-task-catalog';
 
 const taskName = 'pickpocket-men';
-const taskLabels = {
-    "cooks-assistant": "Cook’s Assistant",
-    "restless-ghost": "The Restless Ghost",
-    'train-cows': 'Training melee on cows',
-    'pickpocket-men': 'Pickpocketing Men',
-    'train-hp-pickpocket': 'Training Hitpoints to 60',
-} as const;
-export function isBundledTask(name: unknown): name is keyof typeof taskLabels {
-    return typeof name === 'string' && Object.hasOwn(taskLabels, name);
-}
-type DemoTaskName = keyof typeof taskLabels;
+export const isBundledTask = isActivity;
+type DemoTaskName = ActivityId;
 const activityLabels: Record<string, string> = {
     'training-hitpoints': 'Training Hitpoints to 60',
     'hitpoints-goal-reached': 'Preparing to pickpocket',
@@ -32,7 +25,6 @@ const json = (body: unknown, status = 200) => Response.json(body, { status, head
 type Process = { process: Bun.Subprocess; startedAt: string; stopping?: boolean };
 type Event = { id: number; at: string; stage: string; [key: string]: unknown };
 type Exit = { at: string; exitCode: number };
-type RosterProfile = { name: string; directory: string };
 type Task = Process & { name: DemoTaskName; activity: string; recovery?: { since: string; resumeAt: number } };
 
 async function stopProcess(handle: Process | undefined, signal: 'SIGINT' | 'SIGTERM') {
@@ -43,7 +35,7 @@ async function stopProcess(handle: Process | undefined, signal: 'SIGINT' | 'SIGT
     try { await handle.process.exited; } finally { clearTimeout(deadline); }
 }
 
-export function dashboardDemo(runtimeDir: string, botsDir: string, configDir: string, token: string, roster?: RosterProfile) {
+export function dashboardDemo(runtimeDir: string, botsDir: string, configDir: string, token: string, roster?: BotProfile) {
     const writableDir = roster ? join(runtimeDir, 'managed-bots', roster.name) : join(runtimeDir, 'pickpocket-demo');
     const workingDir = roster?.directory ?? writableDir;
     const envFile = join(workingDir, 'bot.env');
@@ -59,6 +51,7 @@ export function dashboardDemo(runtimeDir: string, botsDir: string, configDir: st
     let taskExit: (Exit & { name: DemoTaskName }) | null = null;
     let busy = false;
     let taskStopped = false;
+    let startingPlanTask = false;
 
     function event(stage: string, data: Record<string, unknown> = {}) {
         events.push({ ...data, stage, id: nextEventId++, at: new Date().toISOString() });
@@ -146,18 +139,18 @@ export function dashboardDemo(runtimeDir: string, botsDir: string, configDir: st
         }).catch(() => { event('client-observer-failed'); });
     }
 
-    async function startTask(bot: string, name: DemoTaskName) {
+    async function startTask(bot: string, name: DemoTaskName, planned = false, skill?: string) {
         const credentials = await botCredentials(bot, workingDir);
-        const child = Bun.spawn([process.execPath, '--no-env-file', join(import.meta.dir, 'tasks', name === 'cooks-assistant' || name === 'restless-ghost'
-            ? `quests/${name}.ts` : `${name}.ts`)], {
+        const child = Bun.spawn([process.execPath, '--no-env-file', join(import.meta.dir, 'tasks', activity(name).script)], {
             cwd: writableDir,
             stdin: 'ignore', stdout: 'pipe', stderr: 'inherit',
             env: {
                 ...process.env, BOT_USERNAME: credentials.username, PASSWORD: credentials.password,
                 SERVER: 'rs-sdk.maxbittker.com', SHOW_CHAT: 'false', GATEWAY_DIRECT: 'false',
+                RS_ACTIVITY: name, RS_PLANNED: planned ? '1' : '0', RS_ACTIVITY_SKILL: skill ?? '',
             },
         });
-        const running: Task = { process: child, startedAt: new Date().toISOString(), name, activity: taskLabels[name] };
+        const running: Task = { process: child, startedAt: new Date().toISOString(), name, activity: activity(name).label };
         task = running;
         taskExit = null;
         taskStopped = false;
@@ -171,8 +164,8 @@ export function dashboardDemo(runtimeDir: string, botsDir: string, configDir: st
         }).catch(() => { event('task-observer-failed'); });
     }
 
-    async function state(bot: string | null) {
-        const sample = bot && await hostedBotState(bot, workingDir);
+    async function state(bot: string | null, allowUnregistered = false) {
+        const sample = bot && await hostedBotState(bot, workingDir, allowUnregistered);
         if (!sample || !sample.state?.inGame || !sample.state.player || sample.botStatus === 'dead') {
             return { bot, availability: 'offline' as const };
         }
@@ -201,7 +194,7 @@ export function dashboardDemo(runtimeDir: string, botsDir: string, configDir: st
 
     function status(bot: string | null): ControllerStatus {
         return {
-            bot, tasks: Object.keys(taskLabels),
+            bot, tasks: activityIds,
             client: client ? { startedAt: client.startedAt, stopping: Boolean(client.stopping) } : null,
             task: task ? { name: task.name, startedAt: task.startedAt, stopping: Boolean(task.stopping), activity: task.activity, recovery: task.recovery } : null,
             lastTask: taskExit && !taskStopped ? { name: taskExit.name, exitCode: taskExit.exitCode, finishedAt: taskExit.at } : null,
@@ -240,7 +233,7 @@ export function dashboardDemo(runtimeDir: string, botsDir: string, configDir: st
                 if (client || task) return json({ error: 'The demo client or task is already running' }, 409);
                 const bot = await provisionBot();
                 await botCredentials(bot, workingDir);
-                if (roster && (await state(bot)).availability === 'live') {
+                if (roster && (await state(bot, roster.created)).availability === 'live') {
                     return json({ error: 'This bot already has a live game client outside Fleet desk.' }, 409);
                 }
                 await mkdir(writableDir, { recursive: true, mode: 0o700 });
@@ -272,6 +265,48 @@ export function dashboardDemo(runtimeDir: string, botsDir: string, configDir: st
         } finally {
             busy = false;
         }
+    }
+
+    async function planCommand(bot: string, route: 'client/start' | 'task/stop', allowOffline = false) {
+        if (allowOffline && !client) return;
+        const request = new Request('http://127.0.0.1/' + route, {
+            headers: { Authorization: `Bearer ${token}` }, method: 'POST',
+        });
+        const response = await handle(request, route, true);
+        if (!response.ok) {
+            const body = await response.json().catch(() => ({}));
+            throw new Error(body.error ?? `Control command for ${bot} failed.`);
+        }
+    }
+
+    function planBackend(bot: string) {
+        return {
+            status: () => status(bot),
+            async prepare(signal: AbortSignal) {
+                for (let attempt = 0; !client; attempt++) {
+                    signal.throwIfAborted();
+                    try { await planCommand(bot, 'client/start'); }
+                    catch (error) {
+                        // A service reload can leave one last fresh gateway sample.
+                        if (attempt >= 3 || !(error instanceof Error) || !error.message.includes('outside Fleet desk')) throw error;
+                        await Bun.sleep(4000);
+                    }
+                }
+            },
+            async observe() {
+                const sample = await hostedBotState(bot, workingDir);
+                if (!client || client.stopping || client.process.exitCode !== null || !sample?.state?.inGame ||
+                    sample.botStatus === 'dead' || sample.botStatus === 'stale' || !isFreshBotState(sample.stateAge)) return null;
+                return sample.state;
+            },
+            async start(name: ActivityId, skill?: string) {
+                if (!client || task || busy || startingPlanTask) throw new Error('The managed client is busy.');
+                startingPlanTask = true;
+                try { await startTask(bot, name, true, skill); }
+                finally { startingPlanTask = false; }
+            },
+            stop: () => planCommand(bot, 'task/stop', true),
+        };
     }
 
     async function profile() {
@@ -318,5 +353,5 @@ export function dashboardDemo(runtimeDir: string, botsDir: string, configDir: st
             signal,
         }), path.slice('/v1/'.length), true));
 
-    return { handle, profile, status, allowed, recentEvents, ...actions };
+    return { handle, profile, status, allowed, recentEvents, planBackend, ...actions };
 }

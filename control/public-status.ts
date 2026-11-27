@@ -1,4 +1,3 @@
-import { readdir } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { hostedBotName, hostedBotState, isFreshBotState } from './hosted-bot';
 import { controllerRequest, dashboardActivity, handleActivity, type ControllerStatus } from './dashboard-activity';
@@ -11,6 +10,10 @@ import { dashboardFleetStats } from './dashboard-fleet-stats';
 import { dashboardQuestPoints, loadQuestCatalog } from './dashboard-quests';
 import { fleetPage } from './dashboard-fleet-page';
 import { dashboardDemo, isBundledTask } from './dashboard-demo';
+import { activity, planCatalog, trainingSkills } from './dashboard-task-catalog';
+import { parseSteps } from './dashboard-plan';
+import { createPlanManager, type Plan } from './dashboard-plan-runner';
+import { dashboardRoster, type BotProfile } from './dashboard-roster';
 
 const [botDirectory, controlConfig] = process.argv.slice(2);
 if (!botDirectory || !controlConfig) throw new Error('Expected the bot directory and control config directory');
@@ -25,6 +28,8 @@ const runtimeDir = join(dirname(configDir), 'rs-sdk-public-status');
 const diagnostics = dashboardDiagnostics(runtimeDir, token);
 const demo = dashboardDemo(runtimeDir, botsDir, configDir, token);
 const rosterControllers = new Map<string, ReturnType<typeof dashboardDemo>>();
+const botRoster = dashboardRoster(botsDir, runtimeDir);
+const plans = createPlanManager(runtimeDir, planBackend);
 const recordActivity = dashboardLastActivity(runtimeDir);
 const recordStats = dashboardFleetStats(runtimeDir);
 const sessions = dashboardSessions(runtimeDir, async () => {
@@ -44,6 +49,7 @@ export type Bot = {
     heartbeat?: number;
     inCombat?: boolean;
     control?: ControlActivity;
+    plan?: Pick<Plan, 'index' | 'status' | 'message'> & { length: number; label?: string };
 };
 export type ControlActivity = {
     bot: string;
@@ -91,9 +97,85 @@ async function botProfile(name: string) {
     if (demoProfile?.name.toLowerCase() === name.toLowerCase()) {
         return { name: demoProfile.name, directory: demoProfile.directory, worker: demo };
     }
-    const directory = join(botsDir, name);
-    if (!await Bun.file(join(directory, 'bot.env')).exists()) return null;
-    return { name, directory, worker: rosterControllers.get(name.toLowerCase()) };
+    const profile = (await botRoster.list()).find(entry => entry.name.toLowerCase() === name.toLowerCase());
+    return profile ? { ...profile, worker: rosterControllers.get(profile.name.toLowerCase()) } : null;
+}
+
+function getWorker(profile: BotProfile) {
+    const key = profile.name.toLowerCase();
+    let worker = rosterControllers.get(key);
+    if (!worker) {
+        worker = dashboardDemo(runtimeDir, botsDir, configDir, token, profile);
+        rosterControllers.set(key, worker);
+    }
+    return worker;
+}
+
+async function planBackend(name: string, signal: AbortSignal) {
+    const profile = await botProfile(name);
+    if (!profile) throw new Error('Bot profile not found.');
+    const primary = await primaryStatus().catch(() => null);
+    signal.throwIfAborted();
+    if (primary?.bot?.toLowerCase() === profile.name.toLowerCase()) {
+        const primaryActivity = dashboardActivity(primary);
+        if (primaryActivity.task || primaryActivity.starting || primary.client?.stopping) {
+            throw new Error('Stop the current activity before running a plan.');
+        }
+        if (primary.client) {
+            const response = await controllerRequest('/v1/client/stop', `Bearer ${token}`, {});
+            if (!response.ok) throw new Error('Could not release the idle primary client.');
+            const deadline = Date.now() + 25_000;
+            while (Date.now() < deadline) {
+                signal.throwIfAborted();
+                const sample = await hostedBotState(profile.name, profile.directory);
+                if (!sample?.state?.inGame || sample.botStatus === 'dead' || sample.botStatus === 'stale' || !isFreshBotState(sample.stateAge)) break;
+                await Bun.sleep(1000);
+            }
+        }
+    }
+    signal.throwIfAborted();
+    const worker = profile.worker ?? getWorker(profile);
+    if (workerStatus(profile.name, worker)?.starting) throw new Error('Wait for the existing activity to finish starting.');
+    return worker.planBackend(profile.name);
+}
+
+async function handlePlan(request: Request, name: string | null, session?: string) {
+    const headers = { 'Cache-Control': 'no-store', ...(session ? { 'Set-Cookie': session } : {}) };
+    const reply = (body: object, status = 200) => Response.json(body, { status, headers });
+    if (!session && !await demo.allowed(request)) return reply({ error: 'Sign in to manage activity plans.' }, 401);
+    if (request.method === 'GET') {
+        const profile = name === null ? null : await botProfile(name);
+        if (name !== null && !profile) return reply({ error: 'Bot profile not found.' }, 404);
+        return reply({ catalog: planCatalog, skills: trainingSkills, plan: profile && plans.get(profile.name) });
+    }
+    if (request.method !== 'POST') return new Response(null, { status: 405, headers: { ...headers, Allow: 'GET, POST' } });
+    const body = await request.json().catch(() => null);
+    if (!body || typeof body !== 'object') return reply({ error: 'Invalid activity plan.' }, 400);
+    if (name === null) {
+        if (body.action !== 'create') return reply({ error: 'Choose a bot to manage.' }, 400);
+        try {
+            const steps = parseSteps(body.steps);
+            const profile = await botRoster.create(body.name, (await demo.profile())?.name);
+            const plan = plans.start(profile.name, steps);
+            expiresAt = 0;
+            return reply({ bot: profile.name, plan }, 202);
+        } catch (error) {
+            return reply({ error: error instanceof Error ? error.message : 'Could not create the bot.' }, 400);
+        }
+    }
+    const profile = await botProfile(name);
+    if (!profile) return reply({ error: 'Bot profile not found.' }, 404);
+    try {
+        let plan;
+        if (body.action === 'pause') plan = await plans.pause(profile.name);
+        else if (body.action === 'resume') plan = plans.resume(profile.name);
+        else if (body.action === 'start') plan = plans.start(profile.name, parseSteps(body.steps));
+        else return reply({ error: 'Choose start, pause, or resume.' }, 400);
+        expiresAt = 0;
+        return reply({ bot: profile.name, plan }, body.action === 'pause' ? 200 : 202);
+    } catch (error) {
+        return reply({ error: error instanceof Error ? error.message : 'Could not update the plan.' }, 400);
+    }
 }
 
 function workerStatus(name: string, worker?: ReturnType<typeof dashboardDemo>) {
@@ -116,6 +198,14 @@ async function handleBotActivity(request: Request, name: string, session?: strin
         const isPrimary = primary.bot?.toLowerCase() === profile.name.toLowerCase();
         const primaryActive = isPrimary && (primary.client || dashboardActivity(primary).starting);
         const body = request.method === 'POST' ? await request.clone().json().catch(() => null) : null;
+        if (body?.action && plans.active(profile.name)) {
+            if (body.action === 'stop') {
+                await plans.pause(profile.name);
+                expiresAt = 0;
+                return reply({ ok: true }, 200);
+            }
+            return reply({ error: 'Pause the running plan before starting another activity.' }, 409);
+        }
         const bundled = body?.action === 'start' && isBundledTask(body.task) && !primary.tasks.includes(body.task);
         if (primaryActive && bundled) {
             return reply({ error: 'Stop the primary game client before starting this bundled activity.' }, 409);
@@ -129,11 +219,7 @@ async function handleBotActivity(request: Request, name: string, session?: strin
             }
             return response;
         }
-        let worker = profile.worker;
-        if (!worker) {
-            worker = dashboardDemo(runtimeDir, botsDir, configDir, token, profile);
-            rosterControllers.set(profile.name.toLowerCase(), worker);
-        }
+        const worker = profile.worker ?? getWorker(profile);
         return worker.handleActivity(request, token, session, profile.name);
     } catch {
         return reply({ error: 'The bot controller is temporarily unavailable.' }, 503);
@@ -194,14 +280,16 @@ async function botDiagnostics(name: string) {
     };
 }
 
-async function listBots(directory: string) {
-    const entries = await readdir(directory, { withFileTypes: true });
-    const names = await Promise.all(entries.filter(entry => entry.isDirectory() && hostedBotName.test(entry.name))
-        .map(async ({ name }) => await Bun.file(join(directory, name, 'bot.env')).exists() ? name : undefined));
-    return names.filter(name => name !== undefined).sort((a, b) => a.localeCompare(b));
-}
-
 async function botStatus(name: string, directory: string, control?: ControlActivity): Promise<Bot> {
+    const plan = plans.get(name);
+    const work = plan?.work ?? plan?.steps[plan.index];
+    const planLabel = work && activity(work.task).label;
+    const summary = plan ? { index: plan.index, length: plan.steps.length, status: plan.status, message: plan.message, label: planLabel } : undefined;
+    if (plan?.status === 'running' && !control?.running) {
+        control = { bot: name, label: planLabel ?? 'Starting plan', running: true, transitioning: true };
+    } else if (plan?.status === 'blocked' && !control?.running) {
+        control = { bot: name, label: 'Plan blocked', running: false, failed: true };
+    }
     const task = control?.label;
     const row = (fields: Omit<Bot, 'name' | 'lastActivity' | 'stats'>, observation?: BotObservation,
         state?: BotWorldState): Bot => {
@@ -209,7 +297,7 @@ async function botStatus(name: string, directory: string, control?: ControlActiv
         let stats;
         try { lastActivity = recordActivity(name, observation).lastActivity; } catch { /* Show the other status fields. */ }
         try { stats = recordStats(name, state, fields.heartbeat); } catch { /* Show the other status fields. */ }
-        return { name, ...fields, lastActivity, stats, control };
+        return { name, ...fields, lastActivity, stats, control, plan: summary };
     };
     try {
         const result = await hostedBotState(name, directory);
@@ -238,14 +326,14 @@ async function botStatus(name: string, directory: string, control?: ControlActiv
     return row({ status: 'Unknown', activity: task ?? '—' });
 }
 
-async function collect(directory: string): Promise<Snapshot> {
-    const [names, primary, demoProfile] = await Promise.all([
-        listBots(directory), primaryStatus().catch(() => null), demo.profile().catch(() => null),
+async function collect(): Promise<Snapshot> {
+    const [profiles, primary, demoProfile] = await Promise.all([
+        botRoster.list(), primaryStatus().catch(() => null), demo.profile().catch(() => null),
     ]);
-    const roster = new Map(names.map(name => [name.toLowerCase(), { name, directory: join(directory, name) }]));
+    const roster = new Map<string, BotProfile>(profiles.map(profile => [profile.name.toLowerCase(), profile]));
     if (demoProfile) roster.set(demoProfile.name.toLowerCase(), demoProfile);
-    const profiles = [...roster.values()].sort((a, b) => a.name.localeCompare(b.name));
-    const bots = await Promise.all(profiles.map(profile => {
+    const sorted = [...roster.values()].sort((a, b) => a.name.localeCompare(b.name));
+    const bots = await Promise.all(sorted.map(profile => {
         const worker = demoProfile?.name === profile.name ? demo : rosterControllers.get(profile.name.toLowerCase());
         const controller = primary && usesPrimary(profile.name, primary, worker) ? dashboardActivity(primary)
             : workerStatus(profile.name, worker);
@@ -254,27 +342,28 @@ async function collect(directory: string): Promise<Snapshot> {
     return { bots, checkedAt: new Date().toISOString() };
 }
 
-async function snapshot(directory: string) {
+async function snapshot() {
     if (cached && Date.now() < expiresAt) return cached;
-    return refreshSnapshot(directory);
+    return refreshSnapshot();
 }
 
-function refreshSnapshot(directory: string) {
-    return refreshing ??= collect(directory).then(result => {
+function refreshSnapshot() {
+    return refreshing ??= collect().then(result => {
         cached = result;
         expiresAt = Date.now() + refreshSeconds * 1000;
         return result;
     }).finally(() => { refreshing = undefined; });
 }
 
-const collectInBackground = () => void refreshSnapshot(botsDir).catch(() => console.error('Dashboard bot sample failed'));
+const collectInBackground = () => void refreshSnapshot().catch(() => console.error('Dashboard bot sample failed'));
 collectInBackground();
 setInterval(collectInBackground, refreshSeconds * 1000).unref();
+plans.restore();
 
 Bun.serve({
     hostname: '127.0.0.1',
     port: 3721,
-    maxRequestBodySize: 1024,
+    maxRequestBodySize: 16_384,
     async fetch(request) {
         const { pathname, searchParams } = new URL(request.url);
         if (pathname === '/bots/activity') {
@@ -289,6 +378,10 @@ Bun.serve({
             const session = await sessions.authenticate(request).catch(() => undefined);
             const view = searchParams.get('view');
             const bot = searchParams.get('bot');
+            if (view === 'plan') {
+                try { return await handlePlan(request, bot, session); }
+                catch { return Response.json({ error: 'Activity plans are temporarily unavailable.' }, { status: 503 }); }
+            }
             if (view === 'inventory') {
                 const headers: Record<string, string> = { 'Cache-Control': 'no-store' };
                 if (request.method !== 'GET') return new Response(null, { status: 405, headers: { ...headers, Allow: 'GET' } });
@@ -322,7 +415,7 @@ Bun.serve({
                 if (request.method !== 'GET') return new Response(null, { status: 405, headers: { ...headers, Allow: 'GET' } });
                 if (!session) return Response.json({ error: 'Sign in to view this dashboard data.' }, { status: 401, headers });
                 try {
-                    const current = view === 'diagnostics' ? null : await snapshot(botsDir);
+                    const current = view === 'diagnostics' ? null : await snapshot();
                     const payload = current === null ? await diagnostics() : view === 'quests'
                         ? {
                             scores: await dashboardQuestPoints(current.bots.map(({ name, stats }) => ({ name, score: stats?.journal?.score }))),
@@ -346,7 +439,7 @@ Bun.serve({
             return new Response(null, { status: 405, headers: { Allow: 'GET, HEAD' } });
         }
         let data: Snapshot | undefined;
-        try { data = await snapshot(botsDir); } catch { /* display the unavailable page */ }
+        try { data = await snapshot(); } catch { /* display the unavailable page */ }
         const nonce = crypto.randomUUID();
         return new Response(request.method === 'HEAD' ? null : fleetPage({ nonce, data, questCatalog, fleetStyle, controls, refreshSeconds, displayTimeZone }), {
             status: data ? 200 : 503,

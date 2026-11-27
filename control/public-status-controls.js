@@ -20,16 +20,12 @@
     const password = signInForm.querySelector('#dashboard-password');
     const signInMessage = signInForm.querySelector('[role="status"]');
     const signInSubmit = signInForm.querySelector('[type="submit"]');
-    const tasks = form.querySelector('select');
-    const taskField = form.querySelector('#activity-task');
     const title = form.querySelector('h2');
     const message = form.querySelector('[role="status"]');
     const submit = form.querySelector('button[type="submit"]');
     const close = form.querySelector('#activity-close');
     let refresh;
     let selected;
-    let action;
-    let dialogVersion = 0;
     let signedIn = false;
     let configured = true;
     let pendingButton;
@@ -521,14 +517,11 @@
             }
             clearTimeout(refresh);
             selected = button;
-            action = button.dataset.action;
             title.textContent = button.textContent + ' for ' + button.dataset.bot;
-            submit.textContent = action === 'start' ? 'Load activities' : 'Stop activity';
+            submit.textContent = button.textContent;
             submit.disabled = false;
-            taskField.hidden = true;
             message.textContent = '';
             dialog.showModal();
-            if (action === 'start') form.requestSubmit();
         });
     }
     close.addEventListener('click', () => dialog.close());
@@ -536,9 +529,7 @@
         if (close.disabled) event.preventDefault();
     });
     dialog.addEventListener('close', () => {
-        dialogVersion++;
         form.reset();
-        tasks.replaceChildren();
         if (!signIn.open && !dialog.open) scheduleRefresh();
     });
 
@@ -546,7 +537,7 @@
         const headers = {};
         const options = {
             headers, credentials: 'same-origin', cache: 'no-store', redirect: 'error',
-            signal: AbortSignal.timeout(payload?.action === 'stop' ? 38000 : 15000),
+            signal: AbortSignal.timeout(['stop', 'pause'].includes(payload?.action) ? 45000 : 15000),
         };
         if (payload !== undefined) {
             headers['Content-Type'] = 'application/json';
@@ -653,101 +644,294 @@
         if (!signIn.open) scheduleRefresh();
     });
 
-    function updateRow(state) {
-        if (state.bot !== selected.dataset.bot) return;
-        const running = state.task || state.starting;
-        selected.dataset.action = running ? 'stop' : 'start';
-        selected.textContent = running ? 'Stop activity' : 'Start activity';
-        const activity = state.task?.activity ?? state.task?.name?.replaceAll('-', ' ');
-        selected.closest('[data-bot-row]').querySelector('[data-activity]').textContent =
-            activity ? (state.task.stopping ? 'Stopping ' + activity : activity)
-                : state.starting ? 'Starting ' + state.starting.replaceAll('-', ' ')
-                    : state.startError ? 'Activity could not start' : '—';
-    }
-
-    function activityPath(bot) {
-        return '/bots/activity?bot=' + encodeURIComponent(bot);
-    }
-
-    async function watchStart(version, bot) {
-        try {
-            while (dialog.open && dialogVersion === version) {
-                const state = await request(activityPath(bot));
-                if (dialogVersion !== version) return;
-                if (state.bot !== bot) throw new Error('The configured bot changed.');
-                updateRow(state);
-                if (!state.starting) {
-                    message.textContent = state.startError || (state.task ? 'Activity started.' : 'The activity is no longer running.');
-                    return;
-                }
-                await new Promise(resolve => setTimeout(resolve, 1600));
-            }
-        } catch (error) {
-            if (dialogVersion === version) message.textContent = error.message;
-        }
-    }
-
     form.addEventListener('submit', async event => {
         event.preventDefault();
         if (submit.disabled) return;
-        submit.disabled = true;
-        close.disabled = true;
-        message.textContent = 'Checking controller status…';
-        let completed = false;
-        let watching = false;
+        submit.disabled = close.disabled = true;
+        message.textContent = 'Stopping activity…';
         try {
-            const path = activityPath(selected.dataset.bot);
-            const state = await request(path);
-            if (state.bot !== selected.dataset.bot) {
-                throw new Error('The configured bot changed. Close this dialog and refresh the dashboard.');
-            }
-            if (action === 'stop') {
-                if (state.task || state.starting) {
-                    message.textContent = 'Stopping activity…';
-                    await request(path, { bot: state.bot, action: 'stop' });
-                }
-                message.textContent = state.task || state.starting ? 'Activity stopped.' : 'There is no activity to stop.';
-                updateRow({ ...state, task: null, starting: null, startError: null });
-            } else {
-                if (state.task || state.starting) {
-                    updateRow(state);
-                    completed = true;
-                    message.textContent = 'An activity is already running.';
-                    return;
-                }
-                const names = Array.isArray(state.tasks)
-                    ? state.tasks.filter(name => typeof name === 'string' && /^[a-z][a-z0-9-]{0,63}$/.test(name))
-                    : [];
-                if (names.length === 0) throw new Error('No activities are configured for this bot.');
-                if (taskField.hidden || !names.includes(tasks.value)) {
-                    tasks.replaceChildren(...names.map(name => new Option(name.replaceAll('-', ' '), name)));
-                    taskField.hidden = false;
-                    submit.textContent = 'Start activity';
-                    message.textContent = 'Choose an activity, then select Start activity.';
-                    tasks.focus();
-                    return;
-                }
-                const task = tasks.value;
-                await request(path, { bot: state.bot, action: 'start', task });
-                message.textContent = state.client ? 'Starting activity…' : 'Starting the game client and activity…';
-                updateRow({ ...state, starting: task, startError: null });
-                watching = true;
-                void watchStart(dialogVersion, state.bot);
-                return;
-            }
-            completed = true;
+            const bot = selected.dataset.bot;
+            await request('/bots/activity?bot=' + encodeURIComponent(bot), { bot, action: 'stop' });
+            window.location.reload();
         } catch (error) {
             if (error.status === 401) {
                 setSignedIn(false);
                 dialog.close();
                 openSignIn(selected);
-                return;
+            } else {
+                message.textContent = error.message;
             }
-            message.textContent = error.message;
         } finally {
-            submit.disabled = completed || watching;
-            close.disabled = false;
+            submit.disabled = close.disabled = false;
         }
     });
+
+    const planDialog = document.querySelector('#plan-dialog');
+    const planForm = planDialog.querySelector('form');
+    const planTitle = planDialog.querySelector('#plan-title');
+    const planName = planDialog.querySelector('#plan-bot-name');
+    const planNameField = planDialog.querySelector('#plan-name-field');
+    const planError = planDialog.querySelector('#plan-error');
+    const planSteps = planDialog.querySelector('#plan-steps');
+    const planAdd = planDialog.querySelector('#plan-add');
+    const planEdit = planDialog.querySelector('#plan-edit');
+    const planSave = planDialog.querySelector('#plan-save');
+    const planClose = planDialog.querySelector('#plan-close');
+    let planBot = null;
+    let planState = null;
+    let planCatalog = [];
+    let planSkills = [];
+    let draft = [];
+    let editing = false;
+    let planChanged = false;
+    let planVersion = 0;
+    let planWatch;
+
+    const planUrl = () => '/bots/activity?view=plan' + (planBot ? '&bot=' + encodeURIComponent(planBot) : '');
+    const metaFor = id => planCatalog.find(entry => entry.id === id);
+    const labelFor = id => metaFor(id)?.label || (id === 'skip-tutorial' ? 'Skip Tutorial Island' : id);
+    const questChoices = () => planCatalog.filter(entry => entry.category === 'Quests');
+    const finishLabel = finish => finish.type === 'level' ? `Until ${finish.skill} ${finish.level}`
+        : finish.type === 'minutes' ? `${finish.minutes} min`
+        : finish.type === 'forever' ? 'Indefinite grind' : 'Until complete';
+    const requirementLabel = req => req.type === 'quest' ? labelFor(req.task) : `${req.skill} ${req.level}`;
+
+    function node(tag, text, className) {
+        const element = document.createElement(tag);
+        if (text) element.textContent = text;
+        if (className) element.className = className;
+        return element;
+    }
+
+    function planButton(text, fn, title = text) {
+        const button = node('button', text);
+        button.type = 'button';
+        button.title = title;
+        button.setAttribute('aria-label', title);
+        button.addEventListener('click', fn);
+        return button;
+    }
+
+    function planField(label, input) {
+        const field = node('label', label);
+        field.append(input);
+        return field;
+    }
+
+    function planSelect(values, value, change) {
+        const select = node('select');
+        values.forEach(([id, text]) => select.append(new Option(text, id)));
+        select.value = value;
+        select.addEventListener('change', () => change(select.value));
+        return select;
+    }
+
+    function planNumber(value, min, max, change) {
+        const input = node('input');
+        input.type = 'number';
+        input.required = true;
+        input.min = String(min);
+        input.max = String(max);
+        input.value = Number.isFinite(value) ? String(value) : '';
+        input.addEventListener('input', () => change(input.valueAsNumber));
+        return input;
+    }
+
+    function defaultStep(task = planCatalog[0]?.id) {
+        return { task, requirements: [], finish: metaFor(task)?.usage === 'once'
+            ? { type: 'complete' } : { type: 'minutes', minutes: 30 } };
+    }
+
+    function renderRequirement(item, step, index) {
+        const row = node('div', '', 'plan-requirement');
+        const kind = planSelect([['level', 'Skill level'], ['quest', 'Quest']], item.type, type => {
+            step.requirements[index] = type === 'quest'
+                ? { type, task: questChoices().find(q => q.id !== step.task)?.id }
+                : { type, skill: planSkills[0], level: 10 };
+            renderPlan();
+        });
+        const field = item.type === 'quest'
+            ? planField('Quest', planSelect(questChoices().filter(q => q.id !== step.task)
+                .map(q => [q.id, q.label]), item.task, task => { item.task = task; }))
+            : planField('Skill', planSelect(planSkills.map(skill => [skill, skill]), item.skill, skill => { item.skill = skill; }));
+        row.append(planField('Requirement type', kind), field);
+        if (item.type === 'level') row.append(planField('Minimum level', planNumber(item.level, 1, 99, value => { item.level = value; })));
+        row.append(planButton('Remove', () => { step.requirements.splice(index, 1); renderPlan(); }, 'Remove this requirement'));
+        return row;
+    }
+
+    function renderStep(step, index) {
+        const meta = metaFor(step.task);
+        const row = node('li', '', 'plan-step');
+        const select = node('select');
+        for (const category of [...new Set(planCatalog.map(entry => entry.category))]) {
+            const group = node('optgroup');
+            group.label = category;
+            planCatalog.filter(entry => entry.category === category).forEach(entry => group.append(new Option(entry.label, entry.id)));
+            select.append(group);
+        }
+        select.value = step.task;
+        select.addEventListener('change', () => {
+            const replacement = defaultStep(select.value);
+            replacement.requirements = step.requirements.filter(req => req.type !== 'quest' || req.task !== replacement.task);
+            draft[index] = replacement;
+            renderPlan();
+        });
+        const ordering = node('div', '', 'plan-order');
+        for (const [symbol, offset, title] of [['↑', -1, 'Move activity up'], ['↓', 1, 'Move activity down']]) {
+            const button = planButton(symbol, () => {
+                const next = index + offset;
+                [draft[index], draft[next]] = [draft[next], draft[index]];
+                renderPlan();
+            }, title);
+            button.disabled = index + offset < 0 || index + offset >= draft.length;
+            ordering.append(button);
+        }
+        ordering.append(planButton('Remove', () => { draft.splice(index, 1); renderPlan(); }, 'Remove this activity'));
+        const head = node('div', '', 'plan-step-head');
+        head.append(planField('Activity', select), ordering);
+        row.append(head, node('small', meta?.usage === 'once' ? 'One-time quest' : 'Repeatable activity', 'plan-kind'));
+        if (meta?.usage === 'repeatable') {
+            const stopRow = node('div', '', 'plan-end');
+            const modes = [['minutes', 'Time spent'], ...(meta.trains?.length ? [['level', 'Skill level']] : []), ['forever', 'Indefinite grind']];
+            stopRow.append(planField('Finish when', planSelect(modes, step.finish.type, type => {
+                step.finish = type === 'minutes' ? { type, minutes: 30 }
+                    : type === 'level' ? { type, skill: meta.trains[0], level: 40 } : { type };
+                renderPlan();
+            })));
+            if (step.finish.type === 'minutes') {
+                stopRow.append(planField('Minutes', planNumber(step.finish.minutes, 1, 10080, value => { step.finish.minutes = value; })));
+            } else if (step.finish.type === 'level') {
+                stopRow.append(planField('Skill', planSelect(meta.trains.map(skill => [skill, skill]), step.finish.skill, skill => { step.finish.skill = skill; })),
+                    planField('Target level', planNumber(step.finish.level, 1, 99, value => { step.finish.level = value; })));
+            }
+            row.append(stopRow);
+        }
+        const requirements = node('details', '', 'plan-requirements');
+        requirements.open = step.requirements.length > 0;
+        requirements.append(node('summary', 'Prerequisites' + (step.requirements.length ? ` (${step.requirements.length} added)` : '')));
+        if (meta?.requirements?.length) requirements.append(node('p', 'Automatic · ' + meta.requirements.map(requirementLabel).join(' · ')));
+        step.requirements.forEach((item, i) => requirements.append(renderRequirement(item, step, i)));
+        const add = planButton('Add prerequisite', () => {
+            step.requirements.push({ type: 'level', skill: planSkills[0], level: 10 });
+            renderPlan();
+        });
+        add.disabled = step.requirements.length >= 4;
+        requirements.append(add);
+        row.append(requirements);
+        return row;
+    }
+
+    function renderPlan() {
+        planNameField.hidden = !!planBot || !editing;
+        planName.disabled = planNameField.hidden;
+        const list = editing ? draft : planState?.steps ?? [];
+        planSteps.replaceChildren(...list.map((step, index) => {
+            if (editing) return renderStep(step, index);
+            const row = node('li', '', 'plan-step plan-readonly');
+            row.append(node('strong', labelFor(step.task)), node('small', finishLabel(step.finish)));
+            const state = index < planState.index ? 'Done' : index === planState.index ? 'Current' : 'Queued';
+            row.append(node('small', state, 'plan-kind'));
+            return row;
+        }));
+        planAdd.hidden = !editing;
+        planAdd.disabled = draft.length >= 12;
+        planEdit.hidden = editing || !planState || planState.status === 'running';
+        planEdit.textContent = planState?.status === 'complete' ? 'New plan' : 'Edit as new plan';
+        planSave.hidden = !editing && (!planState || planState.status === 'complete');
+        planSave.disabled = editing && !draft.length;
+        planSave.textContent = editing ? planBot ? 'Start plan' : 'Create bot and start'
+            : planState?.status === 'running' ? 'Pause plan' : 'Resume plan';
+        if (!editing && planState) {
+            const work = planState.work;
+            const progress = work?.finish.type === 'minutes' ? ` · ${Math.floor(planState.elapsedMs / 60000)} of ${work.finish.minutes} min` : '';
+            planError.textContent = planState.message ||
+                (work && planState.status === 'running'
+                    ? `${work.inserted ? 'Prerequisite · ' : ''}${labelFor(work.task)}${progress}${work.reason ? ' · ' + work.reason : ''}`
+                    : planState.status === 'running' ? 'Waiting for live game state…'
+                        : planState.status === 'complete' ? 'Plan complete.' : 'Plan paused.');
+        }
+    }
+
+    async function refreshPlan(version, initialLoad = false) {
+        try {
+            const data = await request(planUrl());
+            if (version !== planVersion || !planDialog.open) return;
+            planCatalog = data.catalog;
+            planSkills = data.skills;
+            planState = data.plan;
+            if (initialLoad) {
+                editing = !planState;
+                draft = editing ? [defaultStep()] : [];
+                planError.textContent = '';
+            }
+            renderPlan();
+            if (!editing && planState?.status === 'running') planWatch = setTimeout(() => void refreshPlan(version), 3000);
+        } catch (error) {
+            if (version === planVersion) planError.textContent = error.message;
+        }
+    }
+
+    for (const button of document.querySelectorAll('#new-bot, [data-plan-bot]')) {
+        button.addEventListener('click', async () => {
+            await sessionReady;
+            if (!signedIn) { openSignIn(button); return; }
+            clearTimeout(refresh);
+            planBot = button.dataset.planBot || null;
+            planState = null;
+            draft = [];
+            editing = planChanged = false;
+            planName.value = '';
+            planTitle.textContent = planBot ? `Activity plan · ${planBot}` : 'New bot';
+            planError.textContent = 'Loading activities…';
+            renderPlan();
+            planDialog.showModal();
+            void refreshPlan(++planVersion, true);
+        });
+    }
+
+    planAdd.addEventListener('click', () => { draft.push(defaultStep()); renderPlan(); });
+    planEdit.addEventListener('click', () => {
+        draft = planState.status === 'complete' ? [defaultStep()] : structuredClone(planState.steps);
+        editing = true;
+        planError.textContent = '';
+        renderPlan();
+    });
+    planClose.addEventListener('click', () => planDialog.close());
+    planDialog.addEventListener('cancel', event => { if (planClose.disabled) event.preventDefault(); });
+    planDialog.addEventListener('close', () => {
+        planVersion++;
+        clearTimeout(planWatch);
+        if (planChanged) window.location.reload();
+        else scheduleRefresh();
+    });
+    planForm.addEventListener('submit', async event => {
+        event.preventDefault();
+        if (planSave.disabled) return;
+        if (editing && draft.some((step, index) => step.finish.type === 'forever' && index !== draft.length - 1)) {
+            planError.textContent = 'Move the indefinite grind to the end of the plan.';
+            return;
+        }
+        clearTimeout(planWatch);
+        const version = ++planVersion;
+        planSave.disabled = planClose.disabled = true;
+        const action = editing ? planBot ? 'start' : 'create' : planState.status === 'running' ? 'pause' : 'resume';
+        try {
+            const data = await request(planUrl(), editing ? { action, steps: draft, ...(!planBot ? { name: planName.value.trim() } : {}) } : { action });
+            if (version !== planVersion) return;
+            planBot = data.bot;
+            planState = data.plan;
+            planChanged = true;
+            planTitle.textContent = `Activity plan · ${planBot}`;
+            editing = false;
+            renderPlan();
+            if (planState?.status === 'running') planWatch = setTimeout(() => void refreshPlan(version), 1500);
+        } catch (error) {
+            if (version === planVersion) planError.textContent = error.message;
+        } finally {
+            if (version === planVersion) planSave.disabled = planClose.disabled = false;
+        }
+    });
+
     installFleet();
 })();

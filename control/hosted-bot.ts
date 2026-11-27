@@ -22,13 +22,13 @@ export async function botCredentials(bot: string, directory: string) {
     return { username, password };
 }
 
-export async function hostedBotState(bot: string, directory: string) {
+export async function hostedBotState(bot: string, directory: string, allowUnregistered = false) {
     const { username, password } = await botCredentials(bot, directory);
     const url = new URL(`/state/${encodeURIComponent(username)}`, 'https://rs-sdk.maxbittker.com');
     // The hosted engine relays the query string to the gateway. Never log this URL.
     url.searchParams.set('password', password);
     const response = await fetch(url, { signal: AbortSignal.timeout(7000), redirect: 'error' });
-    if (response.status === 404) return null;
+    if (response.status === 404 || (allowUnregistered && response.status === 401)) return null;
     if (!response.ok) throw new Error('Game gateway request failed');
     return await response.json() as {
         state: BotWorldState | null;

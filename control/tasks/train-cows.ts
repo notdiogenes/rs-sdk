@@ -1,7 +1,9 @@
 import { runScript } from '../../sdk/runner';
 import { readFileSync } from 'node:fs';
 
+const planned = process.env.RS_PLANNED === '1';
 const melee = ['Attack', 'Strength', 'Defence'] as const;
+const focus = melee.find(skill => skill === process.env.RS_ACTIVITY_SKILL);
 const cow = /^(cow|cow calf)$/i;
 const swords = ['Adamant longsword', 'Mithril longsword', 'Steel longsword'];
 const swordRequirements = [30, 20, 5] as const;
@@ -91,7 +93,7 @@ const result = await runScript(async ({ sdk, bot }) => {
         await equipBest();
         await buryBones();
         const before = stats();
-        if (before.every(skill => skill.baseLevel >= 99)) {
+        if (!planned && before.every(skill => skill.baseLevel >= 99)) {
             console.log('Confirmed 99/99/99', before);
             return;
         }
@@ -103,7 +105,7 @@ const result = await runScript(async ({ sdk, bot }) => {
             else if (player.hp <= 6) throw new Error('Low HP and out of food');
         }
 
-        const skill = before.filter(s => s.baseLevel < 99).sort((a, b) => a.experience - b.experience)[0];
+        const skill = before.find(s => s.name === focus) ?? before.filter(s => s.baseLevel < 99).sort((a, b) => a.experience - b.experience)[0] ?? (planned ? before[0] : undefined);
         if (!skill) throw new Error('Could not select the next melee skill');
         const combat = sdk.getState()?.combatStyle;
         const style = combat?.styles.find(s => s.trainsSkills.includes(skill.name));

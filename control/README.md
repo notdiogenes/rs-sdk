@@ -205,10 +205,44 @@ a fresh location, run `smoke-move` once, and verify the new coordinates.
 
 ### Fleet desk activity and inventory controls
 
-Every roster card has its own activity picker, stop button, and **Current
-inventory** button. A signed-in operator can start an allowlisted activity and
-Fleet desk will start that bot's game client if needed. Stopping an activity
-keeps its client logged in. A roster bot with a game client running outside
+Choose **New bot** to create a hosted profile and start its first activity plan,
+or **Plan activities** on a roster card. Leave the name blank to generate one.
+The dashboard stores new profiles under its private runtime `bots/` directory
+and starts their lite clients. A first-login setup step verifies arrival in
+Lumbridge before the requested activities start.
+
+Plans are ordered. Quests finish when the live journal confirms completion.
+Repeatable activities can run for a duration, until a supported skill reaches
+a target level, or indefinitely as the last step. Add quest or level
+prerequisites to any step. The controller evaluates built-in and added
+requirements before launching a step. For example, it uses Men, Guards, and
+Knights to close a Thieving gap as those targets become available, and trains
+Hitpoints separately if the Heroes plan requires it. The Heroes activity has
+an 80 Hitpoints floor in the planner.
+
+A paused plan retains its current step and credited time. Timed steps count
+time while their activity and the game client are running, including travel
+and recovery. Plans and credited time persist in `activity-plans.sqlite`.
+After a service restart, an active plan reconnects and checks live state before
+continuing. A blocked plan shows why it stopped and can be resumed. Editing a
+saved plan starts a new plan. Pausing leaves its managed client online.
+
+Use `GET /bots/activity?view=plan` to fetch the catalog, or add `&bot=NAME` to
+read a saved plan. A signed-in session or control Bearer credential can POST
+`{ "action": "start", "steps": [...] }` with the bot query, or
+`{ "action": "create", "name": "", "steps": [...] }` without it. Existing
+plans also accept `pause` and `resume`. The catalog specifies each activity’s
+finish modes via `usage` and `trains`. Example step:
+
+```json
+{
+  "task": "pickpocket-men",
+  "finish": { "type": "minutes", "minutes": 30 },
+  "requirements": [{ "type": "quest", "task": "cooks-assistant" }]
+}
+```
+
+Single-task HTTPS controls still work. A roster bot running a client outside
 Fleet desk must sign out of that client before Fleet desk can launch one.
 
 The inventory dialog reads the selected bot's fresh backpack contents from
@@ -216,10 +250,9 @@ game state. It reports offline or stale state when a current snapshot is
 unavailable. Use `GET /bots/activity?view=inventory&bot=NAME` with a dashboard
 session, or use `/bots/activity?bot=NAME` for bot-specific task controls.
 `GET /bots/activity?view=diagnostics&bot=NAME` accepts the dashboard session
-or control Bearer credential and reads the selected bot's diagnostics. The
-primary controller's existing task list continues to apply to its configured
-bot. Other roster bots can use the bundled activities and maintain separate
-client and task processes.
+or control Bearer credential and reads the selected bot's diagnostics. Fleet desk uses a separate client
+and task process per bot. It can take over from an idle primary controller
+client when starting a plan.
 
 ### Separate Lumbridge pickpocket demo
 

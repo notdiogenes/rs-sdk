@@ -56,12 +56,16 @@ function card(bot: Bot, category: Group, reason: string, managed: ControlActivit
     const effect = last ? `<time datetime="${escape(last.at)}">${activityClock.format(new Date(last.at))}</time>` : '—';
     const watch = bot.status === 'Online'
         ? `<a href="https://maxbittker.github.io/rs-world/?follow=${encodeURIComponent(bot.name)}" target="_blank" rel="noopener">Watch ↗</a>` : '';
-    const activityButton = `<button type="button" data-bot="${name}" data-action="${managed?.running ? 'stop' : 'start'}">${managed?.running ? 'Stop activity' : 'Start activity'}</button>`;
+    const activityButton = managed?.running
+        ? `<button type="button" data-bot="${name}" data-action="stop">${bot.plan?.status === 'running' ? 'Pause plan' : 'Stop activity'}</button>` : '';
+    const planButton = `<button type="button" data-plan-bot="${name}">${bot.plan ? 'View plan' : 'Plan activities'}</button>`;
+    const planDetail = bot.plan && bot.plan.status !== 'complete'
+        ? `<small class="plan-card-status" title="${escape(bot.plan.message ?? '')}">Plan · ${bot.plan.status} · step ${bot.plan.index + 1} of ${bot.plan.length}</small>` : '';
     return `<article class="bot" data-bot-row data-name="${name}" data-status="${category}">
     <div class="bot-header"><h3>${name} <span class="badge">Managed</span></h3>
       <span class="quest-count" data-card-levels hidden></span></div>
     <p class="reason" title="${escape(reason)}"><span class="badge ${category}">${groups[category]}</span> ${escape(reason)}</p>
-    <p class="task-line" data-activity>${escape(bot.activity)}</p>
+    <p class="task-line" data-activity>${escape(bot.activity)}</p>${planDetail}
     <p class="log" title="Last activity">Last activity · ${effect}${last ? ' · ' + escape(last.reason) : ''}</p>
     <dl class="facts">
       ${fact('Heartbeat', timeAgo(now, bot.heartbeat))}
@@ -76,7 +80,7 @@ function card(bot: Bot, category: Group, reason: string, managed: ControlActivit
       <button type="button" data-inventory="${name}">Current inventory</button>
       <button type="button" data-diagnostics="${name}">Diagnostics</button>
       <button type="button" data-bank="${name}">Bank</button>
-      ${activityButton}${watch}
+      ${planButton}${activityButton}${watch}
     </div>
     </article>`;
 }
@@ -127,6 +131,7 @@ export function fleetPage({ nonce, data, questCatalog, fleetStyle, controls, ref
     <nav role="tablist" aria-label="Dashboard views">${tab('fleet', 'Fleet')}${tab('stats', 'Stats')}${tab('quests', 'Quests')}</nav>
     <input id="search" type="search" aria-label="Search accounts" placeholder="Search accounts" autocomplete="off">
     <select id="status-filter" aria-label="Filter by status"><option value="all">All views</option>${groupOptions}</select>
+    <button type="button" id="new-bot">New bot</button>
     <button type="button" id="banks">Check banks</button>
     <button type="button" id="refresh">Refresh</button>
     <button type="button" id="auto" aria-pressed="true">Auto</button>
@@ -166,9 +171,19 @@ export function fleetPage({ nonce, data, questCatalog, fleetStyle, controls, ref
 </div></dialog>
 <dialog aria-labelledby="activity-title"><form class="dialog-body">
   <h2 id="activity-title"></h2>
-  <label id="activity-task" hidden>Activity <select></select></label>
   <p role="status" aria-live="polite"></p>
   <div><button type="submit"></button> <button type="button" id="activity-close">Close</button></div>
+</form></dialog>
+<dialog id="plan-dialog" aria-labelledby="plan-title"><form class="dialog-body" id="plan-form">
+  <div class="dialog-header"><h2 id="plan-title">Activity plan</h2><button type="button" id="plan-close">Close</button></div>
+  <label id="plan-name-field" hidden>Bot name <input id="plan-bot-name" maxlength="12" pattern="[A-Za-z0-9]{1,12}" placeholder="Random name" autocomplete="off"></label>
+  <p id="plan-error" role="status" aria-live="polite"></p>
+  <ol id="plan-steps"></ol>
+  <div class="plan-toolbar">
+    <button type="button" id="plan-add">Add activity</button>
+    <button type="button" id="plan-edit" hidden>New plan</button>
+    <button type="submit" id="plan-save">Start plan</button>
+  </div>
 </form></dialog>
 <dialog id="dashboard-sign-in" aria-labelledby="sign-in-title"><form class="dialog-body">
   <h2 id="sign-in-title">Dashboard sign-in</h2>
