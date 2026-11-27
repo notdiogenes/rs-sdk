@@ -216,6 +216,7 @@ export async function mineResources({ bot, sdk }: ScriptContext, task = process.
 
     let quietSweeps = 0;
     const retryAfter = new Map<string, number>();
+    const productiveRocks = new Set<string>();
     const rockKey = (loc: NearbyLoc) => `${loc.x}:${loc.z}`;
     while (quietSweeps < 3) {
         const visited = new Set<MiningSite>();
@@ -228,8 +229,9 @@ export async function mineResources({ bot, sdk }: ScriptContext, task = process.
                 await travel(site);
                 phase('mining-extract', { site: site.mine.name });
                 const failedRocks = new Set<string>();
+                let attemptsWithoutOre = 0;
                 let emptySince = 0;
-                while (failedRocks.size < 3) {
+                while (true) {
                     const state = current();
                     if (!hasPick(state)) throw new Error('The rune pickaxe is no longer usable or present.');
                     if (state.player!.hp <= Math.max(8, Math.floor(state.player!.maxHp / 3))) {
@@ -244,10 +246,14 @@ export async function mineResources({ bot, sdk }: ScriptContext, task = process.
                     }
                     const here = current();
                     const now = Date.now();
-                    const rock = here.nearbyLocs.filter(loc => isRock(loc) &&
+                    const candidates = here.nearbyLocs.filter(loc => isRock(loc) &&
                         (retryAfter.get(rockKey(loc)) ?? 0) <= now &&
-                        (site.teleport || miningDistance(loc, site.mine) <= 25)).sort((a, b) => a.distance - b.distance)[0];
+                        (site.teleport || miningDistance(loc, site.mine) <= 25)).sort((a, b) => a.distance - b.distance);
+                    const proven = candidates.find(loc => productiveRocks.has(rockKey(loc)) && !failedRocks.has(rockKey(loc)));
+                    const tooManyMisses = failedRocks.size >= 3 || attemptsWithoutOre >= 6;
+                    const rock = proven ?? (tooManyMisses ? undefined : candidates[0]);
                     if (!rock) {
+                        if (tooManyMisses) break;
                         emptySince ||= Date.now();
                         const competitors = here.nearbyPlayers.filter(player => miningDistance(player, site.mine) <= 16).length;
                         const wait = competitors ? 18_000 : Math.min(90_000, Math.max(24_000, settings.respawn * 1000));
@@ -264,9 +270,12 @@ export async function mineResources({ bot, sdk }: ScriptContext, task = process.
                     if (result.outcome === 'complete') {
                         produced = true;
                         quietSweeps = 0;
+                        attemptsWithoutOre = 0;
                         failedRocks.clear();
+                        productiveRocks.add(rockKey(rock));
                         if (resource !== 'essence') retryAfter.set(rockKey(rock), Date.now() + settings.respawn * 1000);
                     } else {
+                        attemptsWithoutOre++;
                         failedRocks.add(rockKey(rock));
                         retryAfter.set(rockKey(rock), Date.now() + Math.min(24_000, settings.respawn * 1000));
                         auditEvent('setback', 'mining-swing-unconfirmed', { site: site.mine.name, x: rock.x, z: rock.z,
@@ -274,6 +283,7 @@ export async function mineResources({ bot, sdk }: ScriptContext, task = process.
                         await sdk.waitForTicks(2);
                     }
                 }
+                if (selection.mode === 'bank' && quantity(current()) > 0) await unload(site);
             } catch (error) {
                 if (!hasPick(current()) || current().player!.hp <= 8) throw error;
                 auditEvent('setback', 'mining-route-failed', { site: site.mine.name, message: error instanceof Error ? error.message : String(error) });

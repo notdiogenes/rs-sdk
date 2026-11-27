@@ -25,8 +25,10 @@ test('every supported resource has both modes and resource-specific routes', () 
     expect(miningTravelTimeout(8)).toBeLessThan(150000);
 });
 
-for (const mode of ['bank', 'power'] as const) {
-    test(`mining ${mode} confirms pick withdrawal, switches sites, mines, and unloads`, async () => {
+for (const scenario of ['bank', 'power', 'partial-bank'] as const) {
+    test(`mining ${scenario} confirms pick withdrawal, switches sites, mines, and unloads`, async () => {
+        const mode = scenario === 'partial-bank' ? 'bank' : scenario;
+        const partial = scenario === 'partial-bank';
         const item = (id: number, name: string, slot: number, eat = false): InventoryItem => ({
             id, name, slot, count: 1, optionsWithIndex: eat ? [{ text: 'Eat', opIndex: 1 }] : [],
         });
@@ -34,7 +36,7 @@ for (const mode of ['bank', 'power'] as const) {
             inGame: true,
             player: { worldX: miningBanks.west.x, worldZ: miningBanks.west.z, level: 0, hp: 99, maxHp: 99, isDead: false },
             skills: [{ name: 'Mining', baseLevel: 61, experience: 300000 }],
-            inventory: Array.from({ length: 26 }, (_, slot) => item(379, 'Lobster', slot, true)),
+            inventory: Array.from({ length: partial ? 24 : 26 }, (_, slot) => item(379, 'Lobster', slot, true)),
             equipment: [],
             bank: { isOpen: true, items: [item(1275, 'Rune pickaxe', 0)] },
             nearbyLocs: [],
@@ -61,6 +63,7 @@ for (const mode of ['bank', 'power'] as const) {
                         state.player!.isDead = true;
                         return { success: false, message: 'End fixture' };
                     }
+                    if (partial && state.inventory.some(entry => entry.id === 440)) return { success: false, message: 'Rock was depleted' };
                     state.inventory.push(item(440, 'Iron ore', 27));
                     state.skills[0]!.experience += 35;
                     trips.push('verified ore');
@@ -80,7 +83,7 @@ for (const mode of ['bank', 'power'] as const) {
                     state.player!.worldZ = z;
                     if (!Object.values(miningBanks).some(bank => bank.x === x && bank.z === z)) {
                         if (!state.nearbyLocs.some(loc => loc.x === x + 1 && loc.z === z)) mine++;
-                        state.nearbyLocs = [[x + 1, z], [x - 1, z], [x, z + 1]].map(([rockX, rockZ], offset) => ({ id: 2092, x: rockX, z: rockZ, name: 'Rocks',
+                        state.nearbyLocs = [[x + 1, z], [x - 1, z], [x, z + 1], [x, z - 1]].map(([rockX, rockZ], offset) => ({ id: 2092, x: rockX, z: rockZ, name: 'Rocks',
                             distance: offset, optionsWithIndex: [{ text: 'Mine', opIndex: 1 }] })) as BotWorldState['nearbyLocs'];
                     }
                     return success;
