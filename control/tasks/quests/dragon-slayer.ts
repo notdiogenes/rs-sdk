@@ -511,12 +511,17 @@ async function makeUnfiredBowl(ctx: QuestContext) {
         await sdk.waitForCondition(() => has(ctx, 1761), 5000);
     }
     await activate(ctx, [2642], 3087, 3409, 'Open the Barbarian Village pottery wheel with soft clay', { item: 1761 });
-    const state = await sdk.waitForCondition(s => !!s.interface?.options.some(option => /\bbowl\b/i.test(option.text)), 8000);
-    const bowl = state.interface?.options.find(option => /\bbowl\b/i.test(option.text));
-    if (!bowl) throw new Error('Pottery wheel did not offer Bowl');
-    const clicked = await sdk.clickInterfaceOption(bowl);
-    if (!clicked.success) throw new Error(clicked.message);
-    await sdk.waitForCondition(() => has(ctx, 1791), 8000);
+    const bowlName = /^\s*bowl\s*$/i;
+    const state = await sdk.waitForCondition(s => s.dialog.options.some(option => bowlName.test(option.text)) ||
+        !!s.interface?.options.some(option => bowlName.test(option.text)), 8000);
+    const interfaceBowl = state.interface?.options.find(option => bowlName.test(option.text));
+    await auditOperation('dragon-slayer-shape-bowl', 'Select one unfired bowl from the pottery wheel menu',
+        { offered: (interfaceBowl ? state.interface?.options : state.dialog.options)?.map(option => option.text) },
+        () => sdk.getState(), async () => {
+            const clicked = interfaceBowl ? await sdk.clickInterfaceOption(interfaceBowl) : await sdk.clickDialogByText(bowlName);
+            if (!clicked.success) throw new Error(clicked.message);
+            await sdk.waitForCondition(() => has(ctx, 1791), 8000);
+        }, () => ({ outcome: 'complete', item: 1791 }));
     await bot.closeInterface();
 }
 
