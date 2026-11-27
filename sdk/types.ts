@@ -979,12 +979,13 @@ export interface PickpocketResult {
     message: string;
     xpGained?: number;
     /**
+     * 'target_not_found' = the selected NPC is no longer present at its index.
      * 'dispatch_failed' = never reached the game (client stalled or dropped it).
      * 'rejected' = the server discarded the op. Retryable, cheaply.
      * 'not_started' = no attempt message and no rejection either; unaccounted for.
      * 'timeout' = the attempt did start, then never resolved.
      */
-    reason?: 'npc_not_found' | 'no_pickpocket_option' | 'cant_reach' | 'stunned' | 'timeout' | 'dispatch_failed' | 'rejected' | 'not_started';
+    reason?: 'npc_not_found' | 'target_not_found' | 'no_pickpocket_option' | 'cant_reach' | 'stunned' | 'timeout' | 'dispatch_failed' | 'rejected' | 'not_started';
 }
 
 export interface CraftJewelryResult {

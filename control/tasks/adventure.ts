@@ -13,6 +13,8 @@ const guards = /^guard$/i;
 const knights = /^knight of ardougne$/i;
 const paladins = /^paladin$/i;
 const heroes = /^hero$/i;
+// Knight of Ardougne spawn tiles in m41_51.
+const knightSpots = [[2652, 3318], [2653, 3300], [2669, 3298], [2671, 3313]] as const;
 const guardSpots = [[2651, 3307], [2660, 3308], [2635, 3339]] as const;
 const paladinSpots = [[2653, 3315], [2657, 3307]] as const;
 const heroSpots = [[2630, 3288], [2642, 3297], [2652, 3318]] as const;
@@ -21,6 +23,9 @@ const log = (stage: string, fields: object = {}) =>
 
 const men = /^man$/i;
 const manSpots = [[3222, 3218], [3221, 3228], [3231, 3237]] as const;
+const isMissingPickpocketTarget = (reason?: string) =>
+    reason === 'target_not_found' || reason === 'npc_not_found' || reason === 'no_pickpocket_option';
+
 export type PickpocketTarget = 'men' | 'guards' | 'knights' | 'paladins' | 'heroes' | 'adaptive';
 
 function npcEvidence(npc: NearbyNpc, action = pocket) {
@@ -55,9 +60,9 @@ export function adventure({ bot, sdk }: ScriptContext) {
             coins: sdk.countInventoryItems(/^coins$/i),
         };
     };
-    const closest = (name: RegExp, option: RegExp, combat = false) =>
+    const closest = (name: RegExp, option: RegExp, combat = false, eligible?: (npc: NearbyNpc) => boolean) =>
         sdk.getState()?.nearbyNpcs.filter(npc => name.test(npc.name) && npc.reachable !== false &&
-            npc.optionsWithIndex.some(entry => option.test(entry.text)) && (!combat || !npc.inCombat))
+            npc.optionsWithIndex.some(entry => option.test(entry.text)) && (!combat || !npc.inCombat) && (!eligible || eligible(npc)))
             .sort((a, b) => a.distance - b.distance)[0];
     const travel = async (x: number, z: number, tolerance: number, timeout: number, auditing = false, intent = 'Reach the next activity waypoint') => {
         if (distance(x, z) <= tolerance) {
@@ -330,6 +335,12 @@ export function adventure({ bot, sdk }: ScriptContext) {
     };
     async function pickpocket(focus: PickpocketTarget) {
         let nextScan = 0;
+        let knightWaypoint: number | undefined;
+        let knightLegs = 0;
+        let rejectedAtTick: number | undefined;
+        const rejectedTargets = new Set<string>();
+        const targetKey = (npc: NearbyNpc) => `${npc.index}:${npc.id}`;
+        const closestPickpocket = (name: RegExp) => closest(name, pocket, false, npc => !rejectedTargets.has(targetKey(npc)));
         let nextFood = 0;
         let successes = 0;
         let lastTarget = '';
@@ -400,12 +411,13 @@ export function adventure({ bot, sdk }: ScriptContext) {
                 }, auditing);
             }
 
+            if (sdk.getState()?.tick !== rejectedAtTick) rejectedTargets.clear();
             const thieving = level('Thieving');
             const adaptive = focus === 'adaptive';
-            const hero = adaptive && thieving >= 80 ? closest(heroes, pocket) : undefined;
-            const knight = adaptive && thieving >= 55 ? closest(knights, pocket) : undefined;
+            const hero = adaptive && thieving >= 80 ? closestPickpocket(heroes) : undefined;
+            const knight = adaptive && thieving >= 55 ? closestPickpocket(knights) : undefined;
             const fixedTarget = { men, guards, knights, paladins, heroes, adaptive: guards }[focus];
-            const target = adaptive ? hero ?? knight ?? (thieving < 55 ? closest(guards, pocket) : undefined) : closest(fixedTarget, pocket);
+            const target = adaptive ? hero ?? knight ?? (thieving < 55 ? closestPickpocket(guards) : undefined) : closestPickpocket(fixedTarget);
             if (auditing) {
                 const targetNames = adaptive ? /^(?:guard|knight of ardougne|hero)$/i : fixedTarget;
                 const candidates = (sdk.getState()?.nearbyNpcs ?? []).filter(npc => targetNames.test(npc.name));
@@ -419,9 +431,17 @@ export function adventure({ bot, sdk }: ScriptContext) {
                 });
             }
             if (!target || (adaptive && thieving >= 80 && !hero && nextScan % 12 === 0)) {
+                const searchKnights = focus === 'knights' || (adaptive && thieving >= 55 && thieving < 80);
+                if (searchKnights && knightWaypoint === undefined) {
+                    knightWaypoint = knightSpots.reduce((nearest, [x, z], index) => {
+                        const [nearestX, nearestZ] = knightSpots[nearest] ?? knightSpots[0];
+                        return distance(x, z) < distance(nearestX, nearestZ) ? index : nearest;
+                    }, 0);
+                }
                 const locations = lumbridge ? manSpots : focus === 'paladins' ? paladinSpots
-                    : focus === 'guards' || (adaptive && thieving < 55) ? guardSpots : heroSpots;
-                const spot = locations[nextScan % locations.length] ?? locations[0];
+                    : focus === 'guards' || (adaptive && thieving < 55) ? guardSpots
+                    : searchKnights ? knightSpots : heroSpots;
+                const spot = locations[(searchKnights ? (knightWaypoint ?? 0) : nextScan) % locations.length] ?? locations[0];
                 nextScan++;
                 if (auditing && !target) {
                     phase('thieving-search');
@@ -435,6 +455,35 @@ export function adventure({ bot, sdk }: ScriptContext) {
                 if (adaptive && thieving >= 80 && knight && !hero && distance(2630, 3288) > 8) {
                     phase('thieving-search');
                     await travel(2630, 3288, 6, 35_000, auditing, 'Look for a Hero while an eligible lower-tier target is available');
+                } else if (searchKnights) {
+                    const [x, z] = spot;
+                    const tolerance = 3;
+                    const timeout = 2_500;
+                    const before = distance(x, z);
+                    let progressed = false;
+                    if (before > tolerance) {
+                        const startX = world()?.player?.worldX;
+                        const startZ = world()?.player?.worldZ;
+                        const travelLeg = () => bot.walkTo(x, z, tolerance, { timeout });
+                        const moved = () => {
+                            const player = world()?.player;
+                            return !!player && startX !== undefined && startZ !== undefined &&
+                                (player.worldX !== startX || player.worldZ !== startZ);
+                        };
+                        await auditOperation('walk-to', 'Walk toward the knight waypoint and scan again after this leg',
+                            { x, z, tolerance, timeout }, world, travelLeg, result => ({
+                                outcome: distance(x, z) <= tolerance ? 'arrived' : moved() ? 'partial-progress' : 'arrival-unconfirmed',
+                                distance: distance(x, z), sdk: actionResult(result).sdk,
+                            }));
+                        progressed = moved();
+                        knightLegs++;
+                    }
+                    if (distance(x, z) <= tolerance || !progressed || knightLegs >= 12) {
+                        knightWaypoint = ((knightWaypoint ?? 0) + 1) % knightSpots.length;
+                        knightLegs = 0;
+                    }
+                    if (!progressed) await waitTicks(3, 'Refresh nearby NPCs before continuing the knight search', auditing);
+                    continue;
                 } else if (!target) {
                     await travel(spot[0], spot[1], 3, 30_000, auditing, 'Check the next search waypoint for a reachable pickpocket target');
                 }
@@ -445,6 +494,8 @@ export function adventure({ bot, sdk }: ScriptContext) {
             } else {
                 nextScan++;
             }
+            knightWaypoint = undefined;
+            knightLegs = 0;
             phase('thieving-pickpocket');
             if (auditing && target.index !== lastTargetIndex) {
                 lastTargetIndex = target.index;
@@ -462,7 +513,13 @@ export function adventure({ bot, sdk }: ScriptContext) {
                     const beforeFrame = auditing ? auditFrame(sdk.getState()) : undefined;
                     const began = auditing ? performance.now() : 0;
                     const action = await bot.pickpocketNpc(target);
-                    if (!action.success && action.reason !== 'stunned') {
+                    const missingTarget = isMissingPickpocketTarget(action.reason);
+                    if (missingTarget) {
+                        const tick = sdk.getState()?.tick;
+                        if (tick !== rejectedAtTick) rejectedTargets.clear();
+                        rejectedAtTick = tick;
+                        rejectedTargets.add(targetKey(target));
+                    } else if (!action.success && action.reason !== 'stunned') {
                         await waitTicks(5, 'The SDK did not confirm the attempt. Wait for late state or game feedback before classifying it.', auditing);
                     }
                     const after = metrics();
@@ -474,7 +531,9 @@ export function adventure({ bot, sdk }: ScriptContext) {
                     const success = action.success || xpGained > 0 || successMessage;
                     const outcome = success ? 'succeeded' : action.reason?.replaceAll('_', '-') ?? 'unconfirmed';
                     const observedXp = before.thievingXp != null && after.thievingXp != null ? xpGained : action.xpGained ?? 0;
+                    const seen = auditing ? world()?.nearbyNpcs.find(npc => npc.index === target.index && npc.id === target.id) : undefined;
                     const evidence = {
+                        targetAtResult: auditing ? { visible: !!seen, pickpocketVisible: !!seen?.optionsWithIndex.some(option => pocket.test(option.text)) } : undefined,
                         xpGained: Math.max(0, observedXp), coinsGained: Math.max(0, after.coins - before.coins),
                         hpLost: Math.max(0, (before.hp ?? 0) - (after.hp ?? 0)),
                         confirmation: xpGained > 0 ? 'xp-gain' : successMessage ? 'game-message' : action.success ? 'sdk-observation' : undefined,
@@ -491,6 +550,7 @@ export function adventure({ bot, sdk }: ScriptContext) {
                 }, result => ({ outcome: result.outcome, ...result.evidence }));
             if (success) successes++;
             log('pickpocket', { npc: target.name, success, reason: action.reason, successes, ...after });
+            if (isMissingPickpocketTarget(action.reason)) continue;
             if (action.reason === 'stunned') phase('thieving-stun');
             await waitTicks(action.reason === 'stunned' ? 11 : success ? 1 : 3,
                 action.reason === 'stunned' ? 'Let the stun cooldown elapse before trying again'

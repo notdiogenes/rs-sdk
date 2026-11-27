@@ -3,6 +3,7 @@
 // Actions resolve when the EFFECT is complete (not just acknowledged)
 
 import { BotSDK } from './index';
+import { auditEnabled, auditEvent } from './audit-trace';
 import { throwIfExecutionAborted, withExecutionDeadline } from './execution-context';
 import { GEActions } from './ge-actions';
 import type { GEOfferRequest, GEActionResult } from './ge-types';
@@ -4403,7 +4404,11 @@ export class BotActions {
     private async _pickpocketNpcOnce(target: NearbyNpc | string | RegExp): Promise<PickpocketResult> {
         await this.dismissBlockingUI();
 
-        const npc = this.helpers.resolveNpc(target);
+        const npc = typeof target === 'object' && !(target instanceof RegExp)
+            ? this.helpers.refindNpc(target) : this.helpers.resolveNpc(target);
+        if (typeof target === 'object' && !(target instanceof RegExp) && npc?.id !== target.id) {
+            return { success: false, message: `Pickpocket target no longer visible: ${target.name} #${target.index}`, reason: 'target_not_found' };
+        }
         if (!npc) {
             return { success: false, message: `NPC not found: ${target}`, reason: 'npc_not_found' };
         }
@@ -4425,7 +4430,7 @@ export class BotActions {
             return {
                 success: false,
                 message: `Pickpocket dispatch failed on ${npc.name}: ${result.message}`,
-                reason: 'dispatch_failed'
+                reason: result.reason === 'target_not_found' ? 'target_not_found' : 'dispatch_failed'
             };
         }
 
@@ -4443,20 +4448,26 @@ export class BotActions {
 
         try {
             const finalState = await this.sdk.waitForCondition(state => {
-                // Resolved: xp landed
                 const thievingNow = state.skills.find(s => s.name === 'Thieving')?.experience || 0;
-                if (thievingNow > thievingBefore) return true;
-
-                // Resolved: stunned, or the walk failed
+                let resolved = thievingNow > thievingBefore;
                 for (const msg of state.gameMessages) {
-                    if (this.helpers.isMessageAfter(msg, msgBaseline)) {
-                        const text = msg.text.toLowerCase();
-                        if (text.includes('stunned') || text.includes('caught') || text.includes('stun')) return true;
-                        if (text.includes('you fail to pick')) return true;
-                        if (text.includes("can't reach") || text.includes('cannot reach')) return true;
-                        if (text.includes('you attempt to pick')) attemptAcked = true;
+                    if (!this.helpers.isMessageAfter(msg, msgBaseline)) continue;
+                    const text = msg.text.toLowerCase();
+                    if (!attemptAcked && msg.type === 0 && !msg.sender && text.startsWith('you attempt to pick')) {
+                        attemptAcked = true;
+                        if (auditEnabled) {
+                            const seen = state.nearbyNpcs.find(entry => entry.index === npc.index && entry.id === npc.id);
+                            auditEvent('check', 'pickpocket-attempt-acknowledged', {
+                                tick: msg.tick, observedAtTick: state.tick, npcId: npc.id, npcIndex: npc.index, optionIndex: pickOpt.opIndex,
+                                targetVisible: !!seen, optionVisible: !!seen?.optionsWithIndex.some(option =>
+                                    option.opIndex === pickOpt.opIndex && option.text === pickOpt.text),
+                            });
+                        }
                     }
+                    if (text.includes('stun') || text.includes('caught') || text.includes('you fail to pick') ||
+                        text.includes("can't reach") || text.includes('cannot reach')) resolved = true;
                 }
+                if (resolved) return true;
 
                 // Discarded by the server - no resolution is coming.
                 if (this.helpers.wasOpRejectedSince(rejectCursor, state)) return true;
