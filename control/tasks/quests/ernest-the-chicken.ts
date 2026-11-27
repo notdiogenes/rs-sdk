@@ -69,20 +69,29 @@ const result = await runScript(async ctx => {
         await changeFloor(ctx, 'up', 3108, 3363);
     };
     const professor = async () => {
-        await enterMidFloor();
-        await walk(ctx, 3104, 3362, 2);
-        await changeFloor(ctx, 'up', 3104, 3362);
+        if (top() === 0) await enterMidFloor();
+        if (top() === 1) {
+            await walk(ctx, 3104, 3362, 2);
+            await changeFloor(ctx, 'up', 3104, 3362, 1);
+        }
         await talkAt(ctx, 3110, 3367, /^professor oddenstein$/i, [/looking for a guy called ernest/i, /change him back this instant/i]);
         await leaveFloors();
     };
-    await leaveFloors();
-    await bankForQuest(ctx, supplies.map(name => ({name,count:1})));
+    const player = sdk.getState()?.player;
+    const inManor = player && Math.abs(player.worldX - 3110) < 17 && Math.abs(player.worldZ - 3363) < 16;
+    const loadoutReady = inManor && readQuest(ctx, journal) === 'in-progress' && !sdk.getEquipment().length &&
+        sdk.getInventory().every(item => item.count === 1 && supplies.some(name => itemNamed(name).test(item.name)));
+    if (!loadoutReady) {
+        await leaveFloors();
+        await bankForQuest(ctx, supplies.map(name => ({name,count:1})));
+    }
     if (readQuest(ctx, journal) === 'not-started') {
         questLog('quest-start', { quest });
         await talkAt(ctx, 3110, 3330, /^veronica$/i, [/sounds like a quest/i]);
     }
     const text = await journalText(ctx, journal, /^ernest the chicken$/i);
     if (!/oil can|pressure gauge/i.test(text)) await professor();
+    else if (top() > 0) await leaveFloors();
     if (!has('Pressure gauge')) {
         await walk(ctx, 3087, 3336, 3);
         const search = async () => {

@@ -26,14 +26,16 @@ export async function changeFloor(ctx: QuestContext, direction: 'up' | 'down', x
         const option = loc.optionsWithIndex.find(entry => search.test(entry.text));
         return option ? [{ loc, option }] : [];
     }).sort((a, b) => a.loc.distance - b.loc.distance);
+    const moved = (state: ReturnType<QuestContext['sdk']['getState']>) => {
+        const player = state?.player;
+        return !!player && (player.level !== before.level || Math.abs(player.worldZ - before.worldZ) > 1000);
+    };
     for (const { loc, option } of candidates) {
+        if (moved(sdk.getState())) return;
         // Surface-to-dungeon ladders can change region while retaining plane zero.
         await bot.interactLoc(loc, option.opIndex);
-        const changed = await sdk.waitForCondition(state => {
-            const p = state.player;
-            return !!p && (p.level !== before.level || Math.abs(p.worldZ - before.worldZ) > 1000);
-        }, 4500).catch(() => null);
-        if (changed) return;
+        const changed = await sdk.waitForCondition(moved, 11_000).catch(() => null);
+        if (changed || moved(sdk.getState())) return;
     }
     throw new Error(`Could not climb ${direction} near ${x}, ${z} on plane ${before.level}`);
 }
