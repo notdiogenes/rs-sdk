@@ -26,6 +26,7 @@ const meleeRequirements: Record<string, number> = {
 };
 const styles = ['dagger', 'sword', 'mace', 'axe', 'longsword', 'scimitar', 'battleaxe'];
 const bankLocation = [3092, 3243] as const;
+const varrockEastBank = [3253, 3421] as const;
 const mapPieces = [
     { name: 'Melzar’s Maze map piece', id: 1535, count: 1 },
     { name: 'Wormbrain’s map piece', id: 1536, count: 1 },
@@ -37,6 +38,11 @@ const position = ({ sdk }: QuestContext) => {
     if (!player) throw new Error('No live player position for Dragon Slayer');
     return player;
 };
+
+function mapSupplyBank(ctx: QuestContext) {
+    const { worldX, worldZ } = position(ctx);
+    return worldX >= 3200 && worldZ >= 3360 && worldZ < 3600 ? varrockEastBank : bankLocation;
+}
 
 const inventory = ({ sdk }: QuestContext, id: number) => sdk.getInventory().find(item => item.id === id);
 const held = ({ sdk }: QuestContext, id: number) => sdk.getInventory().filter(item => item.id === id)
@@ -598,12 +604,18 @@ async function buyWormbrainRunes(ctx: QuestContext) {
     const opened = await bot.openShop(/^aubury$/i);
     if (!opened.success) throw new Error(opened.message);
     try {
+        const stock = await sdk.waitForCondition(s => s.shop.isOpen &&
+            missing.every(supply => s.shop.shopItems.some(item => item.id === supply.id)), 7000).catch(() => sdk.getState());
+        auditEvent('check', 'dragon-slayer-aubury-stock', {
+            outcome: stock?.shop.isOpen ? 'open' : 'unavailable', shop: stock?.shop.title, coins: held(ctx, 995),
+            stock: stock?.shop.shopItems.map(({ id, name, count, buyPrice }) => ({ id, name, count, buyPrice })),
+        });
         for (const supply of missing) {
             const amount = supply.count - held(ctx, supply.id);
             const item = sdk.getState()?.shop.shopItems.find(entry => entry.id === supply.id);
             if (!item || item.count < amount || !Number.isFinite(item.buyPrice) || item.buyPrice > 8
                 || held(ctx, 995) < amount * item.buyPrice) {
-                throw new Error(`Aubury could not supply ${amount} ${supply.name} at 8 coins each or less`);
+                throw new Error(`Aubury could not supply ${amount} ${supply.name} at 8 coins each or less (stock ${item?.count ?? 0}, quote ${item?.buyPrice ?? 'unavailable'})`);
             }
             await auditOperation('dragon-slayer-buy-wormbrain-runes', 'Buy missing Fire Strike and Telekinetic Grab supplies from Aubury',
                 { item: item.name, amount, unitPrice: item.buyPrice }, () => sdk.getState(), async () => {
@@ -622,7 +634,7 @@ async function wormbrainMap(ctx: QuestContext) {
     const telegrab = 1168;
     questPhase('dragon-slayer-wormbrain-map');
     const magic = questSkill(ctx, 'Magic');
-    await prepareQuestStep(ctx, { slots: 5, withdraw: magic >= 33 ? [
+    await prepareQuestStep(ctx, { bank: mapSupplyBank(ctx), slots: 5, withdraw: magic >= 33 ? [
         ...questSpellSupplies(ctx, 5).map(item => item.name === 'Air rune' ? { ...item, count: item.count + 1 } : item),
         { name: 'Law rune', count: 1 }, { name: 'Coins', count: 400 },
     ] : [{ name: 'Coins', count: 10_000 }] });
@@ -803,21 +815,44 @@ async function fightElvarg(ctx: QuestContext, page: string) {
         await sdk.waitForCondition(() => inLair(), 9000);
     }
     questPhase('dragon-slayer-elvarg');
-    if (position(ctx).worldX <= elvargGate.x) {
-        await activate(ctx, [2607], elvargGate.x, elvargGate.z, 'Open Elvarg’s gate with the anti-dragonbreath shield equipped');
-        await walk(ctx, 2848, 9636, 0);
-    }
-    const state = await sdk.waitForCondition(s => s.nearbyNpcs.some(n => n.id === 742 && n.hp !== 0), 15000);
-    const dragon = state.nearbyNpcs.find(n => n.id === 742 && n.hp !== 0);
-    if (!dragon) throw new Error('Could not find Elvarg after reaching the lair');
-    await withQuestProtection(ctx, ['protect_from_melee', 'protect_from_magic'], () => fightQuestNpc(ctx, dragon, elvarg, plan, {
-        won: () => readQuest(ctx, journal) === 'complete', protectedFromDamage: () => shieldEquipped(ctx),
-        retreat: async () => {
-            await activate(ctx, [2607], elvargGate.x, elvargGate.z, 'Retreat through Elvarg’s gate');
-            await walk(ctx, 2844, 9636, 0);
-        },
-    }));
-    await waitForQuestJournal(ctx, journal, 'complete', 12000);
+    const crossedGate = () => position(ctx).worldX >= elvargGate.x;
+    const retreat = async () => {
+        const live = sdk.getState()?.player;
+        if (!live || live.isDead || !inLair() || !crossedGate()) return;
+        const food = sdk.findInventoryItem(questFood);
+        if (food && live.hp <= Math.max(30, Math.ceil(live.maxHp * 0.45))) await bot.eatFood(food);
+        if (questSkill(ctx, 'Magic') >= 31 && has(ctx, 563) && has(ctx, 557) && held(ctx, 556) >= 3) {
+            const sent = await sdk.sendClickComponent(Spells.LUMBRIDGE_TELEPORT);
+            if (sent.success && await sdk.waitForCondition(() => !inLair(), 4500).catch(() => null)) return;
+        }
+        await walk(ctx, elvargGate.x, elvargGate.z, 0);
+        await activate(ctx, [2607], elvargGate.x, elvargGate.z, 'Retreat through Elvarg’s gate', { walkFirst: false });
+        await sdk.waitForCondition(() => !crossedGate(), 5000);
+        await walk(ctx, 2844, 9636, 0);
+        await sdk.waitForCondition(s => !s.player?.combat.inCombat, 6000);
+    };
+    await withQuestProtection(ctx, ['protect_from_melee', 'protect_from_magic'], async () => {
+        try {
+            if (!crossedGate()) {
+                await walk(ctx, elvargGate.x - 1, elvargGate.z, 0);
+                await activate(ctx, [2607], elvargGate.x, elvargGate.z, 'Open Elvarg’s gate with the anti-dragonbreath shield equipped',
+                    { walkFirst: false });
+                await sdk.waitForCondition(crossedGate, 5000);
+            }
+            const state = await sdk.waitForCondition(s => !!availableQuestTarget(s, 742), 5500);
+            const dragon = availableQuestTarget(state, 742);
+            if (!dragon) throw new Error('Could not find Elvarg after reaching the lair');
+            await fightQuestNpc(ctx, dragon, elvarg, plan, {
+                won: () => readQuest(ctx, journal) === 'complete', protectedFromDamage: () => shieldEquipped(ctx), retreat,
+            });
+            await waitForQuestJournal(ctx, journal, 'complete', 12000);
+        } catch (error) {
+            await auditOperation('dragon-slayer-elvarg-safety-exit', 'Get outside Elvarg’s lair after an incomplete attempt',
+                { error: error instanceof Error ? error.message : String(error) }, () => sdk.getState(), retreat,
+                () => ({ outcome: !inLair() || !crossedGate() ? 'outside' : 'unconfirmed' }));
+            throw error;
+        }
+    });
 }
 
 export async function checkDragonMazeBasement(ctx: QuestContext, inspectBasement: (ctx: QuestContext) => Promise<void>) {
@@ -844,7 +879,7 @@ if (import.meta.main) {
             if (shipRepaired.test(page)) await leaveShip(ctx);
             if (!inMazeBasement(ctx) && !area(ctx, 2930, 3248, 14) && !inDwarvenMine(ctx) && !inShipHold(ctx)) {
                 questPhase('dragon-slayer-map-preflight');
-                await prepareQuestStep(ctx, { slots: 13, withdraw: [
+                await prepareQuestStep(ctx, { bank: mapSupplyBank(ctx), slots: 13, withdraw: [
                     { name: 'Maze key', count: 1 }, ...mapPieces, { name: 'Crandor map', count: 1 },
                 ] });
                 await getShield(ctx);
