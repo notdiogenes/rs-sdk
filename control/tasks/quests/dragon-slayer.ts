@@ -585,6 +585,38 @@ async function oracleMap(ctx: QuestContext) {
     await leaveDwarvenMine(ctx);
 }
 
+async function buyWormbrainRunes(ctx: QuestContext) {
+    const { sdk, bot } = ctx;
+    const supplies = [
+        { id: 556, name: 'Air rune', count: 17 },
+        { id: 554, name: 'Fire rune', count: 24 },
+        { id: 558, name: 'Mind rune', count: 8 },
+    ];
+    const missing = supplies.filter(item => held(ctx, item.id) < item.count);
+    if (!missing.length) return;
+    await walk(ctx, 3253, 3402, 2);
+    const opened = await bot.openShop(/^aubury$/i);
+    if (!opened.success) throw new Error(opened.message);
+    try {
+        for (const supply of missing) {
+            const amount = supply.count - held(ctx, supply.id);
+            const item = sdk.getState()?.shop.shopItems.find(entry => entry.id === supply.id);
+            if (!item || item.count < amount || !Number.isFinite(item.buyPrice) || item.buyPrice > 8
+                || held(ctx, 995) < amount * item.buyPrice) {
+                throw new Error(`Aubury could not supply ${amount} ${supply.name} at 8 coins each or less`);
+            }
+            await auditOperation('dragon-slayer-buy-wormbrain-runes', 'Buy missing Fire Strike and Telekinetic Grab supplies from Aubury',
+                { item: item.name, amount, unitPrice: item.buyPrice }, () => sdk.getState(), async () => {
+                    const bought = await bot.buyFromShop(item, amount);
+                    if (!bought.success || held(ctx, supply.id) < supply.count) throw new Error(bought.message);
+                    return bought;
+                }, bought => ({ outcome: 'complete', amount: bought.amountBought }));
+        }
+    } finally {
+        await bot.closeShop();
+    }
+}
+
 async function wormbrainMap(ctx: QuestContext) {
     const { sdk, bot } = ctx;
     const telegrab = 1168;
@@ -592,7 +624,7 @@ async function wormbrainMap(ctx: QuestContext) {
     const magic = questSkill(ctx, 'Magic');
     await prepareQuestStep(ctx, { slots: 5, withdraw: magic >= 33 ? [
         ...questSpellSupplies(ctx, 5).map(item => item.name === 'Air rune' ? { ...item, count: item.count + 1 } : item),
-        { name: 'Law rune', count: 1 },
+        { name: 'Law rune', count: 1 }, { name: 'Coins', count: 400 },
     ] : [{ name: 'Coins', count: 10_000 }] });
     if (magic < 33) {
         if (sdk.countInventoryItems(coins) < 10_000) throw new Error('Wormbrain requires level 33 Magic with Telekinetic Grab supplies, or 10,000 coins for the NPC sale');
@@ -600,7 +632,10 @@ async function wormbrainMap(ctx: QuestContext) {
         await sdk.waitForCondition(() => has(ctx, 1536), 8000);
         return;
     }
-    if (!has(ctx, 563) || !has(ctx, 556)) throw new Error('Bring a Law rune and Air rune for Telekinetic Grab before killing Wormbrain');
+    if (!has(ctx, 563)) throw new Error('Bring a Law rune for Telekinetic Grab before killing Wormbrain');
+    const enoughForBolt = held(ctx, 562) >= 7 && held(ctx, 556) >= 22 && held(ctx, 554) >= 28 && magic >= 35;
+    const enoughForBlast = held(ctx, 560) >= 7 && held(ctx, 556) >= 29 && held(ctx, 554) >= 35 && magic >= 59;
+    if (!enoughForBolt && !enoughForBlast) await buyWormbrainRunes(ctx);
     const plan = planQuestFight(ctx, { name: 'Wormbrain', hitpoints: 5, incomingHit: 0, meleeLevel: 1, minimumFood: 0 }, { magicOnly: true });
     if (plan.style !== 'magic') throw new Error('A combat spell is required to target Wormbrain through the bars');
     await walk(ctx, 3014, 3188, 2);
@@ -617,6 +652,7 @@ async function wormbrainMap(ctx: QuestContext) {
         }
         const npc = sdk.findNearbyNpc(/^wormbrain$/i);
         if (npc && npc.hp !== 0) {
+            if (held(ctx, 556) <= plan.spell.runes['Air rune']) throw new Error('The remaining Air rune is reserved for Telekinetic Grab');
             const hit = await bot.castSpell(npc, plan.spell.component);
             if (!hit.success) throw new Error(hit.message);
         }
