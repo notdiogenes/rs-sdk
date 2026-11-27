@@ -1,23 +1,12 @@
 import { auditEvent } from '../../../sdk/audit-trace';
 import { runScript } from '../../../sdk/runner';
-import { changeFloor, questLog, questPhase, walk } from './shared';
+import { checkDragonMazeBasement } from './dragon-slayer';
+import { questLog, questPhase, type QuestContext } from './shared';
 
-// The eastern cellar ladder is the closest approach to the lesser demon room.
+// Inspect only item types recorded in the loadout near the lesser demon room.
 const previousLoadout = new Set([772, 946, 1540, 1542, 1351, 556, 554, 563, 557, 562, 558, 379]);
 
-const result = await runScript(async ctx => {
-    const { sdk, bot } = ctx;
-    await sdk.waitForReady();
-    questPhase('dragon-maze-recovery-start');
-    const player = sdk.getState()?.player;
-    auditEvent('check', 'dragon-maze-recovery-carried', { player, inventory: sdk.getInventory(), equipment: sdk.getEquipment() });
-    if (!player || player.isDead) throw new Error('A living character is required to check the maze floor');
-    if (player.worldZ < 4000) {
-        await walk(ctx, 2939, 3258, 0);
-        await changeFloor(ctx, 'down', 2939, 3257, 0, { requireReachable: true });
-    }
-    const inCellar = sdk.getState()?.player;
-    if (!inCellar || inCellar.worldZ < 9630 || inCellar.worldZ > 9680) throw new Error('The recovery route did not reach the maze cellar');
+async function inspectDrops({ sdk, bot }: QuestContext) {
     questPhase('dragon-maze-recovery-ground');
     const recovered: { id: number; name: string; count: number }[] = [];
     for (let attempt = 0; attempt < 25; attempt++) {
@@ -42,11 +31,18 @@ const result = await runScript(async ctx => {
     }
     auditEvent('milestone', 'dragon-maze-recovery-result', { recovered });
     questLog('dragon-maze-recovery-result', { recovered });
-    if (sdk.getState()?.player && sdk.getState()!.player!.worldZ > 9600) {
-        await walk(ctx, 2939, 9657, 2);
-        await changeFloor(ctx, 'up', 2939, 9657, 0);
-    }
-}, { printState: false, timeout: 320_000 });
+}
+
+const result = await runScript(async ctx => {
+    const { sdk } = ctx;
+    await sdk.waitForReady();
+    questPhase('dragon-maze-recovery-start');
+    auditEvent('check', 'dragon-maze-recovery-carried', {
+        player: sdk.getState()?.player, inventory: sdk.getInventory(), equipment: sdk.getEquipment(),
+    });
+    // The north wall blocked the direct ladder approach. Use the quest's normal room route.
+    await checkDragonMazeBasement(ctx, inspectDrops);
+}, { printState: false, timeout: 900_000 });
 
 if (!result.success) {
     questLog('dragon-maze-recovery-failed', { error: result.error?.message });

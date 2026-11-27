@@ -152,6 +152,16 @@ async function exitZanaris(ctx: QuestContext) {
         }, () => ({ outcome: 'complete' }));
 }
 
+async function getReplacementMazeKey(ctx: QuestContext) {
+    if (has(ctx, 1542)) return;
+    questPhase('dragon-slayer-recover-maze-key');
+    await walk(ctx, 3068, 3517, 0);
+    await talk(ctx, /^oziach$/i, [
+        /try and get everything together/i, /first piece/i, /where can I find this dragon/i,
+    ], 48);
+    if (!has(ctx, 1542)) throw new Error('Oziach did not issue a Maze key. Check the bank for an existing copy.');
+}
+
 async function getBriefing(ctx: QuestContext) {
     const { sdk } = ctx;
     questPhase('dragon-slayer-briefing');
@@ -292,6 +302,31 @@ const mazeRooms = [
     { name: 'Lesser demon', hp: 79, hit: 8, npc: 752, key: 1548, door: 2601, x: 2936, z: 9655, dx: 0, dz: 1, nx: 2936, nz: 9650 },
 ] as const;
 
+async function escapeMazeFight(ctx: QuestContext, fallback: readonly [number, number]) {
+    const { sdk, bot } = ctx;
+    const p = () => sdk.getState()?.player;
+    if (!p() || p()?.isDead || !p()?.combat.inCombat) return;
+    const magic = questSkill(ctx, 'Magic');
+    const teleport = held(ctx, 556) >= 3 && has(ctx, 563) &&
+        (magic >= 25 && has(ctx, 554) ? Spells.VARROCK_TELEPORT :
+            magic >= 31 && has(ctx, 557) ? Spells.LUMBRIDGE_TELEPORT : undefined);
+    await auditOperation('dragon-slayer-maze-emergency-exit', 'Move out of incoming combat before returning control',
+        { teleport, fallback }, () => sdk.getState(), async () => {
+            if (teleport) {
+                const dispatched = await sdk.sendClickComponent(teleport);
+                const left = dispatched.success && await sdk.waitForCondition(state =>
+                    (state.player?.worldZ ?? 9600) < 4000 && (state.player?.worldX ?? 2930) > 3000, 4500).catch(() => null);
+                if (left) return 'teleported';
+            }
+            const food = sdk.findInventoryItem(questFood);
+            if (food && (p()?.hp ?? 0) < 25) await bot.eatFood(food);
+            await sdk.sendWalk(fallback[0], fallback[1]);
+            await sdk.waitForCondition(state => !!state.player && !state.player.isDead && !state.player.combat.inCombat &&
+                Math.max(Math.abs(state.player.worldX - fallback[0]), Math.abs(state.player.worldZ - fallback[1])) <= 2, 9000);
+            return 'retreated';
+        }, method => ({ outcome: 'complete', method }));
+}
+
 async function mazeRoom(ctx: QuestContext, room: typeof mazeRooms[number], crossed: () => boolean) {
     const { sdk } = ctx;
     if (crossed()) return;
@@ -300,17 +335,25 @@ async function mazeRoom(ctx: QuestContext, room: typeof mazeRooms[number], cross
         await walk(ctx, room.nx, room.nz, 2);
         const fight = { name: room.name, hitpoints: room.hp, incomingHit: room.hit, meleeLevel: Math.min(40, room.hp), minimumFood: 0 };
         const plan = planQuestFight(ctx, fight, { magicOnly: !hasMeleeWeapon(ctx) });
-        for (let attempt = 0; attempt < 5 && !has(ctx, room.key); attempt++) {
-            if (await pickUp(ctx, room.key, 8)) break;
-            const seen = await sdk.waitForCondition(s => !!availableQuestTarget(s, room.npc), 15_000).catch(() => null);
-            const target = seen && availableQuestTarget(seen, room.npc);
-            if (!target) throw new Error(`${room.name} was not available to fight in this maze room`);
-            const p = position(ctx);
-            await fightQuestNpc(ctx, target, fight, plan, { retreat: async () => {
-                await sdk.sendWalk(p.worldX, p.worldZ);
+        const fallback: readonly [number, number] = room.npc === 752 ? [2929, 9653]
+            : room.npc === 753 ? [2928, 9645] : room.npc === 751 ? [2932, 9640]
+                : room.npc === 750 ? [2933, 3255] : room.npc === 749 ? [2927, 3256] : [2940, 3248];
+        try {
+            for (let attempt = 0; attempt < 5 && !has(ctx, room.key); attempt++) {
+                if (await pickUp(ctx, room.key, 8)) break;
+                const seen = await sdk.waitForCondition(s => !!availableQuestTarget(s, room.npc) ||
+                    !!s.player && s.player.combat.inCombat && s.player.hp < Math.max(25, room.hit * 3), 8000).catch(() => null);
+                const target = seen && availableQuestTarget(seen, room.npc);
+                if (!target) throw new Error(`${room.name} was not available to fight in this maze room`);
+                await withQuestProtection(ctx, ['protect_from_melee'], () => fightQuestNpc(ctx, target, fight, plan, {
+                    retreat: () => escapeMazeFight(ctx, fallback),
+                }));
                 await sdk.waitForTicks(3);
-            } });
-            await sdk.waitForTicks(3);
+                await pickUp(ctx, room.key, 8);
+            }
+        } catch (error) {
+            await escapeMazeFight(ctx, fallback);
+            throw error;
         }
     }
     if (!has(ctx, room.key)) throw new Error(`No ${room.name} key was recovered`);
@@ -344,12 +387,13 @@ async function leaveDwarvenMine(ctx: QuestContext) {
     await changeFloor(ctx, 'up', 3019, 9850, 2);
 }
 
-async function melzarsMaze(ctx: QuestContext) {
+async function melzarsMaze(ctx: QuestContext, inspectBasement?: (ctx: QuestContext) => Promise<void>) {
     const p = () => position(ctx);
     const inside = () => (p().level > 0 && area(ctx, 2930, 3249, 14)) ||
-        (p().worldX >= 2921 && p().worldX <= 2940 && p().worldZ >= 3239 && p().worldZ <= 3258) ||
+        (p().worldX >= 2921 && p().worldX <= 2940 && p().worldZ >= 3240 && p().worldZ <= 3257) ||
         inMazeBasement(ctx);
     if (!inside()) {
+        await getReplacementMazeKey(ctx);
         const mazeHealth = mazeRooms.reduce((sum, room) => sum + room.hp, 0);
         await prepareCombat(ctx, mazeHealth);
         planQuestFight(ctx, { name: 'Melzar’s Maze', hitpoints: mazeHealth, incomingHit: 8, meleeLevel: 40, minimumFood: 2 },
@@ -386,6 +430,7 @@ async function melzarsMaze(ctx: QuestContext) {
     }
     await mazeRoom(ctx, mazeRooms[3], () => p().worldX <= 2930 || p().worldZ >= 9647);
     await mazeRoom(ctx, mazeRooms[4], () => p().worldZ >= 9652);
+    await inspectBasement?.(ctx);
     await mazeRoom(ctx, mazeRooms[5], () => p().worldZ >= 9655 && p().worldX >= 2933);
     await activate(ctx, [2603, 2604], 2935, 9657, 'Open or search the Melzar’s Maze map chest');
     if (!has(ctx, 1535)) await activate(ctx, [2604], 2935, 9657, 'Take the Melzar’s Maze map piece');
@@ -673,46 +718,57 @@ async function fightElvarg(ctx: QuestContext, page: string) {
     await waitForQuestJournal(ctx, journal, 'complete', 12000);
 }
 
-const result = await runScript(async ctx => {
-    const { sdk } = ctx;
-    await sdk.waitForReady();
+export async function checkDragonMazeBasement(ctx: QuestContext, inspectBasement: (ctx: QuestContext) => Promise<void>) {
     await waitForQuestJournal(ctx, journal, 'available', 15000);
-    if (readQuest(ctx, journal) === 'complete') return;
-    await exitZanaris(ctx);
     await getBriefing(ctx);
-    let page = await journalText(ctx, journal, title);
-    if (!nedHired.test(page) && !finishedSailing.test(page)) {
-        if (has(ctx, 1535) || has(ctx, 1538)) await leaveMazeWithMap(ctx);
-        if (has(ctx, 1537) || has(ctx, 1538)) await leaveDwarvenMine(ctx);
-        if (shipRepaired.test(page)) await leaveShip(ctx);
-        if (!inMazeBasement(ctx) && !area(ctx, 2930, 3248, 14) && !inDwarvenMine(ctx) && !inShipHold(ctx)) {
-            questPhase('dragon-slayer-map-preflight');
-            await prepareQuestStep(ctx, { slots: 13, withdraw: [
-                { name: 'Maze key', count: 1 }, ...mapPieces, { name: 'Crandor map', count: 1 },
-            ] });
-            await getShield(ctx);
-        }
-        if (!has(ctx, 1538)) {
-            if (inDwarvenMine(ctx) && !has(ctx, 1537)) await oracleMap(ctx);
-            if (!has(ctx, 1535)) await melzarsMaze(ctx);
-            if (!has(ctx, 1537)) await oracleMap(ctx);
-            if (!has(ctx, 1536)) await wormbrainMap(ctx);
-            questPhase('dragon-slayer-assemble-map');
-            const first = inventory(ctx, 1535);
-            const second = inventory(ctx, 1536);
-            if (!first || !second) throw new Error('The map parts are missing or banked');
-            await sdk.sendUseItemOnItem(first.slot, second.slot);
-            await sdk.waitForCondition(() => has(ctx, 1538), 8000);
-            await continueDialog(ctx);
-        }
-        if (!shipRepaired.test(page)) await prepareShip(ctx, page);
-        page = await journalText(ctx, journal, title);
+    if (!inMazeBasement(ctx) && !has(ctx, 1542)) {
+        await prepareQuestStep(ctx, { bank: [2947, 3368], slots: 2, withdraw: [{ name: 'Maze key', count: 1 }] });
     }
-    await fightElvarg(ctx, page);
-    questLog('quest-complete', { quest, evidence: 'journal', questPoints: sdk.getState()?.questPoints });
-}, { printState: false, timeout: 7_200_000 });
+    await melzarsMaze(ctx, inspectBasement);
+}
 
-if (!result.success) {
-    questLog('quest-failed', { quest, error: result.error?.message });
-    process.exitCode = 1;
+if (import.meta.main) {
+    const result = await runScript(async ctx => {
+        const { sdk } = ctx;
+        await sdk.waitForReady();
+        await waitForQuestJournal(ctx, journal, 'available', 15000);
+        if (readQuest(ctx, journal) === 'complete') return;
+        await exitZanaris(ctx);
+        await getBriefing(ctx);
+        let page = await journalText(ctx, journal, title);
+        if (!nedHired.test(page) && !finishedSailing.test(page)) {
+            if (has(ctx, 1535) || has(ctx, 1538)) await leaveMazeWithMap(ctx);
+            if (has(ctx, 1537) || has(ctx, 1538)) await leaveDwarvenMine(ctx);
+            if (shipRepaired.test(page)) await leaveShip(ctx);
+            if (!inMazeBasement(ctx) && !area(ctx, 2930, 3248, 14) && !inDwarvenMine(ctx) && !inShipHold(ctx)) {
+                questPhase('dragon-slayer-map-preflight');
+                await prepareQuestStep(ctx, { slots: 13, withdraw: [
+                    { name: 'Maze key', count: 1 }, ...mapPieces, { name: 'Crandor map', count: 1 },
+                ] });
+                await getShield(ctx);
+            }
+            if (!has(ctx, 1538)) {
+                if (inDwarvenMine(ctx) && !has(ctx, 1537)) await oracleMap(ctx);
+                if (!has(ctx, 1535)) await melzarsMaze(ctx);
+                if (!has(ctx, 1537)) await oracleMap(ctx);
+                if (!has(ctx, 1536)) await wormbrainMap(ctx);
+                questPhase('dragon-slayer-assemble-map');
+                const first = inventory(ctx, 1535);
+                const second = inventory(ctx, 1536);
+                if (!first || !second) throw new Error('The map parts are missing or banked');
+                await sdk.sendUseItemOnItem(first.slot, second.slot);
+                await sdk.waitForCondition(() => has(ctx, 1538), 8000);
+                await continueDialog(ctx);
+            }
+            if (!shipRepaired.test(page)) await prepareShip(ctx, page);
+            page = await journalText(ctx, journal, title);
+        }
+        await fightElvarg(ctx, page);
+        questLog('quest-complete', { quest, evidence: 'journal', questPoints: sdk.getState()?.questPoints });
+    }, { printState: false, timeout: 7_200_000 });
+
+    if (!result.success) {
+        questLog('quest-failed', { quest, error: result.error?.message });
+        process.exitCode = 1;
+    }
 }
