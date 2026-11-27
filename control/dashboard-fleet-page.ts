@@ -1,4 +1,5 @@
 import { fleetSkills } from './dashboard-fleet-stats';
+import { fleetActionIcon, fleetSkillIcon, type FleetActionIcon } from './dashboard-fleet-icons';
 import { questHiscore, type QuestColumn } from './dashboard-quests';
 import { activity, activityIds } from './dashboard-task-catalog';
 import type { Bot, ControlActivity, Snapshot } from './public-status';
@@ -51,22 +52,28 @@ function fact(label: string, value: string, className = '') {
     return `<div><dt>${label}</dt><dd class="${className}">${escape(value)}</dd></div>`;
 }
 
+function cardAction(label: string, icon: FleetActionIcon, attributes: string) {
+    return `<button type="button" class="card-action" ${attributes} aria-label="${escape(label)}" title="${escape(label)}">${fleetActionIcon(icon)}</button>`;
+}
+
 function card(bot: Bot, category: Group, reason: string, managed: ControlActivity | undefined, now: number) {
     const name = escape(bot.name);
     const last = bot.lastActivity;
     const effect = last ? `<time datetime="${escape(last.at)}">${activityClock.format(new Date(last.at))}</time>` : '—';
     const watch = bot.status === 'Online'
-        ? `<a href="https://maxbittker.github.io/rs-world/?follow=${encodeURIComponent(bot.name)}" target="_blank" rel="noopener">Watch ↗</a>` : '';
+        ? `<a class="card-action" href="https://maxbittker.github.io/rs-world/?follow=${encodeURIComponent(bot.name)}" target="_blank" rel="noopener"
+            aria-label="Watch live" title="Watch live in a new tab">${fleetActionIcon('watch')}</a>` : '';
+    const pausePlan = bot.plan?.status === 'running';
     const activityButton = managed?.running
-        ? `<button type="button" data-bot="${name}" data-action="stop">${bot.plan?.status === 'running' ? 'Pause plan' : 'Stop activity'}</button>` : '';
-    const planButton = `<button type="button" data-plan-bot="${name}">${bot.plan ? 'View plan' : 'Plan activities'}</button>`;
+        ? cardAction(pausePlan ? 'Pause plan' : 'Stop activity', pausePlan ? 'pause' : 'stop', `data-bot="${name}" data-action="stop"`) : '';
+    const planButton = cardAction(bot.plan ? 'View plan' : 'Plan activities', 'plan', `data-plan-bot="${name}"`);
     const planDetail = bot.plan && bot.plan.status !== 'complete'
         ? `<small class="plan-card-status" title="${escape(bot.plan.message ?? '')}">Plan · ${bot.plan.status} · step ${bot.plan.index + 1} of ${bot.plan.length}</small>` : '';
     return `<article class="bot" data-bot-row data-name="${name}" data-status="${category}">
     <div class="bot-header"><h3>${name} <span class="badge">Managed</span></h3>
       <span class="quest-count" data-card-levels hidden></span></div>
     <p class="reason" title="${escape(reason)}"><span class="badge ${category}">${groups[category]}</span> ${escape(reason)}</p>
-    <p class="task-line" data-activity>${escape(bot.activity)}</p>${planDetail}
+    ${bot.activity === reason ? '' : `<p class="task-line" data-activity>${escape(bot.activity)}</p>`}${planDetail}
     <p class="log" title="Last activity">Last activity · ${effect}${last ? ' · ' + escape(last.reason) : ''}</p>
     <dl class="facts">
       ${fact('Heartbeat', timeAgo(now, bot.heartbeat))}
@@ -75,13 +82,17 @@ function card(bot: Bot, category: Group, reason: string, managed: ControlActivit
       ${fact('Client', bot.status, 'status-' + bot.status.toLowerCase())}
     </dl>
     <div class="location-line"><strong>${escape(bot.location ?? 'Location unavailable')}</strong><small data-card-xp hidden></small></div>
-    <div class="skills" data-card-skills hidden></div>
+    <div class="skills" data-card-skills role="group" aria-label="Combat skills" hidden>
+      ${fleetSkills.slice(0, 7).map(([skill]) => `<span class="skill-badge" data-card-skill="${escape(skill)}" hidden>
+        ${fleetSkillIcon(skill)}<span class="visually-hidden">${escape(skill)} </span><span data-skill-level></span>
+      </span>`).join('')}
+    </div>
     <div class="card-footer">
-      <button type="button" data-detail="${name}">Details</button>
-      <button type="button" data-inventory="${name}">Current inventory</button>
-      <button type="button" data-diagnostics="${name}">Diagnostics</button>
-      <button type="button" data-audit-bot="${name}">Audit history</button>
-      <button type="button" data-bank="${name}">Bank</button>
+      ${cardAction('Details', 'details', `data-detail="${name}"`)}
+      ${cardAction('Current inventory', 'inventory', `data-inventory="${name}"`)}
+      ${cardAction('Diagnostics', 'diagnostics', `data-diagnostics="${name}"`)}
+      ${cardAction('Audit history', 'audit', `data-audit-bot="${name}"`)}
+      ${cardAction('Bank', 'bank', `data-bank="${name}"`)}
       ${planButton}${activityButton}${watch}
     </div>
     </article>`;

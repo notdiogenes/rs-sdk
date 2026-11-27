@@ -260,7 +260,7 @@ test('reloads a committed Fleet Desk presentation while the same audit writer ke
     const reports = new Database(join(directory, 'activity-audit.sqlite'), { readonly: true });
     try {
         for (const file of [
-            'dashboard-presentation-entry.ts', 'dashboard-fleet-page.ts', 'dashboard-fleet.css',
+            'dashboard-presentation-entry.ts', 'dashboard-fleet-page.ts', 'dashboard-fleet-icons.ts', 'dashboard-fleet.css',
             'public-status-controls.js', 'dashboard-fleet-stats.ts', 'dashboard-quests.ts', 'dashboard-task-catalog.ts',
             'dashboard-audit-report.ts', 'dashboard-audit-insights-report.ts', 'dashboard-audit-schema.ts',
         ]) copyFileSync(join(import.meta.dir, file), join(source, file));

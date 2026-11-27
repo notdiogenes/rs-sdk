@@ -101,9 +101,18 @@
             levels.textContent = [Number.isFinite(points) && `${number(points)} QP`, stored?.skills?.combat != null &&
                 `Cb ${number(stored.skills.combat)}`].filter(Boolean).join(' · ');
             levels.hidden = !levels.textContent;
-            badges.innerHTML = skills.slice(0, 7).filter(([skill]) => stored?.skills?.levels[skill] != null)
-                .map(([skill, short]) => `<span title="${skill}">${short} ${number(stored.skills.levels[skill])}</span>`).join('');
-            badges.hidden = !badges.textContent;
+            let hasSkills = false;
+            for (const badge of badges.querySelectorAll('[data-card-skill]')) {
+                const skill = badge.dataset.cardSkill;
+                const level = stored?.skills?.levels[skill];
+                badge.hidden = !Number.isFinite(level);
+                if (badge.hidden) continue;
+                const value = number(level);
+                badge.querySelector('[data-skill-level]').textContent = value;
+                badge.title = `${skill} ${value}`;
+                hasSkills = true;
+            }
+            badges.hidden = !hasSkills;
             xp.hidden = stored?.xpGained == null;
             xp.textContent = xp.hidden ? '' : `${number(stored.xpGained)} XP · last hour`;
         }
@@ -967,8 +976,9 @@
             }
             clearTimeout(refresh);
             selected = button;
-            title.textContent = button.textContent + ' for ' + button.dataset.bot;
-            submit.textContent = button.textContent;
+            const label = button.getAttribute('aria-label') || button.textContent;
+            title.textContent = label + ' for ' + button.dataset.bot;
+            submit.textContent = label;
             submit.disabled = false;
             message.textContent = '';
             dialog.showModal();
