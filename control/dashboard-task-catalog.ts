@@ -20,6 +20,10 @@ export const activityCatalog = {
     'lost-city': {
         label: 'Lost City', category: 'Quests', usage: 'once', script: 'quests/lost-city.ts', journal: 7367,
     },
+    'dragon-maze-recovery': {
+        label: 'Check Melzar’s Maze for dropped items', category: 'Setup', usage: 'once',
+        script: 'quests/dragon-maze-recovery.ts',
+    },
     'dragon-slayer': {
         label: 'Dragon Slayer', category: 'Quests', usage: 'once', script: 'quests/dragon-slayer.ts', journal: 7383,
     },
