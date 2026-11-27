@@ -154,14 +154,16 @@ async function getBriefing(ctx: QuestContext) {
         page = await journalText(ctx, journal, title);
     }
     if (!/should speak to Oziach|should return to Oziach/i.test(page)) return;
-    await prepareQuestStep(ctx, { slots: 2, withdraw: [{ name: 'Maze key', count: 1 }] });
+    await prepareQuestStep(ctx, { bank: [3094, 3491], slots: 2,
+        withdraw: /should return to Oziach/i.test(page) ? [{ name: 'Maze key', count: 1 }] : [],
+    });
     const introductions = [/can you sell me some rune plate mail/i, /guildmaster of the champions/i,
         /how am I meant to prove/i, /a dragon.*sounds like fun/i];
     const farewell = /try and get everything together/i;
     const findDragon = /where can I find this dragon/i;
     await walk(ctx, 3068, 3517, 0);
     for (const topic of [/first piece/i, /second piece/i, /third piece/i, /where can I get an antidragon shield/i]) {
-        await talk(ctx, /^oziach$/i, [...introductions, farewell, topic, findDragon]);
+        await talk(ctx, /^oziach$/i, [...introductions, farewell, topic, findDragon], 48);
     }
     if (/should return to Oziach|should speak to Oziach/i.test(await journalText(ctx, journal, title))) {
         throw new Error('Dragon Slayer journal did not confirm Oziach’s briefing');

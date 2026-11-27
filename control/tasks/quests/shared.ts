@@ -79,7 +79,7 @@ export async function changeFloor(ctx: QuestContext, direction: 'up' | 'down', x
     throw new Error(`Could not climb ${direction} near ${x}, ${z} on plane ${before.level}`);
 }
 
-export async function talk(ctx: QuestContext, npc: RegExp, choices: RegExp[]) {
+export async function talk(ctx: QuestContext, npc: RegExp, choices: RegExp[], maxPages = 24) {
     const { bot, sdk } = ctx;
     auditEvent('milestone', 'quest-dialogue', { npc: npc.source });
     const target = sdk.findNearbyNpc(npc);
@@ -91,11 +91,11 @@ export async function talk(ctx: QuestContext, npc: RegExp, choices: RegExp[]) {
     if (!target) throw new Error(`Could not find ${npc}`);
     const conversation = await bot.talkTo(target);
     if (!conversation.success && !sdk.getDialog()?.isOpen) throw new Error(conversation.message);
-    await continueDialog(ctx, choices);
+    await continueDialog(ctx, choices, maxPages);
 }
 
-export async function continueDialog({ sdk }: QuestContext, choices: RegExp[] = []) {
-    for (let page = 0; page < 24; page++) {
+export async function continueDialog({ sdk }: QuestContext, choices: RegExp[] = [], maxPages = 24) {
+    for (let page = 0; page < maxPages; page++) {
         const dialog = sdk.getDialog();
         if (!dialog?.isOpen) {
             await sdk.waitForTicks(2);
@@ -117,7 +117,7 @@ export async function continueDialog({ sdk }: QuestContext, choices: RegExp[] = 
         }
         await sdk.waitForTicks(2);
     }
-    auditEvent('check', 'quest-dialogue-finished', { outcome: 'failed', pages: 24 });
+    auditEvent('check', 'quest-dialogue-finished', { outcome: 'failed', pages: maxPages });
     throw new Error('Quest dialogue did not finish');
 }
 
