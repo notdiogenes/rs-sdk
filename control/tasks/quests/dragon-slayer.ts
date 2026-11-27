@@ -393,10 +393,17 @@ async function leaveMazeWithMap(ctx: QuestContext) {
         await changeFloor(ctx, 'up', 2939, 9657, 0);
     }
     const p = position(ctx);
-    if (p.level === 0 && p.worldX >= 2938 && p.worldX <= 2940 && p.worldZ >= 3251 && p.worldZ <= 3258) {
-        await activate(ctx, [2602], 2938, 3252, 'Exit Melzar’s Maze');
-        await walk(ctx, 2941, 3252, 1);
+    if (p.level !== 0 || p.worldX < 2921 || p.worldX > 2940 || p.worldZ < 3240 || p.worldZ > 3257) return;
+    if (p.worldX >= 2938 && p.worldZ >= 3252) {
+        await walk(ctx, 2938, 3252, 0);
+        await activate(ctx, [2602], 2938, 3252, 'Leave the maze return corridor', { walkFirst: false });
+        await ctx.sdk.waitForCondition(() => position(ctx).worldX === 2937, 5000);
     }
+    await walk(ctx, 2940, 3248, 0);
+    await activate(ctx, [2595], 2941, 3248, 'Unlock the maze entrance from inside', { item: 1542, walkFirst: false });
+    await ctx.sdk.waitForCondition(() => position(ctx).worldX >= 2941, 5000);
+    await walk(ctx, 2942, 3248, 0);
+    auditEvent('check', 'dragon-slayer-maze-exit', { outcome: 'complete', mapPiece: has(ctx, 1535) });
 }
 
 async function leaveDwarvenMine(ctx: QuestContext) {
@@ -683,6 +690,7 @@ async function fightElvarg(ctx: QuestContext, page: string) {
     if (!onCrandor() && !inLair()) {
         questPhase('dragon-slayer-prepare-elvarg');
         if (inShipHold(ctx) || onShipDeck(ctx)) await leaveShip(ctx);
+        await getShield(ctx);
         await prepareCombat(ctx, elvarg.hitpoints);
         if (!shieldEquipped(ctx)) {
             const shield = inventory(ctx, 1540);
