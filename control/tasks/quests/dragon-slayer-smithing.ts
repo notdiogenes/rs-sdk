@@ -35,7 +35,7 @@ function miningApproach(ctx: QuestContext, rock: { x: number; z: number }) {
 async function collectOre(ctx: QuestContext, ore: Ore, amount: number) {
     if (count(ctx, stock[ore]) >= amount) return;
     const faladorMine = [2908, 3363] as const;
-    const anchors = ore === 'coal' ? [[3088, 3432] as const, faladorMine]
+    const anchors = ore === 'coal' ? [[3236, 3167] as const, [3088, 3432] as const, faladorMine]
         : [ore === 'iron' ? [2903, 3353] as const : faladorMine];
     let lastFailure = '';
     for (const anchor of anchors) {
@@ -73,10 +73,15 @@ async function collectOreAt(ctx: QuestContext, ore: Ore, amount: number, anchor:
                 const current = (await sdk.scanNearbyLocs(5)).find(loc => loc.id === rock.id && loc.x === rock.x && loc.z === rock.z);
                 const option = current?.optionsWithIndex.find(option => /^mine$/i.test(option.text));
                 if (!current || !option) return 'The rock was depleted before the swing';
+                const tick = sdk.getState()?.tick ?? 0;
                 const click = await sdk.sendInteractLoc(current.x, current.z, current.id, option.opIndex);
                 if (!click.success) return click.message;
-                const observed = await sdk.waitForCondition(() => count(ctx, stock[ore]) > before, 12_000).catch(() => null);
-                return observed ? 'Ore observed in inventory' : 'No inventory change after the mining swing';
+                const observed = await sdk.waitForCondition(() => count(ctx, stock[ore]) > before, ore === 'coal' ? 20_000 : 12_000).catch(() => null);
+                if (observed) return 'Ore observed in inventory';
+                const feedback = sdk.getState()?.gameMessages.filter(message => message.tick >= tick && message.type === 0 && !message.sender)
+                    .slice(-5).map(message => message.text);
+                auditEvent('check', 'dragon-slayer-mining-feedback', { outcome: 'unconfirmed', ore, rock: current.id, feedback });
+                return 'No inventory change after the mining swing';
             }, message => ({
                 outcome: count(ctx, stock[ore]) > before ? 'complete' : 'unconfirmed',
                 message, available: count(ctx, stock[ore]),
