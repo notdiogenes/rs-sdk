@@ -462,6 +462,8 @@
     const auditMode = document.querySelector('#audit-mode');
     const auditSummaryPhase = document.querySelector('#audit-summary-phase');
     const auditSummaryPhaseField = document.querySelector('#audit-summary-phase-field');
+    const auditRevision = document.querySelector('#audit-revision');
+    const auditRevisionField = document.querySelector('#audit-revision-field');
     const auditPhase = document.querySelector('#audit-phase');
     const auditStatus = document.querySelector('#audit-status');
     const auditContent = document.querySelector('#audit-content');
@@ -486,6 +488,56 @@
         <span> ${escape(row.bot)} · ${escape(row.status)}</span><p><small>${escape(labelTime(row.started_at))}</small></p>
         ${row.failure_message ? '<p>' + escape(row.failure_message) + '</p>' : ''}</li>`;
 
+    const auditDuration = ms => ms >= 3_600_000 ? `${num.format(Math.round(ms / 36_000) / 100)} h`
+        : ms >= 60_000 ? `${num.format(Math.round(ms / 6_000) / 10)} min` : `${num.format(Math.round(ms / 1000))} s`;
+    const auditPercent = value => `${num.format(Math.round(value * 1000) / 10)}%`;
+    const auditName = value => value.replaceAll('-', ' ');
+    const auditTrace = (label, run, phase) => `<button type="button" data-audit-run="${escape(run)}"
+        ${phase ? 'data-audit-phase="' + escape(phase) + '"' : ''}>${escape(label)}</button>`;
+
+    function renderInsights(report) {
+        const { sample, durationMs, phases, attempts, pickpocket, throughput, trend, setbacks, failures } = report;
+        auditStatus.textContent = sample.runs
+            ? `${sample.runs} runs · ${sample.bots} bots · ${sample.running} running · ${sample.interrupted} interrupted`
+            : 'No runs started in this window. Trends can include earlier runs still active in the window.';
+        const panel = (title, body) => `<section class="insight-panel"><h3>${title}</h3>${body}</section>`;
+        const bar = (label, value, amount, max, run, phase, tone = '') => `<div class="insight-bar">
+            <div class="insight-bar-heading">${run ? auditTrace(label, run, phase) : '<span>' + escape(label) + '</span>'}
+                <strong>${escape(value)}</strong></div>
+            <progress class="${tone}" aria-label="${escape(label + ' ' + value)}" value="${amount}" max="${Math.max(1, max)}"></progress>
+        </div>`;
+        const biggest = phases[0];
+        const notes = [
+            biggest?.share ? `${auditName(biggest.phase)} accounted for ${auditPercent(biggest.share)} of ${auditDuration(durationMs)} recorded time.` : '',
+            pickpocket.count ? `${number(pickpocket.successes)} of ${number(pickpocket.count)} pickpocket attempts succeeded (${auditPercent(pickpocket.successRate)}).` : '',
+            throughput.xpPerHour !== null ? `${number(Math.round(throughput.xpPerHour))} XP/h across all recorded phases.` : '',
+            throughput.coinsPerHour !== null ? `${number(Math.round(throughput.coinsPerHour))} coins/h across all recorded phases.` : '',
+        ].filter(Boolean);
+        const dailyMax = Math.max(0, ...trend.days.map(row => row.duration_ms));
+        const daily = trend.days.map(row => bar(row.date, auditDuration(row.duration_ms), row.duration_ms, dailyMax) +
+            `<p class="insight-note">${row.attempts ? number(row.successes) + '/' + number(row.attempts) + ' successful pickpockets · ' : ''}
+                ${number(row.setbacks)} setbacks${row.xpPerHour === null ? '' : ' · ' + number(Math.round(row.xpPerHour)) + ' XP/h'}</p>`).join('');
+        return `${notes.map(note => '<p class="insight-note">' + escape(note) + '</p>').join('')}
+            <div class="insight-grid">
+            ${panel('Time by phase', phases.filter(phase => phase.duration_ms > 0).map(phase =>
+                bar(auditName(phase.phase), `${auditDuration(phase.duration_ms)} · ${auditPercent(phase.share)}`, phase.duration_ms,
+                    durationMs, phase.run_id, phase.phase)).join('') || '<p>No phase time recorded.</p>')}
+            ${panel('Recorded outcomes', attempts.map(row =>
+                bar(auditName(row.name), number(row.count), row.count, attempts[0]?.count, row.run_id, '',
+                    row.name.endsWith('-succeeded') || row.name === 'combat-round-xp-gained' ? 'insight-success' : 'insight-failed')).join('')
+                || '<p>No instrumented attempt outcomes.</p>')}
+            ${panel('Setbacks', setbacks.map(row => `<p class="audit-row">${auditTrace(row.name, row.run_id, row.phase)}
+                · ${number(row.count)} in ${number(row.runs)} runs · ${escape(row.task)}
+                <br><small>${number(row.successful_runs)} in successful runs · ${number(row.before_later_failure)} before a later failure</small></p>`).join('')
+                || '<p>No recorded setbacks.</p>')}
+            ${panel('Terminal failures', failures.map(row => `<p class="audit-row">${auditTrace(row.step || 'Open failed run', row.run_id, row.phase)}
+                · ${number(row.count)} runs · ${number(row.bots)} bots · ${escape(row.task)}${row.message ? '<br><small>' + escape(row.message) + '</small>' : ''}</p>`).join('')
+                || '<p>No recorded terminal failures.</p>')}
+            </div>
+            ${panel('Daily activity · US Eastern', `<p class="insight-note">Trend coverage starts ${escape(labelTime(trend.coverageStart))}. The current day can be partial.</p>
+                ${daily || '<p>No trend data in this window yet.</p>'}`)}`;
+    }
+
     async function loadAudit(older = false, firstBefore, firstLimit) {
         const version = ++auditVersion;
         const params = new URLSearchParams({ view: 'audit', limit: firstLimit || '50' });
@@ -497,7 +549,8 @@
             params.set('days', auditDays.value || '35');
             if (auditBot.value.trim()) params.set('bot', auditBot.value.trim());
             if (auditTask.value.trim()) params.set('task', auditTask.value.trim());
-            if (auditMode.value === 'summary' && auditSummaryPhase.value.trim()) params.set('phase', auditSummaryPhase.value.trim());
+            if (auditMode.value !== 'runs' && auditSummaryPhase.value.trim()) params.set('phase', auditSummaryPhase.value.trim());
+            if (auditMode.value === 'insights' && auditRevision.value.trim()) params.set('revision', auditRevision.value.trim());
         }
         if (older && auditCursor) params.set('before', auditCursor);
         if (firstBefore) params.set('before', firstBefore);
@@ -511,7 +564,7 @@
             auditOlder.textContent = auditRun ? 'Load older events' : 'Load older runs';
             if (auditRun) {
                 const row = report.run;
-                if (!auditBot.value) auditBot.value = row.bot;
+                if (!auditBot.value && auditLink.get('run') === auditRun) auditBot.value = row.bot;
                 const currentPhase = auditPhase.value;
                 auditPhase.replaceChildren(new Option('All phases', ''), ...report.phases.map(phase => new Option(phase.phase, phase.phase)));
                 auditPhase.value = currentPhase;
@@ -526,6 +579,8 @@
                         · ${number(Math.round(phase.duration_ms / 1000))} s · ${number(phase.actions)} actions · ${number(phase.setbacks)} setbacks</li>`)}
                     ${auditList('Milestones and setbacks', report.signals, signal => `<li class="audit-row">${escape(signal.name)}
                         · ${escape(signal.phase)} · ${number(signal.count)}${signal.evidence ? auditJson(signal.evidence) : ''}</li>`)}`;
+            } else if (auditMode.value === 'insights') {
+                auditContent.innerHTML = renderInsights(report);
             } else if (auditMode.value === 'summary') {
                 auditStatus.textContent = report.breakpoints.length || report.totals.length || report.signals.length
                     ? `Runs started within the last ${auditDays.value || 35} days` : 'No audit activity matches these filters.';
@@ -559,6 +614,7 @@
         auditOlder.hidden = true;
         auditForm.hidden = Boolean(run);
         document.querySelector('#audit-run-tools').hidden = !run;
+        document.querySelector('#audit-back').textContent = auditMode.value === 'insights' ? 'Back to Insights' : 'Back to runs';
         document.querySelector('#audit-title').textContent = run ? 'Audit run' : 'Audit history';
         auditContent.replaceChildren();
         void loadAudit(false, before, limit);
@@ -570,18 +626,23 @@
         auditBot.value = params.get('bot') || '';
         auditTask.value = params.get('task') || '';
         auditDays.value = params.get('days') || '35';
-        auditMode.value = params.get('mode') === 'summary' ? 'summary' : 'runs';
-        auditSummaryPhase.value = auditMode.value === 'summary' ? params.get('phase') || '' : '';
-        auditSummaryPhaseField.hidden = auditMode.value !== 'summary';
+        auditMode.value = ['summary', 'insights'].includes(params.get('mode')) ? params.get('mode') : 'runs';
+        auditSummaryPhase.value = auditMode.value !== 'runs' ? params.get('phase') || '' : '';
+        auditRevision.value = auditMode.value === 'insights' ? params.get('revision') || '' : '';
+        showAuditFilters();
         if (!auditDialog.open) auditDialog.showModal();
         showAuditRun(params.get('run') || '', params.get('phase') || '', params.get('before'), params.get('limit'));
     }
 
     auditForm.addEventListener('submit', event => { event.preventDefault(); showAuditRun(); });
-    auditMode.addEventListener('change', () => { auditSummaryPhaseField.hidden = auditMode.value !== 'summary'; });
+    function showAuditFilters() {
+        auditSummaryPhaseField.hidden = auditMode.value === 'runs';
+        auditRevision.disabled = auditRevisionField.hidden = auditMode.value !== 'insights';
+    }
+    auditMode.addEventListener('change', showAuditFilters);
     auditContent.addEventListener('click', event => {
         const button = event.target.closest('[data-audit-run]');
-        if (button) showAuditRun(button.dataset.auditRun);
+        if (button) showAuditRun(button.dataset.auditRun, button.dataset.auditPhase || '');
     });
     auditDialog.querySelector('[data-close]').addEventListener('click', () => auditDialog.close());
     auditDialog.addEventListener('close', () => {
@@ -592,11 +653,7 @@
     auditOlder.addEventListener('click', () => loadAudit(true));
     auditPhase.addEventListener('change', () => loadAudit());
     document.querySelector('#audit-refresh').addEventListener('click', () => loadAudit());
-    document.querySelector('#audit-back').addEventListener('click', () => {
-        auditMode.value = 'runs';
-        auditSummaryPhaseField.hidden = true;
-        showAuditRun();
-    });
+    document.querySelector('#audit-back').addEventListener('click', () => showAuditRun());
     document.querySelectorAll('#audit-open,[data-audit-bot]').forEach(button => button.addEventListener('click', async () => {
         await sessionReady;
         if (!signedIn) return openSignIn(button);

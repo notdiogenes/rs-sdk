@@ -5,7 +5,8 @@ source_dir=$1
 stamp=$2
 revision=$(sha256sum -- "$source_dir/public-status.ts" "$source_dir/public-status-controls.js" \
     "$source_dir/dashboard-activity.ts" "$source_dir/dashboard-session.ts" \
-    "$source_dir/dashboard-diagnostics.ts" "$source_dir/dashboard-audit.ts" "$source_dir/dashboard-last-activity.ts" "$source_dir/hosted-bot.ts" \
+    "$source_dir/dashboard-diagnostics.ts" "$source_dir/dashboard-audit.ts" "$source_dir/dashboard-audit-insights.ts" \
+    "$source_dir/dashboard-last-activity.ts" "$source_dir/hosted-bot.ts" \
     "$source_dir/dashboard-fleet-page.ts" "$source_dir/dashboard-fleet.css" \
     "$source_dir/dashboard-fleet-stats.ts" "$source_dir/dashboard-quests.ts" \
     "$source_dir/dashboard-demo.ts" "$source_dir/dashboard-task-catalog.ts" "$source_dir/dashboard-roster.ts" \

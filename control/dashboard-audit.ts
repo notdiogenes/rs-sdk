@@ -1,6 +1,7 @@
 import { Database } from 'bun:sqlite';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
+import { dashboardAuditInsights } from './dashboard-audit-insights';
 
 const day = 86_400_000;
 export const auditRetentionDays = 35;
@@ -66,6 +67,7 @@ export function dashboardAudit(directory: string, clock = Date.now) {
             FOREIGN KEY (run_id, phase, kind, name) REFERENCES audit_signals(run_id, phase, kind, name) ON DELETE CASCADE
         );
     `);
+    const insights = dashboardAuditInsights(db, clock());
     const active = new Map<string, Active>();
     const insert = db.query('INSERT INTO audit_events (run_id, at, phase, kind, name, data) VALUES (?, ?, ?, ?, ?, ?)');
     const count = db.query('UPDATE audit_runs SET detail_count = detail_count + 1 WHERE id = ?');
@@ -95,7 +97,8 @@ export function dashboardAudit(directory: string, clock = Date.now) {
 
     function prune() {
         const cutoff = clock() - auditRetentionDays * day;
-        db.query('DELETE FROM audit_runs WHERE started_at < ? AND status <> ?').run(cutoff, 'running');
+        db.query('DELETE FROM audit_runs WHERE COALESCE(ended_at, started_at) < ? AND status <> ?').run(cutoff, 'running');
+        insights.prune(cutoff);
         // Keep the time budget for reports even when high-volume activity
         // forces low-level traces out of the detail budget early.
         db.query(`DELETE FROM audit_events WHERE id <= (
@@ -123,6 +126,7 @@ export function dashboardAudit(directory: string, clock = Date.now) {
         const now = clock();
         if (data.kind === 'phase' && data.name !== run.phase) {
             phase.run(id, run.phase, 0, Math.max(0, now - run.at), 0, 0, 0, 0);
+            insights.recordTime(id, run.phase, run.at, now);
             run.phase = data.name;
             run.at = now;
             run.pendingCheck = undefined;
@@ -138,7 +142,10 @@ export function dashboardAudit(directory: string, clock = Date.now) {
         const checkpointMs = now - run.at >= 5000 ? now - run.at : 0;
         if (action || timeout || isSetback || checkpointMs) {
             phase.run(id, run.phase, 0, checkpointMs, +action, +failedDispatch, +timeout, +isSetback);
-            if (checkpointMs) run.at = now;
+            if (checkpointMs) {
+                insights.recordTime(id, run.phase, run.at, now);
+                run.at = now;
+            }
         }
         if (data.kind === 'check' && ['failed', 'timeout', 'unconfirmed'].includes(data.outcome ?? '')) {
             if (!run.pendingCheck || data.name !== 'state-observation') run.pendingCheck = data.name;
@@ -160,9 +167,12 @@ export function dashboardAudit(directory: string, clock = Date.now) {
             const evidence = isSetback ? JSON.stringify(setbackContext.all(id, run.phase).reverse()
                 .map(row => ({ ...row, data: JSON.parse(row.data) }))) : null;
             signal.run(id, run.phase, data.kind, data.name, evidence);
+            const xp = nonnegativeInteger(data.xpGained);
+            const coins = nonnegativeInteger(data.coinsGained);
+            insights.recordSignal(id, run.phase, now, data.name, isSetback, xp, coins);
             if (data.name.startsWith('pickpocket-attempt-') || data.name.startsWith('combat-round-')) {
                 attemptMetrics.run(id, run.phase, data.kind, data.name, nonnegativeInteger(data.elapsedMs),
-                    nonnegativeInteger(data.xpGained), nonnegativeInteger(data.coinsGained), nonnegativeInteger(data.hpLost));
+                    xp, coins, nonnegativeInteger(data.hpLost));
             }
         }
         count.run(id);
@@ -174,6 +184,7 @@ export function dashboardAudit(directory: string, clock = Date.now) {
         const now = clock();
         const status = stopped ? 'stopped' : exitCode === 0 ? 'succeeded' : 'failed';
         phase.run(id, run.phase, 0, Math.max(0, now - run.at), 0, 0, 0, 0);
+        insights.recordTime(id, run.phase, run.at, now);
         const evidence = status === 'failed'
             ? JSON.stringify(recentEvidence.all(id).map(row => ({ ...row, data: JSON.parse(row.data) }))) : null;
         db.query(`UPDATE audit_runs SET ended_at = ?, status = ?, exit_code = ?,
@@ -188,6 +199,7 @@ export function dashboardAudit(directory: string, clock = Date.now) {
         const task = params.get('task');
         const id = params.get('run');
         const through = params.get('phase');
+        const revision = params.get('revision');
         const mode = params.get('mode') ?? 'runs';
         const bounded = (name: string, fallback: number, minimum: number, maximum: number) => {
             const n = params.has(name) ? Number(params.get(name)) : fallback;
@@ -221,6 +233,10 @@ export function dashboardAudit(directory: string, clock = Date.now) {
                 events: detail.slice(0, limit).reverse().map(row => ({ ...row, data: JSON.parse(row.data) })) };
         }
         const since = clock() - days * day;
+        if (mode === 'insights') {
+            if (revision && !/^[0-9a-f]{7,40}$/i.test(revision)) throw new Error('Invalid revision');
+            return { ...insights.read({ since, bot, task, phase: through, revision: revision || null }) };
+        }
         const scope = 'r.started_at >= ? AND (? IS NULL OR r.bot = ?) AND (? IS NULL OR r.task = ?)';
         const filters = [since, bot, bot, task, task] as const;
         if (mode === 'summary') {

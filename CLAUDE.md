@@ -212,6 +212,7 @@ workflow.
 | --- | --- | --- |
 | What is happening now? | `GET /bots/activity?view=diagnostics&bot=NAME` | Controller and client status, state freshness, recent movement and XP, and startup or exit errors |
 | Where does this activity repeatedly fail? | `GET /bots/activity?view=audit&mode=summary&task=TASK_ID&days=35` | `breakpoints` grouped by task, revision, phase, step, and source site |
+| Where is this activity spending time, and how has it changed? | `GET /bots/activity?view=audit&mode=insights&task=TASK_ID&days=35` | Phase shares, outcome counts, rates, daily coverage, and representative run IDs. Add `bot` or `revision` to compare groups. |
 | Which runs support the finding? | `GET /bots/activity?view=audit&mode=runs&task=TASK_ID&days=35` | Run IDs, bots, revisions, script hashes, statuses, and failure locations |
 | What happened around a specific step? | `GET /bots/activity?view=audit&run=RUN_ID` | `events`, `failureEvidence`, phase totals, and retained samples in `signals` |
 

@@ -266,14 +266,16 @@ control Bearer credential.
 
 In Fleet Desk, open **Audit history** from the toolbar to browse the fleet, or
 from a bot's card to filter to that bot. Choose **Runs** for the timeline and
-retained evidence, or **Summary** for recurring failures, phase totals, and
-setbacks. Opening a report link in a browser takes you to the relevant audit
+retained evidence, **Summary** for grouped totals, or **Insights** for phase
+time, outcomes, throughput, setbacks, and daily trends. Chart labels and
+ranked issues can open a representative trace. Opening a report link in a browser takes you to the relevant audit
 view and prompts for dashboard sign-in when needed. API callers can send
 `Accept: application/json` to retrieve JSON and receive a `401` when signed out.
 
 | HTTPS request | Result |
 | --- | --- |
 | `GET /bots/activity?view=audit&mode=summary&days=35` | Cross-bot phase totals, milestones, setbacks and repeated breakpoints grouped by task and revision |
+| `GET /bots/activity?view=audit&mode=insights&task=pickpocket-knights&days=35` | Chart data, sample sizes, run statuses, rates, daily trends, and representative run IDs |
 | `GET /bots/activity?view=audit&mode=runs&bot=A%20Pirate&days=14` | Recent run IDs, script hashes, exit status and failure locations |
 | `GET /bots/activity?view=audit&run=RUN_ID` | Phase totals, retained failure evidence and the latest chronological events for the run |
 
@@ -285,6 +287,20 @@ run summaries, bounded terminal failure evidence, and the latest evidence
 sample for each setback type per run and phase for 35 days. Detailed
 events share a rolling budget of 240,000 across bots, so older detail can age
 out sooner.
+
+Insights accepts the same bot, task, and phase filters and a `revision` filter
+using a full commit SHA or a prefix of at least seven characters. Its totals
+use runs started in the window. Pickpocket success rates use all recorded
+pickpocket outcomes as the denominator. A single instrumented activity can
+show XP or coins per hour using its recorded time across all phases,
+including search and recovery.
+
+Daily trend counters use hourly buckets independent of raw events and are
+grouped in US Eastern time. The trend window begins on an hour boundary and
+includes activity recorded in the window even for runs that started earlier.
+The coverage timestamp marks the start of available trend counters. Historical
+run totals appear immediately. Date-specific coverage begins when Insights is
+deployed, with a partial current day.
 
 For a repeat quest breakpoint, start with `breakpoints` and open a matching
 run. A floor-change trace records the scanned candidates, the selected ID and

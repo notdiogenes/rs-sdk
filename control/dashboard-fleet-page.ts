@@ -209,8 +209,9 @@ export function fleetPage({ nonce, data, questCatalog, fleetStyle, controls, ref
     <datalist id="audit-bots">${roster.map(({ bot }) => `<option value="${escape(bot.name)}"></option>`).join('')}</datalist>
     <label>Task <input id="audit-task" maxlength="64" placeholder="All tasks" autocomplete="off"></label>
     <label>Days <input id="audit-days" type="number" min="1" max="35" value="35" required></label>
-    <label>View <select id="audit-mode"><option value="runs">Runs</option><option value="summary">Summary</option></select></label>
+    <label>View <select id="audit-mode"><option value="runs">Runs</option><option value="summary">Summary</option><option value="insights">Insights</option></select></label>
     <label id="audit-summary-phase-field" hidden>Phase <input id="audit-summary-phase" maxlength="64" placeholder="All phases"></label>
+    <label id="audit-revision-field" hidden>Revision <input id="audit-revision" maxlength="40" pattern="[0-9a-fA-F]{7,40}" placeholder="Any revision" autocomplete="off"></label>
     <button type="submit">Apply</button>
   </form>
   <div id="audit-run-tools" class="audit-toolbar" hidden>

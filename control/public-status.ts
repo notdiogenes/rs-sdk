@@ -391,7 +391,7 @@ Bun.serve({
                 if (request.method !== 'GET') return new Response(null, { status: 405, headers: { ...headers, Allow: 'GET' } });
                 if (/(?:^|,)\s*text\/html(?:\s*;|\s*,|\s*$)/i.test(request.headers.get('Accept') ?? '')) {
                     const dashboard = new URLSearchParams({ audit: '1' });
-                    for (const key of ['bot', 'task', 'run', 'phase', 'mode', 'days', 'before', 'limit']) {
+                    for (const key of ['bot', 'task', 'run', 'phase', 'mode', 'days', 'before', 'limit', 'revision']) {
                         const value = searchParams.get(key);
                         if (value) dashboard.set(key, value);
                     }

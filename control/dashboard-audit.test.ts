@@ -160,3 +160,45 @@ test('keeps a pickpocket intent, dispatch, and outcome linked in the live trace 
         rmSync(directory, { recursive: true, force: true });
     }
 });
+
+test('reports whole-activity rates and splits durable trend time at Eastern midnight', () => {
+    const directory = mkdtempSync(join(process.cwd(), '.audit-test-'));
+    let now = Date.parse('2026-11-01T03:59:50Z');
+    const audit = dashboardAudit(directory, () => now);
+    try {
+        const run = audit.begin('Scout', 'pickpocket-knights', '123abcde', 'script-a', []);
+        audit.append(run, { kind: 'phase', name: 'thieving-search' });
+        now += 5_000;
+        audit.append(run, { kind: 'setback', name: 'thieving-target-unavailable' });
+        now += 10_000;
+        audit.append(run, { kind: 'phase', name: 'thieving-pickpocket' });
+        now += 5_000;
+        audit.append(run, { kind: 'milestone', name: 'pickpocket-attempt-succeeded', elapsedMs: 5000, xpGained: 100, coinsGained: 20 });
+        audit.append(run, { kind: 'setback', name: 'pickpocket-attempt-stunned' });
+        audit.finish(run, 0, false);
+
+        const params = new URLSearchParams('mode=insights&task=pickpocket-knights&bot=Scout&revision=123abcd&limit=1');
+        const report = audit.read(params);
+        if (!report || !('sample' in report)) throw new Error('Expected Insights report');
+        expect(report.sample).toMatchObject({ runs: 1, bots: 1 });
+        expect(report.durationMs).toBe(20_000);
+        expect(report.phases[0]).toMatchObject({ phase: 'thieving-search', duration_ms: 15_000, share: 0.75, run_id: run });
+        expect(report.pickpocket).toEqual({ count: 2, successes: 1, successRate: 0.5 });
+        expect(report.throughput).toMatchObject({ xpPerHour: 18000, coinsPerHour: 3600 });
+        expect(report.trend.days).toEqual([
+            expect.objectContaining({ date: '2026-10-31', duration_ms: 10_000, attempts: 0, setbacks: 1 }),
+            expect.objectContaining({ date: '2026-11-01', duration_ms: 10_000, attempts: 2, successes: 1, xp: 100 }),
+        ]);
+        const database = new Database(join(directory, 'activity-audit.sqlite'));
+        database.exec('DELETE FROM audit_events');
+        database.close();
+        expect(audit.read(params)).toEqual(report);
+        expect(audit.read(new URLSearchParams('mode=insights&task=pickpocket-knights&phase=thieving-pickpocket')))
+            .toMatchObject({ throughput: { xp: 100, xpPerHour: null } });
+        expect(audit.read(new URLSearchParams('mode=insights&task=pickpocket-knights&revision=abcdef0')))
+            .toMatchObject({ sample: { runs: 0 }, trend: { days: [] } });
+    } finally {
+        audit.close();
+        rmSync(directory, { recursive: true, force: true });
+    }
+});
