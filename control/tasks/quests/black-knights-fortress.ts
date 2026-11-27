@@ -8,6 +8,7 @@ const helm = 'Bronze med helm';
 const cabbageId = 1965;
 const keep = /^(?:iron chainbody|bronze med helm|cabbage|coins)$/i;
 const questChoice = [/i seek a quest/i, /i laugh in the face of danger/i];
+const sabotaged = /sabotaged the witch.s potion/i;
 
 const result = await runScript(async ctx => {
     const { bot, sdk } = ctx;
@@ -86,17 +87,28 @@ const result = await runScript(async ctx => {
         await climb('down', 3015, 3519);
         await passage(2341, /^push$/i, 3016, 3517);
     };
+    const leaveSabotageRoute = async () => {
+        await passage(2341, /^push$/i, 3030, 3510);
+        await climb('down', 3022, 3518);
+        await passage(2338, /^open$/i, 3021, 3515, [/i don.t care.*going in anyway/i]);
+        await passage(2337, /^open$/i, 3016, 3514);
+    };
     const story = () => journalText(ctx, journal, /^black knight.s fortress$/i);
     const player = sdk.getState()?.player;
     const nearEavesdropLadder = player?.level === 1 && player.worldX >= 3021 && player.worldX <= 3023 &&
         player.worldZ >= 3513 && player.worldZ <= 3516;
     const nearGrillReturn = player?.level === 1 && player.worldX >= 3024 && player.worldX <= 3027 &&
         player.worldZ >= 3510 && player.worldZ <= 3515;
-    const savedPage = (nearEavesdropLadder || nearGrillReturn) && readQuest(ctx, journal) === 'in-progress' ? await story() : undefined;
+    const nearCabbageHole = player?.level === 1 && player.worldX >= 3029 && player.worldX <= 3032 &&
+        player.worldZ >= 3507 && player.worldZ <= 3512;
+    const savedPage = (nearEavesdropLadder || nearGrillReturn || nearCabbageHole) && readQuest(ctx, journal) === 'in-progress'
+        ? await story() : undefined;
     const resumeEavesdrop = nearEavesdropLadder && savedPage !== undefined && !/eavesdropped on a witch|sabotaged the witch.s potion/i.test(savedPage);
     const resumeReturn = nearGrillReturn && savedPage !== undefined &&
-        /eavesdropped on a witch/i.test(savedPage) && !/sabotaged the witch.s potion/i.test(savedPage);
-    const resumingInside = resumeEavesdrop || resumeReturn;
+        /eavesdropped on a witch/i.test(savedPage) && !sabotaged.test(savedPage);
+    const resumeSabotage = nearCabbageHole && savedPage !== undefined &&
+        (/eavesdropped on a witch/i.test(savedPage) || sabotaged.test(savedPage));
+    const resumingInside = resumeEavesdrop || resumeReturn || resumeSabotage;
     if (!resumingInside) {
         if (player && Math.abs(player.worldX - 2960) < 15 && Math.abs(player.worldZ - 3338) < 15) await castleExit();
         if (floor() > 0) throw new Error('A Pirate is upstairs away from Sir Amik’s tower. Exit the fortress before retrying.');
@@ -111,7 +123,7 @@ const result = await runScript(async ctx => {
         await sdk.waitForCondition(hasCabbage, 8000);
     };
     questPhase('fortress-infiltration');
-    if (!/sabotaged the witch.s potion/i.test(page)) {
+    if (!sabotaged.test(page)) {
         if (!resumingInside) {
             const needsGear = (name: string) => !sdk.findInventoryItem(itemNamed(name)) && !sdk.findEquipmentItem(itemNamed(name));
             const needChain = needsGear(chain);
@@ -155,24 +167,37 @@ const result = await runScript(async ctx => {
             await leaveGrillRoute();
         }
         questPhase('fortress-sabotage');
+        let inCabbageRoom = resumeSabotage;
         if (!hasCabbage()) {
-            await passage(2337, /^open$/i, 3016, 3514);
+            if (inCabbageRoom) await leaveSabotageRoute();
+            else await passage(2337, /^open$/i, 3016, 3514);
             await prepareQuestStep(ctx, { slots: 1, keep, bank: [2946, 3369] });
             await gatherCabbage();
             await passage(2337, /^open$/i, 3016, 3513);
+            inCabbageRoom = false;
         }
-        await passage(2338, /^open$/i, 3019, 3515, [/i don.t care.*going in anyway/i]);
-        await climb('up', 3022, 3518);
-        await passage(2341, /^push$/i, 3030, 3511);
+        if (!inCabbageRoom) {
+            await passage(2338, /^open$/i, 3019, 3515, [/i don.t care.*going in anyway/i]);
+            await climb('up', 3022, 3518);
+            await passage(2341, /^push$/i, 3030, 3511);
+        }
         const cabbage = sdk.getInventory().find(i => i.id === cabbageId);
         if (!cabbage) throw new Error('Missing ordinary cabbage');
-        await bot.useItemOnLoc(cabbage, await loc(2336));
+        const used = await bot.useItemOnLoc(cabbage, await loc(2336));
+        if (!used.success) throw new Error(used.message);
+        // The game consumes the cabbage before the delayed quest update.
+        try {
+            await sdk.waitForCondition(state => !!state.dialog?.isOpen &&
+                /successfully sabotaged/i.test(state.dialog.text ?? ''), 8_000);
+        } catch (error) {
+            if (!(error instanceof Error) || error.message !== 'waitForCondition timed out') throw error;
+        }
         await continueDialog(ctx);
-        if (!/sabotaged the witch.s potion/i.test(await story())) throw new Error('The journal did not confirm the weapon was sabotaged');
-        await passage(2341, /^push$/i, 3030, 3510);
-        await climb('down', 3022, 3518);
-        await passage(2338, /^open$/i, 3021, 3515, [/i don.t care.*going in anyway/i]);
-        await passage(2337, /^open$/i, 3016, 3514);
+        if (!sabotaged.test(await story())) throw new Error('The journal did not confirm the weapon was sabotaged');
+        await leaveSabotageRoute();
+    } else if (resumeSabotage) {
+        questPhase('fortress-sabotage-exit');
+        await leaveSabotageRoute();
     }
     questPhase('fortress-report');
     await sirAmik();
