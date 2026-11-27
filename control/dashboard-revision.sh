@@ -10,6 +10,7 @@ revision=$(sha256sum -- "$source_dir/public-status.ts" "$source_dir/public-statu
     "$source_dir/dashboard-fleet-stats.ts" "$source_dir/dashboard-quests.ts" \
     "$source_dir/dashboard-demo.ts" "$source_dir/tasks/pickpocket-men.ts" "$source_dir/tasks/train-hp-pickpocket.ts" \
     "$source_dir"/tasks/quests/*.ts "$source_dir/../server/webclient/src/lite/runner.ts" \
+    "$source_dir/../server/webclient/src/bot/StateCollector.ts" "$source_dir/../server/webclient/src/bot/quest-journal.ts" \
     "$source_dir/../server/content/scripts/player/interfaces/questlist.if" "$source_dir/../server/content/pack/interface.pack")
 
 case "$3" in

@@ -148,6 +148,7 @@
                 : 'Awaiting journal';
             const score = quests[name];
             const points = number(score?.points);
+            const scoreSource = score?.source === 'game' ? 'Game snapshot' : 'Hiscores';
             const marks = statuses.map(status => {
                 const mark = questMarks[status];
                 return `<td class="quest-mark ${status}" title="${mark.label}"><span class="visually-hidden">${mark.label}</span>
@@ -157,7 +158,7 @@
                 <button type="button" class="button" data-detail="${escape(name)}">${escape(name)}</button>
                 <small title="${escape(labelTime(journal?.at))}">${summary}</small></th>
                 <td class="quest-points"><a href="${escape(hiscore)}" target="_blank" rel="noopener"
-                    title="Hiscores checked ${escape(labelTime(score?.checkedAt))}">${points}</a></td>`;
+                    title="${scoreSource} · ${escape(labelTime(score?.checkedAt))}">${points}</a></td>`;
             return { account, marks };
         });
         const legend = Object.entries(questMarks).map(([status, { symbol, label }]) =>
@@ -167,7 +168,7 @@
             const end = start + columns;
             bands.push(`<div class="table-wrap quest-band"><table class="quest-grid" aria-label="Quest progress">
               <thead><tr><th scope="col" class="quest-account">Account</th>
-              <th scope="col" class="quest-points" title="Quest points from hiscores">QP</th>
+              <th scope="col" class="quest-points" title="Quest points">QP</th>
               ${headers.slice(start, end).join('')}</tr></thead>
               <tbody>${rows.map(({ account, marks }) => `<tr>${account}${marks.slice(start, end).join('')}</tr>`).join('')}</tbody>
             </table></div>`);

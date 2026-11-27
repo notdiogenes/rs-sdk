@@ -427,6 +427,7 @@ export interface BotState {
     player: PlayerState | null;
     skills: SkillState[];
     questJournal?: QuestJournal;
+    questPoints?: number;
     inventory: InventoryItem[];
     equipment: InventoryItem[];
     combatStyle: CombatStyleState;

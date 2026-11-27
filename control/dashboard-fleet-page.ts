@@ -139,7 +139,7 @@ export function fleetPage({ nonce, data, questCatalog, fleetStyle, controls, ref
     ${metric('Online', online, `of ${roster.length} accounts`, 'swarm')}
     ${metric('Needs attention', counts.attention, 'Check game state or activity', 'attention')}
     ${metric('Idle', counts.idle, 'Waiting or no recent activity', 'paused')}
-    ${metric('Quest points', '—', 'Reported by the game hiscores', 'points', 'id="quest-total"')}
+    ${metric('Quest points', '—', 'Game snapshots or hiscores', 'points', 'id="quest-total"')}
   </div>
   <div id="fleet-panel" role="tabpanel" aria-labelledby="fleet-tab">
     ${sections}<p class="empty" id="fleet-empty"${sections ? ' hidden' : ''}>${!data

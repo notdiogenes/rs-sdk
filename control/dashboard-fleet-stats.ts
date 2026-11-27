@@ -12,7 +12,8 @@ export const fleetSkills = [
 const minute = 60_000;
 type SkillSnapshot = { at: number; combat: number | null; levels: Record<string, number> };
 type BankSnapshot = { at: number; stacks: number; coins: number };
-type JournalSnapshot = { at: number; progress: QuestJournal };
+export type GameQuestScore = { points: number; checkedAt: number; source: 'game' };
+type JournalSnapshot = { at: number; progress: QuestJournal; score?: GameQuestScore };
 type FleetStats = {
     skills: SkillSnapshot | null;
     bank: BankSnapshot | null;
@@ -68,7 +69,10 @@ export function dashboardFleetStats(directory: string) {
                 (status === 'not-started' || status === 'in-progress' || status === 'complete'));
         db.transaction(() => {
             if (observedProgress?.length && (!journal || at >= journal.at)) {
-                journal = { at, progress: Object.fromEntries(observedProgress) };
+                const score = nonnegativeInteger(state.questPoints)
+                    ? { points: state.questPoints, checkedAt: at, source: 'game' as const }
+                    : journal?.score;
+                journal = { at, progress: Object.fromEntries(observedProgress), score };
                 db.query('INSERT OR REPLACE INTO fleet_journal (bot, data) VALUES (?, ?)').run(bot, JSON.stringify(journal));
             }
             if (Object.keys(levels).length) {

@@ -4,6 +4,7 @@ import type { QuestJournal, QuestProgress } from '../../../../sdk/types.js';
 
 export const QUEST_JOURNAL_TAB = 2;
 export const QUEST_JOURNAL_ID = 638;
+export const QUEST_POINTS_VARP = 101; // qp in server/content/pack/varp.pack
 const questList = 639;
 
 // IF_SETCOLOUR expands the server's five-bit RGB channels. The cache's

@@ -181,6 +181,7 @@ async function botDiagnostics(name: string) {
             game: {
                 availability, stateAgeMs: Number.isFinite(result?.stateAge) ? result?.stateAge : null,
                 tick: state?.tick,
+                questPoints: state?.questPoints,
                 player: player ? {
                     x: player.worldX, z: player.worldZ, plane: player.level,
                     hp: player.hp, maxHp: player.maxHp, inCombat: player.combat?.inCombat,
@@ -324,7 +325,7 @@ Bun.serve({
                     const current = view === 'diagnostics' ? null : await snapshot(botsDir);
                     const payload = current === null ? await diagnostics() : view === 'quests'
                         ? {
-                            scores: await dashboardQuestPoints(current.bots.map(bot => bot.name)),
+                            scores: await dashboardQuestPoints(current.bots.map(({ name, stats }) => ({ name, score: stats?.journal?.score }))),
                             journals: Object.fromEntries(current.bots.map(({ name, stats }) => [name, stats?.journal ?? null])),
                         }
                         : current.bots.map(({ name, stats }) => ({

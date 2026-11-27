@@ -584,6 +584,8 @@ export interface BotWorldState {
     player: PlayerState | null;
     skills: SkillState[];
     questJournal?: QuestJournal;
+    /** Total quest points reported by the game client. */
+    questPoints?: number;
     inventory: InventoryItem[];
     equipment: InventoryItem[];
     nearbyNpcs: NearbyNpc[];
