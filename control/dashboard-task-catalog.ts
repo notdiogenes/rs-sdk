@@ -1,4 +1,4 @@
-export const trainingSkills = ['Hitpoints', 'Thieving', 'Attack', 'Strength', 'Defence'] as const;
+export const trainingSkills = ['Hitpoints', 'Thieving', 'Attack', 'Strength', 'Defence', 'Runecraft'] as const;
 export type TrainingSkill = typeof trainingSkills[number];
 export type Requirement =
     | { type: 'level'; skill: TrainingSkill; level: number }
@@ -6,7 +6,7 @@ export type Requirement =
 
 type Activity = {
     label: string;
-    category: 'Quests' | 'Combat' | 'Thieving' | 'Setup' | 'Legacy';
+    category: 'Quests' | 'Combat' | 'Thieving' | 'Runecraft' | 'Setup' | 'Legacy';
     usage: 'once' | 'repeatable';
     script: string;
     requirements?: Requirement[];
@@ -85,6 +85,9 @@ export const activityCatalog = {
     'pickpocket-heroes': {
         label: 'Pickpocket Heroes', category: 'Thieving', usage: 'repeatable', script: 'pickpocket.ts',
         requirements: [level('Thieving', 80), level('Hitpoints', 80)], trains: ['Thieving'],
+    },
+    'craft-body-runes': {
+        label: 'Craft Body runes', category: 'Runecraft', usage: 'repeatable', script: 'craft-body-runes.ts', trains: ['Runecraft'],
     },
     'skip-tutorial': { label: 'Skip Tutorial Island', category: 'Setup', usage: 'once', script: 'skip-tutorial.ts' },
     'train-hp-pickpocket': {
