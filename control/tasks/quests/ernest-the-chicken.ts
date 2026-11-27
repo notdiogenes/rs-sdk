@@ -1,5 +1,5 @@
 import { runScript } from '../../../sdk/runner';
-import { bankForQuest, changeFloor, continueDialog, groundItem, itemNamed, journalText, questLoc, questLog, readQuest, talkAt, useTogether, walk, type QuestContext } from './shared';
+import { bankForQuest, changeFloor, continueDialog, groundItem, itemNamed, journalText, questLoc, questLog, questPhase, waitForQuestJournal, readQuest, talkAt, useTogether, walk, type QuestContext } from './shared';
 
 const quest = 'Ernest the Chicken';
 const journal = 7339;
@@ -53,7 +53,9 @@ async function move(ctx: QuestContext, step: Move) {
 const result = await runScript(async ctx => {
     const { bot, sdk } = ctx;
     await sdk.waitForReady();
-    await sdk.waitForCondition(s => !!s.questJournal?.[journal], 15_000);
+    questPhase('quest-journal-preflight');
+    await waitForQuestJournal(ctx, journal, 'available', 15_000);
+    questPhase('quest-prepare');
     if (readQuest(ctx, journal) === 'complete') { questLog('quest-already-complete', { quest }); return; }
     const has = (name: string) => !!sdk.findInventoryItem(itemNamed(name));
     const top = () => sdk.getState()?.player?.level ?? 0;
@@ -85,6 +87,7 @@ const result = await runScript(async ctx => {
         await leaveFloors();
         await bankForQuest(ctx, supplies.map(name => ({name,count:1})));
     }
+    questPhase('ernest-start');
     if (readQuest(ctx, journal) === 'not-started') {
         questLog('quest-start', { quest });
         await talkAt(ctx, 3110, 3330, /^veronica$/i, [/sounds like a quest/i]);
@@ -92,6 +95,7 @@ const result = await runScript(async ctx => {
     const text = await journalText(ctx, journal, /^ernest the chicken$/i);
     if (!/oil can|pressure gauge/i.test(text)) await professor();
     else if (top() > 0) await leaveFloors();
+    questPhase('ernest-pressure-gauge');
     if (!has('Pressure gauge')) {
         await walk(ctx, 3087, 3336, 3);
         const search = async () => {
@@ -118,6 +122,7 @@ const result = await runScript(async ctx => {
         }
         questLog('quest-ingredient', { quest, item: 'Pressure gauge' });
     }
+    questPhase('ernest-rubber-tube');
     if (!has('Rubber tube')) {
         if (!has('Key')) {
             await groundItem(ctx, /^spade$/i, 3120, 3359);
@@ -135,6 +140,7 @@ const result = await runScript(async ctx => {
         if (inside) await bot.useItemOnLoc(/^key$/i, inside);
         questLog('quest-ingredient', { quest, item: 'Rubber tube' });
     }
+    questPhase('ernest-cellar-puzzle');
     if (!has('Oil can')) {
         await walk(ctx, 3098, 3358, 0);
         const bookcase = (await sdk.scanNearbyLocs(5)).find(loc => loc.id === 155);
@@ -162,8 +168,9 @@ const result = await runScript(async ctx => {
         await bot.interactLoc(await questLoc(ctx, /^lever$/i, /^pull$/i), /^pull$/i);
         await sdk.waitForCondition(s => (s.player?.worldX ?? 0) >= 3098, 9000);
     }
+    questPhase('ernest-deliver');
     await professor();
-    await sdk.waitForCondition(s => s.questJournal?.[journal] === 'complete', 12_000);
+    await waitForQuestJournal(ctx, journal, 'complete', 12_000);
     const exit = (await sdk.scanNearbyLocs(20)).find(loc => loc.id === 136);
     if (exit) await bot.interactLoc(exit, /^open$/i);
     questLog('quest-complete', { quest, evidence: 'journal', questPoints: sdk.getState()?.questPoints });

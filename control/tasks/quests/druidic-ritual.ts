@@ -1,5 +1,5 @@
 import { runScript } from '../../../sdk/runner';
-import { bankForQuest, changeFloor, equipQuestSword, itemNamed, journalText, lootFromNpc, questLoc, questLog, readQuest, talkAt, walk } from './shared';
+import { bankForQuest, changeFloor, equipQuestSword, itemNamed, journalText, lootFromNpc, questLoc, questLog, questPhase, waitForQuestJournal, readQuest, talkAt, walk } from './shared';
 
 const quest = 'Druidic Ritual';
 const journal = 7355;
@@ -13,7 +13,9 @@ const meats = [
 const result = await runScript(async ctx => {
     const { bot, sdk } = ctx;
     await sdk.waitForReady();
-    await sdk.waitForCondition(s => !!s.questJournal?.[journal], 15_000);
+    questPhase('quest-journal-preflight');
+    await waitForQuestJournal(ctx, journal, 'available', 15_000);
+    questPhase('quest-prepare');
     if (readQuest(ctx, journal) === 'complete') { questLog('quest-already-complete', { quest }); return; }
     const dungeonExit = async () => {
         if ((sdk.getState()?.player?.worldZ ?? 0) < 9700) return;
@@ -35,8 +37,10 @@ const result = await runScript(async ctx => {
     await bankForQuest(ctx, [{ name: 'Adamant longsword', count: 1 },
         ...meats.flatMap(([raw, charged]) => [raw, charged].map(name => ({ name, count: 1 }))),
     ], [2946, 3369]);
+    questPhase('druidic-start');
     if (readQuest(ctx, journal) === 'not-started') { questLog('quest-start', { quest }); await kaqemeex(); }
     let text = await journalText(ctx, journal, /^druidic ritual$/i);
+    questPhase('druidic-sanfew-briefing');
     if (/should speak to Sanfew/i.test(text)) {
         await sanfew();
         text = await journalText(ctx, journal, /^druidic ritual$/i);
@@ -44,9 +48,11 @@ const result = await runScript(async ctx => {
     if (!/gave them to Sanfew/i.test(text)) {
         await equipQuestSword(ctx);
         const has = (name: string) => !!sdk.findInventoryItem(itemNamed(name));
+        questPhase('druidic-gather-meats');
         for (const [raw, charged, target, x, z] of meats) {
             if (!has(charged) && !has(raw)) await lootFromNpc(ctx, itemNamed(raw), target, x, z);
         }
+        questPhase('druidic-enchant-meats');
         if (meats.some(([, charged]) => !has(charged))) {
             await walk(ctx, 2884, 3397, 2);
             await changeFloor(ctx, 'down', 2884, 3397);
@@ -70,10 +76,12 @@ const result = await runScript(async ctx => {
             }
             await dungeonExit();
         }
+        questPhase('druidic-deliver-meats');
         await sanfew();
     }
+    questPhase('druidic-report');
     await kaqemeex();
-    await sdk.waitForCondition(s => s.questJournal?.[journal] === 'complete', 12_000);
+    await waitForQuestJournal(ctx, journal, 'complete', 12_000);
     questLog('quest-complete', { quest, evidence: 'journal', questPoints: sdk.getState()?.questPoints });
 }, { printState: false, timeout: 1_200_000 });
 

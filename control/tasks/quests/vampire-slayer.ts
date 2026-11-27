@@ -1,5 +1,5 @@
 import { runScript } from '../../../sdk/runner';
-import { bankForQuest, buyQuestSupply, changeFloor, equipQuestSword, questLoc, questLog, readQuest, talkAt, walk } from './shared';
+import { bankForQuest, buyQuestSupply, changeFloor, equipQuestSword, questLoc, questLog, questPhase, waitForQuestJournal, readQuest, talkAt, walk } from './shared';
 
 const quest = 'Vampire Slayer';
 const journal = 7347;
@@ -10,7 +10,9 @@ const beer = /^beer$/i;
 const result = await runScript(async ctx => {
     const { sdk, bot } = ctx;
     await sdk.waitForReady();
-    await sdk.waitForCondition(s => !!s.questJournal?.[journal], 15_000);
+    questPhase('quest-journal-preflight');
+    await waitForQuestJournal(ctx, journal, 'available', 15_000);
+    questPhase('quest-prepare');
     if (readQuest(ctx, journal) === 'complete') { questLog('quest-already-complete', { quest }); return; }
     const leaveCrypt = async () => {
         if ((sdk.getState()?.player?.worldZ ?? 0) >= 9700) {
@@ -21,6 +23,7 @@ const result = await runScript(async ctx => {
     const has = (item: RegExp) => !!sdk.findInventoryItem(item);
     const crypt = (sdk.getState()?.player?.worldZ ?? 0) >= 9700;
     const safePack = sdk.getInventory().every(i => /^(stake|hammer|coins|adamant longsword)$/i.test(i.name));
+    questPhase('vampire-prepare');
     if (!crypt || !has(stake) || !has(hammer) || !safePack) {
         await leaveCrypt();
         await bankForQuest(ctx, [
@@ -31,6 +34,7 @@ const result = await runScript(async ctx => {
             questLog('quest-start', { quest });
             await talkAt(ctx, 3098, 3268, /^morgan$/i, [/up for an adventure/i]);
         }
+        questPhase('vampire-gather-gear');
         if (!has(hammer)) {
             await walk(ctx, 3218, 3415, 3);
             await buyQuestSupply(ctx, /^shop (?:keeper|assistant)$/i, 'Hammer', 8);
@@ -46,10 +50,12 @@ const result = await runScript(async ctx => {
             questLog('quest-ingredient', { quest, item: 'Stake' });
         }
         await equipQuestSword(ctx);
+        questPhase('vampire-enter-crypt');
         await walk(ctx, 3115, 3357, 2);
         await changeFloor(ctx, 'down', 3115, 3357);
         await walk(ctx, 3077, 9774, 2);
     }
+    questPhase('vampire-fight');
     for (let attempt = 0; attempt < 10 && readQuest(ctx, journal) !== 'complete'; attempt++) {
         const count = sdk.findNearbyNpc(/^count draynor$/i);
         const player = sdk.getState()?.player;
@@ -66,7 +72,8 @@ const result = await runScript(async ctx => {
         }
         await sdk.waitForCondition(s => s.questJournal?.[journal] === 'complete', 8000).catch(() => null);
     }
-    await sdk.waitForCondition(s => s.questJournal?.[journal] === 'complete', 6000);
+    await waitForQuestJournal(ctx, journal, 'complete', 6000);
+    questPhase('vampire-exit');
     await leaveCrypt();
     questLog('quest-complete', { quest, evidence: 'journal', questPoints: sdk.getState()?.questPoints });
 }, { printState: false, timeout: 1_200_000 });

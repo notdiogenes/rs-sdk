@@ -1,6 +1,6 @@
 import { auditEnabled, auditEvent, auditFrame } from '../../../sdk/audit-trace';
 import { runScript } from '../../../sdk/runner';
-import { bankForQuest, buyQuestSupply, changeFloor, continueDialog, equipQuestSword, groundItem, journalText, questLoc, questLog, readQuest, talkAt, walk, type QuestContext } from './shared';
+import { bankForQuest, buyQuestSupply, changeFloor, continueDialog, equipQuestSword, groundItem, journalText, questLoc, questLog, questPhase, waitForQuestJournal, readQuest, talkAt, walk, type QuestContext } from './shared';
 
 const quest = "Witch's House";
 const journal = 7351;
@@ -15,7 +15,9 @@ async function locById({ sdk }: QuestContext, id: number) {
 const result = await runScript(async ctx => {
     const { bot, sdk } = ctx;
     await sdk.waitForReady();
-    await sdk.waitForCondition(s => !!s.questJournal?.[journal], 15_000);
+    questPhase('quest-journal-preflight');
+    await waitForQuestJournal(ctx, journal, 'available', 15_000);
+    questPhase('quest-prepare');
     if (readQuest(ctx, journal) === 'complete') { questLog('quest-already-complete', { quest }); return; }
     const has = (id: number) => sdk.getInventory().find(item => item.id === id);
     const boy = () => talkAt(ctx, 2928, 3456, /^boy$/i, [/what.s the matter/i, /i.ll see what i can do/i]);
@@ -28,12 +30,14 @@ const result = await runScript(async ctx => {
     await exitCellar();
     await descendDiary();
     await bankForQuest(ctx, [...supply.map(name => ({name,count:1})), {name:'Coins',count:30}], [2946,3369]);
+    questPhase('witch-meet-boy');
     if (readQuest(ctx, journal) === 'not-started') { questLog('quest-start', { quest }); await boy(); }
     if (has(2407)) {
         await boy();
     } else {
         let text = await journalText(ctx, journal, /^witch.s house$/i);
         const unlocked = () => /unlock the back door|shapeshifter.*dead/i.test(text);
+        questPhase('witch-gather-supplies');
         if (!unlocked()) {
             if (!has(1059) && !sdk.getEquipment().some(i => i.id === 1059)) {
                 await walk(ctx, 3204, 3417, 3);
@@ -54,8 +58,10 @@ const result = await runScript(async ctx => {
             await bot.useItemOnLoc(has(2409)!, await locById(ctx, 2861));
             await walk(ctx, 2904, 3472, 1);
         };
+        questPhase('witch-enter-house');
         await enterHouse();
         if (!unlocked()) {
+            questPhase('witch-get-magnet');
             if (!has(2410)) {
                 if (!sdk.getEquipment().some(i => i.id === 1059)) await bot.equipItem(/^leather gloves$/i);
                 await walk(ctx, 2907, 3476, 2);
@@ -76,6 +82,7 @@ const result = await runScript(async ctx => {
                 if (insideGate) await bot.interactLoc(insideGate, /^open$/i);
                 await exitCellar();
             }
+            questPhase('witch-unlock-garden');
             await walk(ctx, 2902, 3466, 1);
             await bot.useItemOnLoc(/^cheese$/i, await locById(ctx, 2870));
             await continueDialog(ctx);
@@ -86,6 +93,7 @@ const result = await runScript(async ctx => {
             text = await journalText(ctx, journal, /^witch.s house$/i);
             if (!unlocked()) throw new Error('The journal did not confirm the garden door was unlocked');
         }
+        questPhase('witch-read-diary');
         if (!has(2408)) {
             await walk(ctx, 2906, 3469, 2); await changeFloor(ctx, 'up', 2906, 3469);
             await groundItem(ctx, /^diary$/i, 2900, 3473);
@@ -167,7 +175,7 @@ const result = await runScript(async ctx => {
         }
         await boy();
     }
-    await sdk.waitForCondition(s => s.questJournal?.[journal] === 'complete', 12_000);
+    await waitForQuestJournal(ctx, journal, 'complete', 12_000);
     questLog('quest-complete', { quest, evidence: 'journal', questPoints: sdk.getState()?.questPoints });
 }, { printState: false, timeout: 1_200_000 });
 

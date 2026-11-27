@@ -1,5 +1,5 @@
 import { runScript } from '../../../sdk/runner';
-import { bankForQuest, changeFloor, groundItem, questLog, readQuest, talk, walk } from './shared';
+import { bankForQuest, changeFloor, groundItem, questLog, questPhase, waitForQuestJournal, readQuest, talk, walk } from './shared';
 
 // Coordinates and the ingredient sequence are cross-checked against the
 // LostHQ 2004 guide and rs2b2t/rs2b0t's cooksassistant quest definition.
@@ -21,7 +21,9 @@ const supplies = [
 const result = await runScript(async ctx => {
     const { bot, sdk } = ctx;
     await sdk.waitForReady();
-    await sdk.waitForCondition(s => !!s.questJournal?.[journal], 12_000);
+    questPhase('quest-journal-preflight');
+    await waitForQuestJournal(ctx, journal, 'available', 12_000);
+    questPhase('quest-prepare');
     if (readQuest(ctx, journal) === 'complete') {
         questLog('quest-already-complete', { quest: "Cook's Assistant" });
         return;
@@ -42,6 +44,7 @@ const result = await runScript(async ctx => {
         await walk(ctx, 3209, 3215, 4);
         await talk(ctx, cook, cookChoices);
     };
+    questPhase('cook-start');
     if (readQuest(ctx, journal) === 'not-started') {
         questLog('quest-start', { quest: "Cook's Assistant" });
         await visitCook();
@@ -51,6 +54,7 @@ const result = await runScript(async ctx => {
         questLog('quest-complete', { quest: "Cook's Assistant", evidence: 'journal' });
         return;
     }
+    questPhase('cook-mill-flour');
     if (!got(flour)) {
         if (!got(pot)) await groundItem(ctx, pot, 3208, 3213);
         // Try the flour bin first, including on resume after earlier milling.
@@ -93,10 +97,12 @@ const result = await runScript(async ctx => {
         }
         questLog('quest-ingredient', { item: 'Pot of flour' });
     }
+    questPhase('cook-gather-egg');
     if (!got(egg)) {
         await groundItem(ctx, egg, 3227, 3300);
         questLog('quest-ingredient', { item: 'Egg' });
     }
+    questPhase('cook-fetch-milk');
     if (!got(milk)) {
         if (!got(bucket)) await groundItem(ctx, bucket, 3225, 3294);
         await walk(ctx, 3255, 3288, 5);
@@ -108,8 +114,9 @@ const result = await runScript(async ctx => {
         await sdk.waitForCondition(() => got(milk), 10_000);
         questLog('quest-ingredient', { item: 'Bucket of milk' });
     }
+    questPhase('cook-deliver');
     await visitCook();
-    await sdk.waitForCondition(s => s.questJournal?.[journal] === 'complete', 12_000);
+    await waitForQuestJournal(ctx, journal, 'complete', 12_000);
     questLog('quest-complete', { quest: "Cook's Assistant", evidence: 'journal' });
 }, { printState: false, timeout: 900_000 });
 

@@ -1,5 +1,5 @@
 import { runScript } from '../../../sdk/runner';
-import { bankForQuest, buyQuestSupply, changeFloor, continueDialog, itemNamed, journalText, questLoc, questLog, readQuest, talkAt, walk } from './shared';
+import { bankForQuest, buyQuestSupply, changeFloor, continueDialog, itemNamed, journalText, questLoc, questLog, questPhase, waitForQuestJournal, readQuest, talkAt, walk } from './shared';
 
 const quest = "Black Knight's Fortress";
 const journal = 7332;
@@ -11,7 +11,9 @@ const questChoice = [/i seek a quest/i, /i laugh in the face of danger/i];
 const result = await runScript(async ctx => {
     const { bot, sdk } = ctx;
     await sdk.waitForReady();
-    await sdk.waitForCondition(s => !!s.questJournal?.[journal], 15_000);
+    questPhase('quest-journal-preflight');
+    await waitForQuestJournal(ctx, journal, 'available', 15_000);
+    questPhase('quest-prepare');
     if (readQuest(ctx, journal) === 'complete') { questLog('quest-already-complete', { quest }); return; }
     const floor = () => sdk.getState()?.player?.level ?? 0;
     const climb = async (direction: 'up'|'down', x: number, z: number) => {
@@ -43,9 +45,11 @@ const result = await runScript(async ctx => {
     await bankForQuest(ctx, [
         { name: chain, count: 1 }, { name: helm, count: 1 }, { name: 'Coins', count: 350 }, { name: 'Cabbage', count: 1 },
     ], [2946, 3369]);
+    questPhase('fortress-briefing');
     if (readQuest(ctx, journal) === 'not-started') { questLog('quest-start', { quest }); await sirAmik(); }
     const story = () => journalText(ctx, journal, /^black knight.s fortress$/i);
     const page = await story();
+    questPhase('fortress-infiltration');
     if (!/sabotaged the witch.s potion/i.test(page)) {
         if (!sdk.findInventoryItem(itemNamed(chain)) && !sdk.findEquipmentItem(itemNamed(chain))) {
             await walk(ctx, 2973, 3312, 3); await buyQuestSupply(ctx, /^wayne$/i, chain, 300);
@@ -62,6 +66,7 @@ const result = await runScript(async ctx => {
             await sdk.waitForCondition(s => s.inventory.some(i => i.id === cabbageId), 8000);
         }
         await passage(2337, /^open$/i, 3016, 3513);
+        questPhase('fortress-eavesdrop');
         if (!/eavesdropped on a witch/i.test(page)) {
             await passage(2341, /^push$/i, 3016, 3516);
             await climb('up', 3015, 3519); await climb('up', 3016, 3519);
@@ -78,6 +83,7 @@ const result = await runScript(async ctx => {
             await climb('down', 3015, 3519);
             await passage(2341, /^push$/i, 3016, 3517);
         }
+        questPhase('fortress-sabotage');
         await passage(2338, /^open$/i, 3019, 3515, [/i don.t care.*going in anyway/i]);
         await climb('up', 3022, 3518);
         await passage(2341, /^push$/i, 3030, 3511);
@@ -91,8 +97,9 @@ const result = await runScript(async ctx => {
         await passage(2338, /^open$/i, 3021, 3515, [/i don.t care.*going in anyway/i]);
         await passage(2337, /^open$/i, 3016, 3514);
     }
+    questPhase('fortress-report');
     await sirAmik();
-    await sdk.waitForCondition(s => s.questJournal?.[journal] === 'complete', 12_000);
+    await waitForQuestJournal(ctx, journal, 'complete', 12_000);
     questLog('quest-complete', { quest, evidence: 'journal', questPoints: sdk.getState()?.questPoints });
 }, { printState: false, timeout: 1_200_000 });
 

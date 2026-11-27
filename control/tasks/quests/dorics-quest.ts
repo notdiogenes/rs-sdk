@@ -1,5 +1,5 @@
 import { runScript } from '../../../sdk/runner';
-import { bankForQuest, groundItem, itemNamed, questLog, readQuest, talkAt, walk } from './shared';
+import { bankForQuest, groundItem, itemNamed, questLog, questPhase, waitForQuestJournal, readQuest, talkAt, walk } from './shared';
 
 const quest = "Doric's Quest";
 const journal = 7336;
@@ -9,17 +9,21 @@ const pickaxe = /^(?:bronze|iron|steel|mithril|adamant|rune) pickaxe$/i;
 const result = await runScript(async ctx => {
     const { sdk, bot } = ctx;
     await sdk.waitForReady();
-    await sdk.waitForCondition(s => !!s.questJournal?.[journal], 15_000);
+    questPhase('quest-journal-preflight');
+    await waitForQuestJournal(ctx, journal, 'available', 15_000);
+    questPhase('quest-prepare');
     if (readQuest(ctx, journal) === 'complete') { questLog('quest-already-complete', { quest }); return; }
     await bankForQuest(ctx, [
         ...ores.map(([name, count]) => ({ name, count })), { name: 'Bronze pickaxe', count: 1 },
     ], [2946, 3369]);
     const visit = () => talkAt(ctx, 2952, 3451, /^doric$/i, [/wanted to use your anvils/i, /yes,? i will get you materials/i]);
+    questPhase('doric-start');
     if (readQuest(ctx, journal) === 'not-started') { questLog('quest-start', { quest }); await visit(); }
     const held = (name: string) => sdk.countInventoryItems(itemNamed(name));
     if (ores.some(([name, count]) => held(name) < count) && !sdk.findInventoryItem(pickaxe) && !sdk.findEquipmentItem(pickaxe)) {
         await groundItem(ctx, /^bronze pickaxe$/i, 2963, 3216);
     }
+    questPhase('doric-mine-ores');
     for (const [name, count, x, z, ids] of ores) {
         if (held(name) >= count) continue;
         await walk(ctx, x, z, 3);
@@ -33,8 +37,9 @@ const result = await runScript(async ctx => {
         if (held(name) < count) throw new Error(`Could not mine the required ${name}`);
         questLog('quest-ingredient', { quest, item: `${count} × ${name}` });
     }
+    questPhase('doric-deliver');
     await visit();
-    await sdk.waitForCondition(s => s.questJournal?.[journal] === 'complete', 12_000);
+    await waitForQuestJournal(ctx, journal, 'complete', 12_000);
     questLog('quest-complete', { quest, evidence: 'journal', questPoints: sdk.getState()?.questPoints });
 }, { printState: false, timeout: 900_000 });
 

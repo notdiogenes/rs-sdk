@@ -294,6 +294,22 @@ legs include the bot position and, when visible, the witch's position at the
 start and end of each leg. The current instrumentation labels the existing
 strategy `direct-waypoints`.
 
+#### Activity-specific diagnostics
+
+| Activity | Evidence in the audit |
+| --- | --- |
+| Pickpocketing, including Ardougne Knights and the adaptive script | Requirement check, travel, search waypoints and NPC candidates, target and option, action outcome, selected game feedback, XP and coin gains, HP loss, stun waits, food, banking, and deaths |
+| Cow and Hitpoints training | Target searches, engagement results, observed XP, equipment or recovery, and deaths. Cow training also records combat style, loot, bone burials, and bank space. |
+| Tutorial exit | Starting tile, every skip attempt, and confirmation that the bot reached the Lumbridge surface |
+| Bundled quests | Named quest phases, journal verification, dialogue choices, travel, and inventory/loadout checks, with activity-specific evidence such as the Witch's House crossing |
+
+For Knights, use `GET /bots/activity?view=audit&mode=summary&task=pickpocket-knights&days=35`.
+The matching `pickpocket-attempt-*` signals count successful attempts, stuns,
+and other outcomes separately. Their `elapsed_ms`, `xp_gained`, `coins_gained`,
+and `hp_lost` fields sum observed attempt costs and gains. Phase duration
+includes separate time for search, stun waits and recovery, and updates as
+events arrive even while the run is active. Setbacks retain sampled evidence.
+
 ### Separate Lumbridge pickpocket demo
 
 The HTTPS dashboard also exposes a second, isolated client and task for the

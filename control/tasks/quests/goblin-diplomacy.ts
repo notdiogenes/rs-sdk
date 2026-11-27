@@ -1,5 +1,5 @@
 import { runScript } from '../../../sdk/runner';
-import { bankForQuest, equipQuestSword, groundItem, itemNamed, journalText, lootFromNpc, questLoc, questLog, readQuest, talkAt, useTogether, walk } from './shared';
+import { bankForQuest, equipQuestSword, groundItem, itemNamed, journalText, lootFromNpc, questLoc, questLog, questPhase, waitForQuestJournal, readQuest, talkAt, useTogether, walk } from './shared';
 
 const quest = 'Goblin Diplomacy';
 const journal = 7338;
@@ -10,13 +10,16 @@ const blue = 'Blue goblin mail';
 const result = await runScript(async ctx => {
     const { bot, sdk } = ctx;
     await sdk.waitForReady();
-    await sdk.waitForCondition(s => !!s.questJournal?.[journal], 15_000);
+    questPhase('quest-journal-preflight');
+    await waitForQuestJournal(ctx, journal, 'available', 15_000);
+    questPhase('quest-prepare');
     if (readQuest(ctx, journal) === 'complete') { questLog('quest-already-complete', { quest }); return; }
     await bankForQuest(ctx, [
         {name:'Coins',count:40}, {name:'Adamant longsword',count:1}, {name:armor,count:3}, {name:orange,count:1}, {name:blue,count:1},
         {name:'Redberries',count:3}, {name:'Onion',count:2}, {name:'Woad leaf',count:2},
         ...['Red dye', 'Yellow dye', 'Blue dye', 'Orange dye'].map(name => ({ name, count: 1 })),
     ]);
+    questPhase('goblin-start');
     if (readQuest(ctx, journal) === 'not-started') {
         questLog('quest-start', { quest });
         await talkAt(ctx, 3045, 3257, /^bartender$/i, [/not very busy in here today/i]);
@@ -35,6 +38,7 @@ const result = await runScript(async ctx => {
             new RegExp('make me some ' + color + ' dye', 'i')]);
         if (!count(color + ' dye')) throw new Error(`Aggie did not provide ${color} dye`);
     };
+    questPhase('goblin-gather-dyes');
     if (makeOrange && !count('Orange dye')) {
         await dye('Red', 'Redberries', 3, () => groundItem(ctx, /^redberries$/i, 3271, 3369, 3));
         await dye('Yellow', 'Onion', 2, async () => {
@@ -52,7 +56,9 @@ const result = await runScript(async ctx => {
         [/looking for woad leaves/i, /20 coins/i]));
     const needed = finishedHandoff ? 0 : 1 + Number(makeOrange) + Number(makeBlue);
     await equipQuestSword(ctx);
+    questPhase('goblin-gather-armour');
     if (count(armor) < needed) await lootFromNpc(ctx, itemNamed(armor), /^goblin$/i, 2958, 3507, needed);
+    questPhase('goblin-dye-armour');
     if (makeOrange) {
         await useTogether(ctx, /^orange dye$/i, itemNamed(armor));
         await sdk.waitForCondition(() => count(orange) > 0, 8000);
@@ -61,10 +67,11 @@ const result = await runScript(async ctx => {
         await useTogether(ctx, /^blue dye$/i, itemNamed(armor));
         await sdk.waitForCondition(() => count(blue) > 0, 8000);
     }
+    questPhase('goblin-deliver');
     for (let attempt = 0; attempt < 5 && readQuest(ctx, journal) !== 'complete'; attempt++) {
         await talkAt(ctx, 2957, 3510, /^general wartface$/i, [/pick an armour colour/i]);
     }
-    await sdk.waitForCondition(s => s.questJournal?.[journal] === 'complete', 12_000);
+    await waitForQuestJournal(ctx, journal, 'complete', 12_000);
     questLog('quest-complete', { quest, evidence: 'journal', questPoints: sdk.getState()?.questPoints });
 }, { printState: false, timeout: 1_200_000 });
 

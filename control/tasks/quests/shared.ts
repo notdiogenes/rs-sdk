@@ -1,12 +1,25 @@
-import { auditEvent, auditFeedback, auditFrame } from '../../../sdk/audit-trace';
+import { auditEnabled, auditEvent, auditFeedback, auditFrame } from '../../../sdk/audit-trace';
 import type { ScriptContext } from '../../../sdk/runner';
 
 export type QuestContext = Pick<ScriptContext, 'bot' | 'sdk'>;
 export const questLog = (stage: string, data: object = {}) =>
     console.log('[pickpocket-demo] ' + JSON.stringify({ stage, ...data }));
+export const questPhase = (name: string, data: object = {}) => auditEvent('phase', name, data);
 
 export function readQuest({ sdk }: QuestContext, component: number) {
     return sdk.getState()?.questJournal?.[component];
+}
+
+export async function waitForQuestJournal(ctx: QuestContext, component: number, expected: 'available' | 'complete', timeout: number) {
+    const { sdk } = ctx;
+    const name = expected === 'available' ? 'quest-journal-available' : 'quest-journal-complete';
+    try {
+        await sdk.waitForCondition(s => expected === 'available' ? !!s.questJournal?.[component] : s.questJournal?.[component] === 'complete', timeout);
+        auditEvent('check', name, { outcome: 'complete', component, expected, status: readQuest(ctx, component), after: auditFrame(sdk.getState()) });
+    } catch (error) {
+        auditEvent('check', name, { outcome: 'failed', component, expected, status: readQuest(ctx, component), timeout, after: auditFrame(sdk.getState()) });
+        throw error;
+    }
 }
 
 export async function walk({ bot, sdk }: QuestContext, x: number, z: number, tolerance = 4) {
@@ -68,6 +81,11 @@ export async function talk(ctx: QuestContext, npc: RegExp, choices: RegExp[]) {
     const { bot, sdk } = ctx;
     auditEvent('milestone', 'quest-dialogue', { npc: npc.source });
     const target = sdk.findNearbyNpc(npc);
+    if (auditEnabled) auditEvent('check', 'quest-dialogue-target', {
+        outcome: target ? 'complete' : 'failed', npc: npc.source,
+        target: target && { id: target.id, index: target.index, x: target.x, z: target.z, reachable: target.reachable },
+        before: auditFrame(sdk.getState()),
+    });
     if (!target) throw new Error(`Could not find ${npc}`);
     const conversation = await bot.talkTo(target);
     if (!conversation.success && !sdk.getDialog()?.isOpen) throw new Error(conversation.message);
@@ -85,6 +103,10 @@ export async function continueDialog({ sdk }: QuestContext, choices: RegExp[] = 
         if (dialog.options.length) {
             const match = [/^click here to continue$/i, ...choices]
                 .find(choice => dialog.options.some(option => choice.test(option.text)));
+            if (auditEnabled) auditEvent('check', 'quest-dialogue-choice', {
+                outcome: match ? 'complete' : 'failed', page,
+                expected: choices.map(choice => choice.source), offered: dialog.options.map(option => option.text), selected: match?.source,
+            });
             if (!match) throw new Error('Unexpected quest choices: ' + dialog.options.map(option => option.text).join(' | '));
             const chosen = await sdk.clickDialogByText(match);
             if (!chosen.success) throw new Error(chosen.message);
@@ -93,6 +115,7 @@ export async function continueDialog({ sdk }: QuestContext, choices: RegExp[] = 
         }
         await sdk.waitForTicks(2);
     }
+    auditEvent('check', 'quest-dialogue-finished', { outcome: 'failed', pages: 24 });
     throw new Error('Quest dialogue did not finish');
 }
 
@@ -105,11 +128,15 @@ export async function groundItem(ctx: QuestContext, item: RegExp, x: number, z: 
             .filter(entry => item.test(entry.name) && Math.max(Math.abs(entry.x - x), Math.abs(entry.z - z)) <= 10)
             .sort((a, b) => Number(b.reachable) - Number(a.reachable) || a.distance - b.distance)[0];
         if (next) {
-            await bot.pickupItem(next);
+            const picked = await bot.pickupItem(next);
+            auditEvent(picked.success ? 'milestone' : 'setback', picked.success ? 'quest-ground-item-picked' : 'quest-ground-item-failed', {
+                item: next.name, id: next.id, x: next.x, z: next.z, attempt: attempt + 1, message: picked.message,
+            });
             if (sdk.countInventoryItems(item) >= count) return;
         }
         await sdk.waitForTicks(5);
     }
+    auditEvent('check', 'quest-ground-item-available', { outcome: 'failed', item: item.source, x, z, expected: count, held: sdk.countInventoryItems(item) });
     throw new Error(`Could not find ${item} near ${x}, ${z}`);
 }
 
@@ -159,7 +186,10 @@ export async function bankForQuest(ctx: QuestContext, supplies: readonly { name:
         if (sdk.isBankOpen()) await bot.closeBank();
     }
     const surplus = current().find(item => have(item.name) > (wanted.get(item.name.toLowerCase()) ?? 0));
-    if (surplus || sdk.getEquipment().some(item => !wanted.has(item.name.toLowerCase()))) {
+    const unexpected = sdk.getEquipment().find(item => !wanted.has(item.name.toLowerCase()));
+    auditEvent('check', 'quest-bank-loadout', { outcome: surplus || unexpected ? 'failed' : 'complete',
+        surplus: surplus?.name, unexpectedEquipment: unexpected?.name, supplies: supplies.map(s => ({ ...s, carried: have(s.name) })) });
+    if (surplus || unexpected) {
         throw new Error('Unexpected items remained after banking');
     }
     auditEvent('phase', 'quest-execution');
@@ -173,7 +203,13 @@ export async function journalText({ bot, sdk }: QuestContext, component: number,
         const result = await sdk.sendClickComponent(component);
         if (!result.success) throw new Error(result.message);
         const state = await sdk.waitForCondition(s => !!s.openQuestJournal && title.test(strip(s.openQuestJournal.title)), 7000);
-        return strip(state.openQuestJournal?.text ?? '');
+        const text = strip(state.openQuestJournal?.text ?? '');
+        auditEvent('check', 'quest-journal-read', { outcome: 'complete', component, title: state.openQuestJournal?.title,
+            status: state.questJournal?.[component], tail: text.slice(-400) });
+        return text;
+    } catch (error) {
+        auditEvent('check', 'quest-journal-read', { outcome: 'failed', component, expectedTitle: title.source, after: auditFrame(sdk.getState()) });
+        throw error;
     } finally {
         await bot.closeInterface();
     }

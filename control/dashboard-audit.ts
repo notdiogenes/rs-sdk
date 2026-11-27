@@ -59,6 +59,12 @@ export function dashboardAudit(directory: string, clock = Date.now) {
             phase TEXT NOT NULL, kind TEXT NOT NULL, name TEXT NOT NULL, count INTEGER NOT NULL, evidence TEXT,
             PRIMARY KEY (run_id, phase, kind, name)
         );
+        CREATE TABLE IF NOT EXISTS audit_attempt_metrics (
+            run_id TEXT NOT NULL, phase TEXT NOT NULL, kind TEXT NOT NULL, name TEXT NOT NULL,
+            elapsed_ms INTEGER NOT NULL, xp_gained INTEGER NOT NULL, coins_gained INTEGER NOT NULL, hp_lost INTEGER NOT NULL,
+            PRIMARY KEY (run_id, phase, kind, name),
+            FOREIGN KEY (run_id, phase, kind, name) REFERENCES audit_signals(run_id, phase, kind, name) ON DELETE CASCADE
+        );
     `);
     const active = new Map<string, Active>();
     const insert = db.query('INSERT INTO audit_events (run_id, at, phase, kind, name, data) VALUES (?, ?, ?, ?, ?, ?)');
@@ -70,6 +76,11 @@ export function dashboardAudit(directory: string, clock = Date.now) {
         timeouts = timeouts + excluded.timeouts, setbacks = setbacks + excluded.setbacks`);
     const signal = db.query(`INSERT INTO audit_signals (run_id, phase, kind, name, count, evidence) VALUES (?, ?, ?, ?, 1, ?)
         ON CONFLICT(run_id, phase, kind, name) DO UPDATE SET count = count + 1, evidence = excluded.evidence`);
+    const attemptMetrics = db.query(`INSERT INTO audit_attempt_metrics VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(run_id, phase, kind, name) DO UPDATE SET elapsed_ms = elapsed_ms + excluded.elapsed_ms,
+        xp_gained = xp_gained + excluded.xp_gained, coins_gained = coins_gained + excluded.coins_gained, hp_lost = hp_lost + excluded.hp_lost`);
+    const nonnegativeInteger = (value: unknown) =>
+        typeof value === 'number' && Number.isSafeInteger(value) && value > 0 ? value : 0;
     const setbackContext = db.query<{ kind: string; name: string; data: string }, [string, string]>(`
         SELECT kind, name, data FROM audit_events WHERE run_id = ? AND phase = ?
         AND kind IN ('check', 'action', 'setback') ORDER BY id DESC LIMIT 5
@@ -123,7 +134,11 @@ export function dashboardAudit(directory: string, clock = Date.now) {
         const failedDispatch = action && data.outcome === 'failed';
         const timeout = data.kind === 'check' && data.outcome === 'timeout';
         const isSetback = data.kind === 'setback';
-        if (action || timeout || isSetback) phase.run(id, run.phase, 0, 0, +action, +failedDispatch, +timeout, +isSetback);
+        const checkpointMs = now - run.at >= 5000 ? now - run.at : 0;
+        if (action || timeout || isSetback || checkpointMs) {
+            phase.run(id, run.phase, 0, checkpointMs, +action, +failedDispatch, +timeout, +isSetback);
+            if (checkpointMs) run.at = now;
+        }
         if (data.kind === 'check' && ['failed', 'timeout', 'unconfirmed'].includes(data.outcome ?? '')) {
             if (!run.pendingCheck || data.name !== 'state-observation') run.pendingCheck = data.name;
         }
@@ -144,6 +159,10 @@ export function dashboardAudit(directory: string, clock = Date.now) {
             const evidence = isSetback ? JSON.stringify(setbackContext.all(id, run.phase).reverse()
                 .map(row => ({ ...row, data: JSON.parse(row.data) }))) : null;
             signal.run(id, run.phase, data.kind, data.name, evidence);
+            if (data.name.startsWith('pickpocket-attempt-') || data.name.startsWith('combat-round-')) {
+                attemptMetrics.run(id, run.phase, data.kind, data.name, nonnegativeInteger(data.elapsedMs),
+                    nonnegativeInteger(data.xpGained), nonnegativeInteger(data.coinsGained), nonnegativeInteger(data.hpLost));
+            }
         }
         count.run(id);
     });
@@ -192,7 +211,9 @@ export function dashboardAudit(directory: string, clock = Date.now) {
                  WHERE run_id = ? AND id < ? AND (? IS NULL OR phase = ?) ORDER BY id DESC LIMIT ?`)
                 .all(id, before, through, through, limit + 1);
             return { run, phases: db.query('SELECT * FROM audit_phases WHERE run_id = ? ORDER BY phase').all(id),
-                signals: db.query<{ evidence: string | null }, [string]>('SELECT * FROM audit_signals WHERE run_id = ? ORDER BY phase, kind, name')
+                signals: db.query<{ evidence: string | null }, [string]>(`SELECT s.*, m.elapsed_ms, m.xp_gained,
+                    m.coins_gained, m.hp_lost FROM audit_signals s LEFT JOIN audit_attempt_metrics m USING(run_id, phase, kind, name)
+                    WHERE s.run_id = ? ORDER BY s.phase, s.kind, s.name`)
                     .all(id).map(row => ({ ...row, evidence: row.evidence && JSON.parse(row.evidence) })),
                 failureEvidence: failure_evidence ? JSON.parse(failure_evidence) : [],
                 nextBefore: detail.length > limit ? detail[limit - 1]?.id : null,
@@ -216,10 +237,12 @@ export function dashboardAudit(directory: string, clock = Date.now) {
                 .all(...filters, through, through, limit);
             const signals = db.query(`SELECT r.task, r.revision, s.phase, p.strategy, s.kind, s.name, SUM(s.count) AS count,
                 COUNT(DISTINCT r.id) AS runs, COUNT(DISTINCT r.bot) AS bots,
+                SUM(m.elapsed_ms) AS elapsed_ms, SUM(m.xp_gained) AS xp_gained, SUM(m.coins_gained) AS coins_gained, SUM(m.hp_lost) AS hp_lost,
                 SUM(CASE WHEN r.status = 'succeeded' THEN s.count ELSE 0 END) AS in_successful_runs,
                 SUM(CASE WHEN r.status = 'failed' AND r.failure_phase <> s.phase THEN s.count ELSE 0 END) AS before_later_failure
                 FROM audit_signals s JOIN audit_runs r ON r.id = s.run_id
                 JOIN audit_phases p ON p.run_id = s.run_id AND p.phase = s.phase
+                LEFT JOIN audit_attempt_metrics m ON m.run_id = s.run_id AND m.phase = s.phase AND m.kind = s.kind AND m.name = s.name
                 WHERE ${scope} AND (? IS NULL OR s.phase = ?) GROUP BY r.task, r.revision, s.phase, p.strategy, s.kind, s.name
                 ORDER BY count DESC LIMIT ?`).all(...filters, through, through, limit);
             const breakpoints = db.query(`SELECT r.task, r.revision, r.failure_phase AS phase,

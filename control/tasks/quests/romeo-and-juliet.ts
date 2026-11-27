@@ -1,5 +1,6 @@
+import { auditEvent } from '../../../sdk/audit-trace';
 import { runScript } from '../../../sdk/runner';
-import { bankForQuest, changeFloor, groundItem, journalText, questLog, readQuest, talk, walk } from './shared';
+import { bankForQuest, changeFloor, groundItem, journalText, questLog, questPhase, waitForQuestJournal, readQuest, talk, walk } from './shared';
 
 const journal = 7343;
 const quest = 'Romeo & Juliet';
@@ -13,7 +14,9 @@ const choices = [/i guess i could find him/i, /certainly,? i will do so/i, /can 
 const result = await runScript(async ctx => {
     const { sdk } = ctx;
     await sdk.waitForReady();
-    await sdk.waitForCondition(s => !!s.questJournal?.[journal], 15_000);
+    questPhase('quest-journal-preflight');
+    await waitForQuestJournal(ctx, journal, 'available', 15_000);
+    questPhase('quest-prepare');
     const status = () => readQuest(ctx, journal);
     if (status() === 'complete') { questLog('quest-already-complete', { quest }); return; }
     const leaveHouse = async () => {
@@ -37,6 +40,7 @@ const result = await runScript(async ctx => {
         await walk(ctx, 3195, 3404, 4);
         await talk(ctx, /^apothecary$/i, []);
     };
+    questPhase('romeo-journal-steps');
     questLog('quest-start', { quest });
     let previous = '';
     let attempts = 0;
@@ -46,10 +50,13 @@ const result = await runScript(async ctx => {
         const milestone = text + JSON.stringify(sdk.getInventory().map(item => item.id));
         attempts = milestone === previous ? attempts + 1 : 0;
         previous = milestone;
+        if (attempts) auditEvent('setback', 'romeo-journal-unchanged', { step: step + 1, repeats: attempts, journal: text.slice(-240) });
         if (attempts > 1) throw new Error('Quest journal is unchanged: ' + text.slice(-180));
         if (/i have to find romeo.*tell him what.s happened/i.test(text)) {
+            questPhase('romeo-report');
             await visitRomeo();
         } else if (/i went to the apothecary regarding making this.*bring him some/i.test(text)) {
+            questPhase('romeo-prepare-potion');
             if (has(/^cadava potion$/i)) await visitJuliet();
             else if (has(/^cadava berries$/i)) await visitApothecary();
             else {
@@ -57,20 +64,24 @@ const result = await runScript(async ctx => {
                 questLog('quest-ingredient', { quest, item: 'Cadava berries' });
             }
         } else if (/i need to find the apothecary/i.test(text)) {
+            questPhase('romeo-apothecary');
             await visitApothecary();
         } else if (/i should find father lawrence/i.test(text)) {
+            questPhase('romeo-father-lawrence');
             await walk(ctx, 3254, 3475, 4);
             await talk(ctx, /^father lawrence$/i, []);
         } else if (/i should take the message.*to romeo/i.test(text)) {
+            questPhase('romeo-deliver-message');
             if (has(/^message$/i)) await visitRomeo();
             else await visitJuliet();
         } else if (/i should go and speak to juliet|i can start this quest/i.test(text)) {
+            questPhase('romeo-meet-juliet');
             await visitJuliet();
         } else {
             throw new Error('Unrecognized Romeo & Juliet journal page: ' + text.slice(-180));
         }
     }
-    await sdk.waitForCondition(s => s.questJournal?.[journal] === 'complete', 12_000);
+    await waitForQuestJournal(ctx, journal, 'complete', 12_000);
     questLog('quest-complete', { quest, evidence: 'journal', questPoints: sdk.getState()?.questPoints });
 }, { printState: false, timeout: 900_000 });
 

@@ -92,3 +92,36 @@ test('reports garden catches and crossings even when the terminal failure is in 
         rmSync(directory, { recursive: true, force: true });
     }
 });
+
+test('keeps thieving success, stun costs, and live phase time for an ongoing grind', () => {
+    const directory = mkdtempSync(join(process.cwd(), '.audit-test-'));
+    let now = 1_800_000_000_000;
+    const audit = dashboardAudit(directory, () => now);
+    try {
+        const run = audit.begin('Scout', 'pickpocket-knights', 'revision-a', 'script-a', []);
+        audit.append(run, { kind: 'phase', name: 'thieving-pickpocket', strategy: 'nearest-reachable' });
+        audit.append(run, { kind: 'milestone', name: 'pickpocket-attempt-succeeded', elapsedMs: 1200, xpGained: 80, coinsGained: 50 });
+        now += 6000;
+        audit.append(run, { kind: 'milestone', name: 'pickpocket-attempt-succeeded', elapsedMs: 1800, xpGained: 80, coinsGained: 50 });
+        let summary = audit.read(new URLSearchParams('mode=summary&task=pickpocket-knights'));
+        expect(summary?.totals).toContainEqual(expect.objectContaining({ phase: 'thieving-pickpocket', run_outcome: 'running', duration_ms: 6000 }));
+
+        audit.append(run, { kind: 'setback', name: 'pickpocket-attempt-stunned', elapsedMs: 2000, hpLost: 3,
+            target: { index: 32 }, feedback: [{ tick: 12, text: 'You fail to pick the pocket.' }] });
+        audit.append(run, { kind: 'phase', name: 'thieving-banking' });
+        audit.append(run, { kind: 'failure', name: 'script-finish', message: 'Banking failed' });
+        audit.finish(run, 1, false);
+        summary = audit.read(new URLSearchParams('mode=summary&task=pickpocket-knights'));
+        expect(summary?.signals).toEqual(expect.arrayContaining([
+            expect.objectContaining({ name: 'pickpocket-attempt-succeeded', count: 2, elapsed_ms: 3000, xp_gained: 160, coins_gained: 100, before_later_failure: 2 }),
+            expect.objectContaining({ name: 'pickpocket-attempt-stunned', count: 1, elapsed_ms: 2000, hp_lost: 3, before_later_failure: 1 }),
+        ]));
+        expect(summary?.breakpoints).toContainEqual(expect.objectContaining({ phase: 'thieving-banking' }));
+        const detail = audit.read(new URLSearchParams(`run=${run}`));
+        expect(detail?.signals).toContainEqual(expect.objectContaining({ name: 'pickpocket-attempt-stunned',
+            evidence: expect.arrayContaining([expect.objectContaining({ data: expect.objectContaining({ target: { index: 32 } }) })]) }));
+    } finally {
+        audit.close();
+        rmSync(directory, { recursive: true, force: true });
+    }
+});
