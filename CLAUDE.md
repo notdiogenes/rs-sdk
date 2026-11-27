@@ -144,6 +144,58 @@ bun sdk/cli.ts {username}
 
 Record observations in `lab_log.md`, then improve the script.
 
+### Audit Hosted Activities Over HTTPS
+
+For dashboard-managed bots, read from the configured control host first. Use
+the existing dashboard session or authorized control Bearer credential. Keep
+credentials out of URLs, logs, and reports. These GET requests can be used
+while the managed controller is running.
+
+| Question | Request | Evidence to inspect |
+| --- | --- | --- |
+| What is happening now? | `GET /bots/activity?view=diagnostics&bot=NAME` | Controller and client status, state freshness, recent movement and XP, and startup or exit errors |
+| Where does this activity repeatedly fail? | `GET /bots/activity?view=audit&mode=summary&task=TASK_ID&days=35` | `breakpoints` grouped by task, revision, phase, step, and source site |
+| Which runs support the finding? | `GET /bots/activity?view=audit&mode=runs&task=TASK_ID&days=35` | Run IDs, bots, revisions, script hashes, statuses, and failure locations |
+| What happened around a specific step? | `GET /bots/activity?view=audit&run=RUN_ID` | `events`, `failureEvidence`, phase totals, and retained samples in `signals` |
+
+URL-encode bot names. Add `bot=NAME` to scope audit queries to one bot, or omit
+it for fleet comparisons. Use `phase=PHASE_ID` to narrow summary and detail
+requests. Use the returned `nextBefore` as the next page's `before` value
+for run lists and run details. Windows of 1–35 days are based on run start
+time. Run summaries and sampled evidence are retained for 35 days. Detailed
+events share a rolling fleet budget and can be evicted sooner. Audit coverage
+includes dashboard-managed tasks and the Lumbridge demo worker from deployment
+onward. For standalone and primary `/v1` scripts, use their own runtime logs.
+
+**Diagnose a repeat failure.** Open representative runs from the breakpoint
+group. Follow the phase, failing check, source frame at the recorded revision,
+and the preceding action. Look for the player and target tiles, candidate
+IDs and available options, the selected option, dispatch result, expected
+effect, then actual game state and system feedback. A successful dispatch
+establishes that the client sent the action. Confirm the result with an
+observed state change. Report sampled run IDs, revision, and the observed
+evidence. State what could not be verified when a sample is missing or
+the evidence supports multiple explanations.
+
+**Find inefficiencies before the terminal failure.** Review `totals` and
+`signals` for each relevant phase across successful, running, and failed
+runs. Inspect `in_successful_runs` and `before_later_failure` for setbacks
+that are easy to miss in an exit-status review. Compare revisions or strategies
+using a stated denominator and sample size, such as catches per completed
+crossing or stuns per resolved pickpocket attempt. Include time spent searching,
+recovering, or waiting when comparing throughput. Open setback evidence to
+see why time was lost. A phase can recur within a run, so use the chronological
+events when exact ordering matters.
+
+**Instrument new activities.** Reuse `auditEvent` and `auditFrame` from
+[`sdk/audit-trace.ts`](sdk/audit-trace.ts). Use stable phase and event names.
+Log the intended action and observed outcome, including successful milestones
+and recoverable setbacks. Record useful IDs, positions, and elapsed time so
+an agent can diagnose the run from the trace. Keep credentials and player
+chat out of event payloads. Verify that a successful outcome with retries
+still exposes those retries in the audit.
+See the [control API audit reference](control/README.md#activity-audit-history).
+
 ### Chatting Without Taking Control
 
 To talk in-game (or read chat) without disturbing whatever script currently
