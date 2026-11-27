@@ -1,6 +1,7 @@
 import { auditEvent, auditOperation } from '../../../sdk/audit-trace';
 import { runScript } from '../../../sdk/runner';
 import { Spells } from '../../../sdk/spells';
+import { canMeleeQuest, fightQuestNpc, planQuestFight, questFood, questFoodSupplies, questSpellSupplies } from './quest-combat';
 import {
     buyQuestSupply, changeFloor, continueDialog, groundItem, journalText, lootFromNpc, prepareQuestStep, questLoc,
     questLog, questPhase, readQuest, talk, talkAt, useTogether, waitForQuestJournal, walk, type QuestContext,
@@ -10,7 +11,8 @@ const quest = 'Lost City';
 const journal = 7367;
 const axe = /^(?:bronze|iron|steel|black|mithril|adamant|rune) axe$/i;
 const flax = /^flax$/i;
-const food = /^(?:lobster|swordfish|shark|salmon|trout|cooked meat|cooked chicken|cake|2\/3 cake|slice of cake)$/i;
+const spiritFight = { name: 'Tree Spirit', hitpoints: 85, incomingHit: 7, meleeLevel: 45, minimumFood: 3 };
+const combatRunes = /^(?:air|fire|mind|chaos|death) rune$/i;
 const surface = (x: number, z: number) => x >= 2800 && x < 2865 && z >= 3320 && z <= 3385;
 const cave = (x: number, z: number) => x >= 2810 && x <= 2890 && z >= 9720 && z <= 9790;
 
@@ -106,11 +108,12 @@ async function trainCrafting(ctx: QuestContext) {
 async function prepareEntrana(ctx: QuestContext) {
     const { sdk, bot } = ctx;
     const travelSupply = /^(?:knife|air rune|earth rune|law rune)$/i;
-    const keep = (name: string) => travelSupply.test(name) || food.test(name);
+    const keep = (name: string) => travelSupply.test(name) || combatRunes.test(name) || questFood.test(name);
     const withdraw = [
         { name: 'Knife', count: 1 }, { name: 'Air rune', count: 3 }, { name: 'Earth rune', count: 1 },
         { name: 'Law rune', count: 1 },
-        ...['Lobster', 'Swordfish', 'Shark'].map(name => ({ name, count: 4 })),
+        ...questFoodSupplies,
+        ...canMeleeQuest(ctx, spiritFight) ? [] : questSpellSupplies(ctx, spiritFight.hitpoints),
     ];
     await prepareQuestStep(ctx, { slots: Math.max(6, sdk.getEquipment().length), withdraw });
     if (!sdk.getEquipment().length && sdk.getInventory().every(item => keep(item.name))) return;
@@ -193,6 +196,11 @@ const result = await runScript(async ctx => {
     }
     if (onIsland() && !has(771) && !has(772)) {
         questPhase('lost-city-enter-cave');
+        planQuestFight(ctx, spiritFight);
+        if ((player()?.level ?? 0) > 0) {
+            await walk(ctx, 2829, 3330, 3);
+            await changeFloor(ctx, 'down', 2829, 3330, 1);
+        }
         await talkAt(ctx, 2822, 3374, /^cave monk$/i, [/risk i will have to take/i]);
         await sdk.waitForCondition(() => !!inside(), 8000);
     }
@@ -213,17 +221,16 @@ const result = await runScript(async ctx => {
                 sent => ({ outcome: sent.success ? 'dispatched' : 'failed', message: sent.message }));
             await sdk.waitForCondition(s => has(771) || s.nearbyNpcs.some(n => /^tree spirit$/i.test(n.name)), 9000).catch(() => null);
             if (has(771)) break;
-            if (sdk.findNearbyNpc(/^tree spirit$/i)) {
-                for (let tick = 0; tick < 48; tick++) {
-                    const spirit = sdk.findNearbyNpc(/^tree spirit$/i);
-                    if (!spirit || spirit.hp === 0) break;
-                    const p = player();
-                    if (!p || p.isDead) throw new Error('The Tree Spirit fight ended without a living player');
-                    if (p.hp < 45 && sdk.findInventoryItem(food)) await bot.eatFood(food);
-                    if (p.hp < 24) throw new Error('Stopped the Tree Spirit fight because Hitpoints were low');
-                    if (!p.combat.inCombat || tick === 0) await bot.attack(spirit);
-                    await sdk.waitForTicks(3);
+            const spirit = sdk.findNearbyNpc(/^tree spirit$/i);
+            if (spirit) {
+                const plan = planQuestFight(ctx, spiritFight);
+                if (plan.style === 'melee' && !sdk.findEquipmentItem(axe)) {
+                    const wielded = await bot.equipItem(axe);
+                    if (!wielded.success) throw new Error(wielded.message);
                 }
+                await fightQuestNpc(ctx, spirit, spiritFight, plan, {
+                    retreat: () => walk(ctx, 2854, 9744, 2),
+                });
             }
         }
         if (!has(771)) throw new Error('Could not verify a Dramen branch after the Tree Spirit fight');
@@ -252,6 +259,10 @@ const result = await runScript(async ctx => {
         await talkAt(ctx, 2835, 3335, /^monk of entrana$/i, [/yes.*ready to go/i]);
         await sdk.waitForCondition(() => !onIsland(), 16000);
         await continueDialog(ctx);
+        if ((player()?.level ?? 0) > 0) {
+            await walk(ctx, 3052, 3229, 3);
+            await changeFloor(ctx, 'down', 3052, 3229, 1);
+        }
     }
     questPhase('lost-city-enter-zanaris');
     const equip = await bot.equipItem(/^dramen staff$/i);
