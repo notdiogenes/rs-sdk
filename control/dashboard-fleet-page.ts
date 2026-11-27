@@ -241,8 +241,10 @@ export function fleetPage({ nonce, data, questCatalog, fleetStyle, controls, ref
   </div>
   <p id="audit-status" role="status" aria-live="polite"></p>
   </div>
-  <div id="audit-content"></div>
-  <button type="button" id="audit-older" hidden>Load older</button>
+  <div id="audit-scroll">
+    <div id="audit-content"></div>
+    <button type="button" id="audit-older" hidden>Load older</button>
+  </div>
 </div></dialog>
 <script nonce="${nonce}" type="application/json" id="fleet-roster">${JSON.stringify({ rows: rowList, skills: fleetSkills, questCatalog }).replaceAll('<', '\\u003c')}</script>
 <script nonce="${nonce}" data-refresh="${refreshSeconds}" data-time-zone="${displayTimeZone}">${controls}</script>

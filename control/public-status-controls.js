@@ -479,6 +479,7 @@
         timeZone: document.currentScript.dataset.timeZone, hour: 'numeric', minute: '2-digit', second: '2-digit',
     });
     const auditStatus = document.querySelector('#audit-status');
+    const auditScroll = document.querySelector('#audit-scroll');
     const auditContent = document.querySelector('#audit-content');
     const auditOlder = document.querySelector('#audit-older');
     const auditLink = new URLSearchParams(location.search);
@@ -697,9 +698,11 @@
         if (older && auditCursor) params.set('before', auditCursor);
         if (firstBefore) params.set('before', more.before = firstBefore);
         if (firstLimit) more.limit = firstLimit;
-        auditStatus.textContent = older ? 'Loading older entries…' : 'Loading audit history…';
+        const view = auditRun ? 'run details' : scope.get('mode');
+        auditStatus.textContent = older ? 'Loading older entries…' : `Loading ${view}…`;
         if (!older) auditCopy.disabled = true;
         auditOlder.disabled = true;
+        auditContent.inert = !older;
         auditContent.setAttribute('aria-busy', 'true');
         try {
             const compare = !auditRun && scope.get('mode') === 'insights' && baseline;
@@ -749,12 +752,23 @@
                 auditStatus.textContent = auditRows.length ? `${number(auditRows.length)} runs shown` : 'No runs match these filters.';
                 auditContent.innerHTML = auditList('Runs', auditRows, auditRunRow);
             }
-            if (!older) updateAuditLink(scope, more);
+            if (!older) {
+                auditScroll.scrollTop = 0;
+                updateAuditLink(scope, more);
+            }
         } catch (error) {
-            if (auditVersion === version) auditStatus.textContent = error.message;
+            if (auditVersion === version) {
+                auditStatus.textContent = error.message;
+                if (!older) {
+                    auditOlder.hidden = true;
+                    auditContent.innerHTML = auditEmpty('The requested audit view could not be loaded.');
+                    auditScroll.scrollTop = 0;
+                }
+            }
         } finally {
             if (auditVersion === version) {
                 auditOlder.disabled = false;
+                auditContent.inert = false;
                 auditContent.removeAttribute('aria-busy');
             }
         }
@@ -775,15 +789,11 @@
         auditPhase.value = phase;
         auditRows = [];
         auditCursor = null;
-        auditOlder.hidden = true;
         auditForm.hidden = Boolean(run);
         auditRunTools.hidden = !run;
         auditBack.textContent = 'Back to ' + ({ insights: 'Insights', summary: 'Summary', runs: 'runs' })[auditMode];
         updateAuditRunTools();
         auditTitle.textContent = run ? 'Audit run' : 'Activity audit';
-        auditCopy.disabled = true;
-        auditContent.replaceChildren();
-        auditDialog.scrollTop = 0;
         void loadAudit(false, before, limit);
     }
 
@@ -828,7 +838,6 @@
             auditOperation = data.auditOperation;
             updateAuditRunTools();
             void loadAudit();
-            auditDialog.scrollTop = 0;
             auditOperationBack.focus();
         } else if (data.runPhase) {
             auditOperation = '';
@@ -849,6 +858,8 @@
     auditDialog.querySelector('[data-close]').addEventListener('click', () => auditDialog.close());
     auditDialog.addEventListener('close', () => {
         auditVersion++;
+        auditContent.replaceChildren();
+        auditOlder.hidden = true;
         if (new URLSearchParams(location.search).has('audit')) history.replaceState(null, '', '/bots');
         scheduleRefresh();
     });
