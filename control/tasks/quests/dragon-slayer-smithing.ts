@@ -13,6 +13,7 @@ const rockIds = { copper: [2090, 2091], tin: [2094, 2095], iron: [2092, 2093], c
 type Ore = keyof typeof stock;
 
 const keep = /^(?:crandor map|map part|maze key|dragonfire shield|hammer|plank|nails|.*pickaxe|.* bar|.* ore|coal|coins)$/i;
+const keepForSteel = /^(?:crandor map|map part|maze key|dragonfire shield|hammer|plank|nails|.*pickaxe|steel bar|iron ore|coal|coins)$/i;
 const pickaxe = /pickaxe$/i;
 
 function count({ sdk }: QuestContext, name: string) {
@@ -33,9 +34,23 @@ function miningApproach(ctx: QuestContext, rock: { x: number; z: number }) {
 
 async function collectOre(ctx: QuestContext, ore: Ore, amount: number) {
     if (count(ctx, stock[ore]) >= amount) return;
+    const faladorMine = [2908, 3363] as const;
+    const anchors = ore === 'coal' ? [[3088, 3432] as const, faladorMine]
+        : [ore === 'iron' ? [2903, 3353] as const : faladorMine];
+    let lastFailure = '';
+    for (const anchor of anchors) {
+        lastFailure = await collectOreAt(ctx, ore, amount, anchor);
+        if (count(ctx, stock[ore]) >= amount) return;
+        auditEvent('check', 'dragon-slayer-ore-site-exhausted', {
+            outcome: 'unavailable', ore, anchor, carried: count(ctx, stock[ore]), needed: amount, message: lastFailure,
+        });
+    }
+    throw new Error(`Could not gather ${stock[ore]}: ${lastFailure}`);
+}
+
+async function collectOreAt(ctx: QuestContext, ore: Ore, amount: number, anchor: readonly [number, number]) {
     const { sdk } = ctx;
-    const anchor = ore === 'iron' ? [2903, 3353] : [2908, 3363];
-    await walk(ctx, anchor[0]!, anchor[1]!, 3);
+    await walk(ctx, anchor[0], anchor[1], 3);
     let misses = 0;
     const attempted = new Map<string, number>();
     const key = (loc: { x: number; z: number }) => `${loc.x},${loc.z}`;
@@ -43,7 +58,7 @@ async function collectOre(ctx: QuestContext, ore: Ore, amount: number) {
         const rock = (await sdk.scanNearbyLocs(12)).filter(loc => rockIds[ore].includes(loc.id) && loc.reachable !== false)
             .sort((a, b) => (attempted.get(key(a)) ?? -1) - (attempted.get(key(b)) ?? -1) || a.distance - b.distance)[0];
         if (!rock) {
-            if (++misses >= 12) throw new Error(`No reachable ${stock[ore]} rock near Falador`);
+            if (++misses >= 12) return `No reachable rock near ${anchor.join(', ')}`;
             await sdk.waitForTicks(3);
             continue;
         }
@@ -67,9 +82,10 @@ async function collectOre(ctx: QuestContext, ore: Ore, amount: number) {
                 message, available: count(ctx, stock[ore]),
             }));
         if (count(ctx, stock[ore]) > before) misses = 0;
-        else if (++misses >= 12) throw new Error(`Could not gather ${stock[ore]}: ${mined}`);
+        else if (++misses >= 12) return mined;
         else await sdk.waitForTicks(2);
     }
+    return '';
 }
 
 async function smeltBars(ctx: QuestContext, type: 'Bronze' | 'Steel', target: number) {
@@ -164,7 +180,7 @@ export async function makeShipNails(ctx: QuestContext) {
     if (count(ctx, 'Steel bar') < bars) {
         const missing = bars - count(ctx, 'Steel bar');
         const oreSlots = Math.max(0, missing - count(ctx, 'Iron ore')) + Math.max(0, 2 * missing - count(ctx, 'Coal'));
-        await prepareQuestStep(ctx, { bank: faladorBank, slots: oreSlots, keep, withdraw: [
+        await prepareQuestStep(ctx, { bank: faladorBank, slots: oreSlots, keep: keepForSteel, withdraw: [
             { name: 'Iron ore', count: missing }, { name: 'Coal', count: 2 * missing },
         ] });
         while (questSkill(ctx, 'Mining') < 30 && count(ctx, 'Coal') < 2 * missing) {

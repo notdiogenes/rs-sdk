@@ -716,6 +716,24 @@ async function wormbrainMap(ctx: QuestContext) {
     throw new Error(`No Wormbrain map piece was observed after ${cast} attempts`);
 }
 
+async function collectShipPlanks(ctx: QuestContext) {
+    // Keep each walking leg below the long route timeout for the Outpost trip.
+    const westbound = [[2846, 3453], [2690, 3423], [2578, 3414]] as const;
+    if (held(ctx, 960) < 3) {
+        questPhase('dragon-slayer-collect-ship-planks');
+        for (const [x, z] of westbound) {
+            if (position(ctx).worldX > x + 4) await walk(ctx, x, z, 4);
+        }
+        await groundItem(ctx, /^plank$/i, 2553, 3575, 3);
+    }
+    if (position(ctx).worldX < 2846) {
+        for (const [x, z] of [...westbound].reverse()) {
+            if (position(ctx).worldX < x - 4) await walk(ctx, x, z, 4);
+        }
+        await walk(ctx, 2900, 3381, 4);
+    }
+}
+
 async function shipMaterials(ctx: QuestContext) {
     const { worldX, worldZ } = position(ctx);
     const bank = worldX < 3020 && worldZ >= 3310 && worldZ <= 3500 ? [2947, 3368] as const : bankLocation;
@@ -725,7 +743,7 @@ async function shipMaterials(ctx: QuestContext) {
     ] });
     if (!has(ctx, 2347)) await groundItem(ctx, /^hammer$/i, 2934, 3286);
     if (held(ctx, 1539) < 12) await makeShipNails(ctx);
-    if (held(ctx, 960) < 3) await groundItem(ctx, /^plank$/i, 2553, 3575, 3);
+    await collectShipPlanks(ctx);
 }
 
 async function shipHold(ctx: QuestContext) {
