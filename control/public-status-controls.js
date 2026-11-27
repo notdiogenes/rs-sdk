@@ -319,14 +319,17 @@
         const slots = bankColumns * bankRows;
         const bySlot = new Map(items.filter(({ slot }) => Number.isInteger(slot) && slot >= 0 && slot < slots)
             .map(item => [item.slot, item]));
-        const cells = Array.from({ length: slots }, (_, slot) => {
+        const rows = [...new Set(Array.from(bySlot.keys(), slot => Math.floor(slot / bankColumns)))].sort((a, b) => a - b);
+        if (!rows.length) return '<p class="empty">This bank is empty.</p>';
+        const cells = rows.flatMap(row => Array.from({ length: bankColumns }, (_, column) => {
+            const slot = row * bankColumns + column;
             const item = bySlot.get(slot);
             if (!item) return '<li class="inventory-cell inventory-empty" aria-hidden="true"></li>';
             const description = escape(`Slot ${slot + 1} · ${item.name} · ${number(item.count)}`);
             return `<li class="inventory-cell"><button type="button" class="inventory-slot" data-bank-slot="${slot}"
                 aria-label="${description}" title="${description}" aria-pressed="false" data-bank-description="${description}">
                 <span class="inventory-fallback" aria-hidden="true">${escape(item.name)}</span>${itemSprite(item, true)}${itemQuantity(item)}</button></li>`;
-        });
+        }));
         return `<div class="bank-scroll"><ol class="bank-grid" style="--bank-columns:${bankColumns}" role="list" aria-label="Bank slots">${cells.join('')}</ol></div>`;
     }
 

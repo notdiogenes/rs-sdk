@@ -61,16 +61,14 @@ button:disabled{opacity:.6;cursor:default}
 .inventory-action-status:empty{margin:0}
 .inventory-action-status[data-outcome=success]{color:var(--green)}
 .inventory-action-status[data-outcome=error]{color:var(--amber)}
-#banks-dialog[data-bank-view=account]{width:min(498px,calc(100vw - 24px))}
+#banks-dialog[data-bank-view=account]{max-width:min(747px,calc(100vw - 24px))}
 #bank-status{font-size:12px}
 #bank-back{margin-top:10px}
 .bank-account{padding:3px 8px}
-.bank-scroll{max-height:min(244px,52dvh);margin-top:10px;overflow:auto;overscroll-behavior:contain;
+.bank-scroll{max-height:min(366px,60dvh);margin-top:10px;overflow:auto;overscroll-behavior:contain;
   border:1px solid #6b4d32;border-radius:8px;background:#35271d}
-.bank-grid{display:grid;grid-template-columns:repeat(var(--bank-columns),minmax(28px,1fr));gap:4px;
+.bank-grid{display:grid;grid-template-columns:repeat(var(--bank-columns),minmax(46px,1fr));gap:4px;
   margin:0;padding:8px;list-style:none}
-.bank-grid .inventory-cell{height:36px}
-.bank-grid .inventory-sprite{width:32px;height:32px}
 .bank-grid .inventory-quantity{top:2px;left:2px}
 #audit-dialog{max-width:min(1140px,calc(100vw - 24px));height:91dvh;max-height:91dvh;overflow:hidden;background:#1b1b18}
 #audit-dialog .dialog-body{display:flex;flex-direction:column;height:100%;padding:0}
