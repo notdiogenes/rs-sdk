@@ -149,7 +149,7 @@ async function getBriefing(ctx: QuestContext) {
     let page = await journalText(ctx, journal, title);
     if (readQuest(ctx, journal) === 'not-started') {
         if ((sdk.getState()?.questPoints ?? 0) < 32) throw new Error('The Champions’ Guild requires 32 quest points');
-        await talkAt(ctx, 3191, 3362, /^guildmaster$/i, [/where I could get a rune plate mail/i], 8000);
+        await talkAt(ctx, 3191, 3362, /^guild master$/i, [/where I could get a rune plate mail/i], 8000);
         await sdk.waitForCondition(s => s.questJournal?.[journal] === 'in-progress', 8000);
         page = await journalText(ctx, journal, title);
     }
@@ -216,7 +216,7 @@ async function pickUp(ctx: QuestContext, id: number, radius: number) {
 const mazeRooms = [
     { name: 'Giant rat', hp: 10, hit: 3, npc: 748, key: 1543, door: 2596, x: 2926, z: 3253, dx: -1, dz: 0, nx: 2930, nz: 3252, lx: 2928, lz: 3256 },
     { name: 'Ghost', hp: 25, hit: 4, npc: 749, key: 1544, door: 2597, x: 2931, z: 3253, dx: 1, dz: 0, nx: 2929, nz: 3249, lx: 2934, lz: 3254 },
-    { name: 'Skeleton', hp: 29, hit: 4, npc: 750, key: 1545, door: 2598, x: 2924, z: 3249, dx: 0, dz: -1, nx: 2923, nz: 3251, lx: 2929, lz: 3245 },
+    { name: 'Skeleton', hp: 29, hit: 4, npc: 750, key: 1545, door: 2598, x: 2924, z: 3249, dx: 0, dz: -1, nx: 2923, nz: 3251, lx: 2940, lz: 3240 },
     { name: 'Zombie', hp: 30, hit: 5, npc: 751, key: 1546, door: 2599, x: 2931, z: 9643, dx: -1, dz: 0, nx: 2932, nz: 9642 },
     { name: 'Melzar the Mad', hp: 44, hit: 8, npc: 753, key: 1547, door: 2600, x: 2929, z: 9652, dx: 0, dz: 1, nx: 2929, nz: 9649 },
     { name: 'Lesser demon', hp: 79, hit: 8, npc: 752, key: 1548, door: 2601, x: 2936, z: 9655, dx: 0, dz: 1, nx: 2936, nz: 9650 },
@@ -279,8 +279,8 @@ async function melzarsMaze(ctx: QuestContext) {
         await changeFloor(ctx, 'down', room.lx, room.lz, 0);
     }
     if (p().level === 1) {
-        await walk(ctx, 2929, 3240, 1);
-        await changeFloor(ctx, 'down', 2929, 3240, 0);
+        await walk(ctx, 2937, 3240, 1);
+        await changeFloor(ctx, 'down', 2937, 3240, 0);
     }
     if (p().worldZ < 4000) {
         await activate(ctx, [2605], 2932, 3240, 'Descend to the final rooms of the maze');
