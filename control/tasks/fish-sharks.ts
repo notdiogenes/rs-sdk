@@ -7,6 +7,9 @@ const catherbyBank = { x: 2809, z: 3441 };
 const catherbyRange = { x: 2817, z: 3444 };
 const harrysShop = { x: 2834, z: 3445 };
 const beach = { x: 2845, z: 3433 };
+// Land tiles beside the four groups of NPC movement tiles on the beach.
+const shoreline = [{ x: 2837, z: 3432 }, beach, { x: 2853, z: 3425 }, { x: 2859, z: 3427 }];
+const shorelineSearchTimeout = 240_000;
 const banks = [catherbyBank, { x: 2655, z: 3284 }, ...Object.values(miningBanks)];
 const capacity = 28;
 const coins = 995;
@@ -180,18 +183,68 @@ export async function fishSharks({ bot, sdk }: ScriptContext, cook = process.env
     async function fishBackpack(stage: Stage) {
         await walk(beach, 3, 'Reach the Catherby fishing spots');
         let missed = 0;
+        let searchStarted: number | undefined;
         const batchComplete = (state: BotWorldState) =>
             state.inventory.length >= capacity || selectFishingStage(state, cook) !== stage;
-        cast: while (!batchComplete(current())) {
-            const nearby = current().nearbyNpcs
+        function availableSpot(state: BotWorldState) {
+            const nearby = state.nearbyNpcs
                 .filter(npc => npc.id === stage.spot && npc.reachable !== false && npc.optionsWithIndex.some(option => stage.option.test(option.text)))
                 .sort((a, b) => a.distance - b.distance);
-            const spot = nearby[missed % nearby.length];
+            return nearby[missed % nearby.length];
+        }
+        const observe = (predicate: (state: BotWorldState) => boolean, timeout: number) =>
+            sdk.waitForCondition(state => !state.inGame || !!state.player?.isDead || predicate(state), timeout).catch(error => {
+                if (error instanceof Error && error.message === 'waitForCondition timed out') return null;
+                throw error;
+            });
+
+        async function searchShoreline() {
+            const { player } = current();
+            const distance = (from: typeof player, point: typeof beach) =>
+                Math.max(Math.abs(from.worldX - point.x), Math.abs(from.worldZ - point.z));
+            const points = [...shoreline].sort((a, b) => distance(player, a) - distance(player, b));
+            for (const point of points) {
+                const state = current();
+                if (availableSpot(state) || batchComplete(state)) return;
+                if (distance(state.player, point) <= 1) continue;
+                // A ground click also clears an incidental level-up dialog.
+                const move = await sdk.sendWalk(point.x, point.z);
+                if (move.success) {
+                    await observe(state => !!availableSpot(state) || batchComplete(state)
+                        || (!!state.player && distance(state.player, point) <= 1), 12_000);
+                }
+            }
+        }
+
+        cast: while (!batchComplete(current())) {
+            const spot = availableSpot(current());
             const option = spot?.optionsWithIndex.find(entry => stage.option.test(entry.text));
             if (!spot || !option) {
-                if (++missed >= 6) throw new Error(`No reachable Catherby fishing spot for ${stage.label}.`);
-                await sdk.waitForTicks(4);
+                if (searchStarted === undefined) {
+                    searchStarted = Date.now();
+                    const state = current();
+                    auditEvent('setback', 'fishing-spot-unavailable', {
+                        fish: stage.label, x: state.player.worldX, z: state.player.worldZ,
+                        spots: state.nearbyNpcs.filter(npc => npc.id === stage.spot)
+                            .map(npc => ({ x: npc.tileX ?? npc.x, z: npc.tileZ ?? npc.z, reachable: npc.reachable })),
+                    });
+                }
+                await searchShoreline();
+                const state = current();
+                if (availableSpot(state) || batchComplete(state)) continue;
+                // Finish a partial load while waiting for the next spot.
+                if (state.inventory.some(item => item.id !== stage.tool.id)) return;
+                if (Date.now() - searchStarted >= shorelineSearchTimeout) {
+                    throw new Error(`No reachable Catherby fishing spot for ${stage.label} after searching the shoreline.`);
+                }
+                await sdk.waitForTicks(8);
                 continue;
+            }
+            if (searchStarted !== undefined) {
+                auditEvent('milestone', 'fishing-spot-reacquired', {
+                    fish: stage.label, x: spot.tileX ?? spot.x, z: spot.tileZ ?? spot.z,
+                });
+                searchStarted = undefined;
             }
             const before = current();
             const stillHere = (state: BotWorldState) =>
@@ -205,14 +258,10 @@ export async function fishSharks({ bot, sdk }: ScriptContext, cook = process.env
             let failure = action.message;
             while (action.success) {
                 failure = closingPreviousDialog ? 'The dialog stayed open after recasting.' : 'No Fishing XP was observed after casting.';
-                const state = await sdk.waitForCondition(state =>
-                    !state.inGame || !!state.player?.isDead || batchComplete(state) || !stillHere(state)
+                const state = await observe(state => batchComplete(state) || !stillHere(state)
                     || (skill(state, 'Fishing')?.experience ?? 0) > xp
                     || (closingPreviousDialog ? state.tick > before.tick && !state.dialog.isOpen : state.dialog.isOpen),
-                closingPreviousDialog ? 5_000 : 35_000).catch(error => {
-                    if (error instanceof Error && error.message === 'waitForCondition timed out') return null;
-                    throw error;
-                });
+                closingPreviousDialog ? 5_000 : 35_000);
                 if (!state) break;
                 current();
                 const gained = skill(state, 'Fishing')?.experience ?? 0;
