@@ -27,7 +27,7 @@ const result = await runScript(async ctx => {
     const sanfew = async () => {
         await walk(ctx, 2898, 3428, 2);
         await changeFloor(ctx, 'up', 2898, 3428);
-        await talkAt(ctx, 2897, 3426, /^sanfew$/i, [/sent to help purify/i, /i.ll do that then/i, /i.ll get on with it/i]);
+        await talkAt(ctx, 2897, 3426, /^Sanfew$/i, [/sent to help purify/i, /i.ll do that then/i, /i.ll get on with it/i]);
         await townExit();
     };
     await dungeonExit();
@@ -37,11 +37,11 @@ const result = await runScript(async ctx => {
     ], [2946, 3369]);
     if (readQuest(ctx, journal) === 'not-started') { questLog('quest-start', { quest }); await kaqemeex(); }
     let text = await journalText(ctx, journal, /^druidic ritual$/i);
-    if (/should speak to sanfew/i.test(text)) {
+    if (/should speak to Sanfew/i.test(text)) {
         await sanfew();
         text = await journalText(ctx, journal, /^druidic ritual$/i);
     }
-    if (!/gave them to sanfew/i.test(text)) {
+    if (!/gave them to Sanfew/i.test(text)) {
         await equipQuestSword(ctx);
         const has = (name: string) => !!sdk.findInventoryItem(itemNamed(name));
         for (const [raw, charged, target, x, z] of meats) {
