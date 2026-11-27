@@ -1,3 +1,4 @@
+import { auditEnabled, auditEvent, auditFrame } from '../../../sdk/audit-trace';
 import { runScript } from '../../../sdk/runner';
 import { bankForQuest, buyQuestSupply, changeFloor, continueDialog, equipQuestSword, groundItem, journalText, questLoc, questLog, readQuest, talkAt, walk, type QuestContext } from './shared';
 
@@ -106,15 +107,32 @@ const result = await runScript(async ctx => {
             await bot.interactLoc(await locById(ctx, 2862), /^open$/i);
             await walk(ctx, 2901, 3465, 0);
         };
+        const gardenState = () => {
+            const witch = sdk.getNearbyNpcs().find(npc => npc.name.toLowerCase() === 'witch');
+            return { ...auditFrame(sdk.getState()), witch: witch && { id: witch.id, x: witch.x, z: witch.z } };
+        };
         const gardenRoute = async (points: Array<[number, number]>) => {
             for (const [x,z] of points) {
                 if (caught()) throw new Error('The witch spotted A Pirate in the garden');
-                await walk(ctx, x, z, 0);
+                const before = auditEnabled ? gardenState() : undefined;
+                const began = performance.now();
+                let arrived = false;
+                try {
+                    await walk(ctx, x, z, 0);
+                    arrived = true;
+                } finally {
+                    if (auditEnabled) auditEvent('check', 'garden-leg', {
+                        outcome: arrived && !caught() ? 'complete' : 'failed', destination: { x, z },
+                        elapsedMs: Math.round(performance.now() - began), before, after: gardenState(),
+                    });
+                }
             }
         };
         for (let attempt=0; attempt<5 && !has(2407); attempt++) {
             try {
                 if (caught()) await enterHouse();
+                auditEvent('phase', 'garden-crossing', { strategy: 'direct-waypoints' });
+                auditEvent('milestone', 'garden-attempt', { attempt: attempt + 1, strategy: 'direct-waypoints' });
                 await garden();
                 await gardenRoute([[2901,3460],[2933,3460],[2933,3466],[2912,3466],[2912,3467],[2911,3469]]);
                 if (!has(2411)) {
@@ -123,6 +141,8 @@ const result = await runScript(async ctx => {
                 }
                 if (!has(2411)) throw new Error('The fountain did not yield the shed key');
                 await gardenRoute([[2912,3467],[2912,3466],[2933,3466],[2933,3463]]);
+                auditEvent('milestone', 'garden-crossed', { attempt: attempt + 1, strategy: 'direct-waypoints' });
+                auditEvent('phase', 'shed-fight');
                 await bot.useItemOnLoc(has(2411)!, await locById(ctx, 2863));
                 for (let fight=0; fight<28 && !has(2407); fight++) {
                     const player = sdk.getState()?.player;
@@ -138,7 +158,10 @@ const result = await runScript(async ctx => {
                 }
                 if (!has(2407)) throw new Error('The experiment fight did not yield the boy’s ball');
             } catch (error) {
-                if (!caught() || attempt === 4) throw error;
+                if (!caught()) throw error;
+                auditEvent('phase', 'garden-crossing');
+                auditEvent('setback', 'witch-caught', { attempt: attempt + 1, strategy: 'direct-waypoints', after: auditFrame(sdk.getState()) });
+                if (attempt === 4) throw error;
                 questLog('quest-retry', { quest, reason: 'Witch spotted the bot' });
             }
         }

@@ -1,3 +1,4 @@
+import { auditAction, auditDispatch, auditEnabled, auditEvent, auditFeedback, auditFrame } from './audit-trace';
 import type { GEState } from './ge-types';
 export type { GEState, GEOffer, GEOfferRequest, GEActionResult } from './ge-types';
 import { MarketClient, type GEAvailability, type MarketItems, type MarketQuote, type MarketHistory, type MarketItemsOptions, type MarketItemOptions, type MarketHistoryOptions } from './market';
@@ -1082,6 +1083,19 @@ export class BotSDK {
     // ============ Plumbing: Raw Actions ============
 
     private async sendAction(action: BotAction): Promise<ActionResult> {
+        const context = auditAction(action, this.state);
+        if (!context) return this.dispatchAction(action);
+        const began = performance.now();
+        let result: ActionResult | undefined;
+        try {
+            result = await this.dispatchAction(action);
+            return result;
+        } finally {
+            auditDispatch(action, context, result, Math.round(performance.now() - began), this.state);
+        }
+    }
+
+    private async dispatchAction(action: BotAction): Promise<ActionResult> {
         if (this.connectionState === 'reconnecting') {
             console.log(`[BotSDK] Waiting for reconnection before sending action: ${action.type}`);
             await this.waitForConnection();
@@ -1932,7 +1946,7 @@ export class BotSDK {
         timeout: number,
         timeoutMessage: string,
     ): Promise<BotWorldState> {
-        return executionWait<BotWorldState>((resolve, reject) => {
+        const waiting = executionWait<BotWorldState>((resolve, reject) => {
             const timeoutId = setTimeout(() => reject(new Error(timeoutMessage)), timeout);
             const unsubscribe = this.onStateUpdate(state => {
                 try {
@@ -1942,6 +1956,18 @@ export class BotSDK {
                 }
             });
             return () => { clearTimeout(timeoutId); unsubscribe(); };
+        });
+        if (!auditEnabled) return waiting;
+        const before = auditFrame(this.state);
+        const began = performance.now();
+        return waiting.catch(error => {
+            const elapsedMs = Math.round(performance.now() - began);
+            auditEvent('check', 'state-observation', {
+                outcome: elapsedMs + 50 >= timeout ? 'timeout' : 'failed', elapsedMs, timeoutMs: timeout,
+                message: error instanceof Error ? error.message : timeoutMessage,
+                before, after: auditFrame(this.state), feedback: auditFeedback(this.state, before?.tick ?? 0),
+            });
+            throw error;
         });
     }
 

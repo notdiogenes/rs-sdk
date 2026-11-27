@@ -4,6 +4,8 @@ import { dirname, join } from 'node:path';
 import { createDashboardActivity, type ControllerStatus } from './dashboard-activity';
 import { botCredentials, hostedBotState, isFreshBotState } from './hosted-bot';
 import type { BotProfile } from './dashboard-roster';
+import { auditPrefix } from '../sdk/audit-trace';
+import type { DashboardAudit } from './dashboard-audit';
 import { activity, activityIds, isActivity, type ActivityId } from './dashboard-task-catalog';
 
 const taskName = 'pickpocket-men';
@@ -26,7 +28,7 @@ const json = (body: unknown, status = 200) => Response.json(body, { status, head
 type Process = { process: Bun.Subprocess; startedAt: string; stopping?: boolean };
 type Event = { id: number; at: string; stage: string; [key: string]: unknown };
 type Exit = { at: string; exitCode: number };
-type Task = Process & { name: DemoTaskName; activity: string; recovery?: { since: string; resumeAt: number } };
+type Task = Process & { auditId?: string; name: DemoTaskName; activity: string; recovery?: { since: string; resumeAt: number } };
 
 async function stopProcess(handle: Process | undefined, signal: 'SIGINT' | 'SIGTERM') {
     if (!handle || handle.process.exitCode !== null) return;
@@ -36,7 +38,7 @@ async function stopProcess(handle: Process | undefined, signal: 'SIGINT' | 'SIGT
     try { await handle.process.exited; } finally { clearTimeout(deadline); }
 }
 
-export function dashboardDemo(runtimeDir: string, botsDir: string, configDir: string, token: string, roster?: BotProfile) {
+export function dashboardDemo(runtimeDir: string, botsDir: string, configDir: string, token: string, roster?: BotProfile, audit?: DashboardAudit, revision?: string) {
     const writableDir = roster ? join(runtimeDir, 'managed-bots', roster.name) : join(runtimeDir, 'pickpocket-demo');
     const workingDir = roster?.directory ?? writableDir;
     const envFile = join(workingDir, 'bot.env');
@@ -69,6 +71,13 @@ export function dashboardDemo(runtimeDir: string, botsDir: string, configDir: st
             const lines = (buffer + value).split('\n');
             buffer = (lines.pop() ?? '').slice(0, 32_768);
             for (const line of lines) {
+                if (line.startsWith(auditPrefix)) {
+                    if (running.auditId) {
+                        try { audit?.append(running.auditId, JSON.parse(line.slice(auditPrefix.length))); }
+                        catch { /* Malformed task output cannot interrupt its stream. */ }
+                    }
+                    continue;
+                }
                 if (!line.startsWith(prefix)) continue;
                 try {
                     const { stage, ...fields } = JSON.parse(line.slice(prefix.length));
@@ -83,9 +92,36 @@ export function dashboardDemo(runtimeDir: string, botsDir: string, configDir: st
                         running.recovery = undefined;
                     }
                     event(stage, fields);
+                    if (running.auditId) {
+                        const kind = stage === 'quest-failed' ? 'failure'
+                            : stage === 'quest-complete' || stage === 'quest-ingredient' ? 'milestone' : 'task-event';
+                        // Keep the audit whitelist narrow. SDK action and snapshot
+                        // events already contain the matching structured state.
+                        const { error, reason, item, npc, success, hp, quest, count } = fields;
+                        audit?.append(running.auditId, { kind, name: stage, error, reason, item, npc, success, hp, quest, count });
+                    }
                 } catch { /* Only the bundled task's structured messages are returned. */ }
             }
         }
+    }
+
+    async function consumeTaskErrors(stream: ReadableStream<Uint8Array>) {
+        let buffer = '';
+        let message: string | undefined;
+        const stack: string[] = [];
+        const reader = stream.pipeThrough(new TextDecoderStream()).getReader();
+        while (true) {
+            const { value, done } = await reader.read();
+            if (done) break;
+            process.stderr.write(value);
+            const lines = (buffer + value).split('\n');
+            buffer = (lines.pop() ?? '').slice(0, 2048);
+            for (const line of lines) {
+                if (!message && /^(?:error:|(?:Syntax|Type|Reference|Range)Error:)/i.test(line.trim())) message = line.trim();
+                if (stack.length < 6 && /^\s+at\s/.test(line)) stack.push(line);
+            }
+        }
+        return { message, stack };
     }
 
     async function allowed(request: Request) {
@@ -142,26 +178,45 @@ export function dashboardDemo(runtimeDir: string, botsDir: string, configDir: st
 
     async function startTask(bot: string, name: DemoTaskName, planned = false, skill?: string) {
         const credentials = await botCredentials(bot, workingDir);
-        const child = Bun.spawn([process.execPath, '--no-env-file', join(import.meta.dir, 'tasks', activity(name).script)], {
+        const script = join(import.meta.dir, 'tasks', activity(name).script);
+        const scriptSha = audit ? await Bun.file(script).arrayBuffer()
+            .then(bytes => createHash('sha256').update(new Uint8Array(bytes)).digest('hex')).catch(() => null) : null;
+        const auditId = audit?.begin(bot, name, revision ?? null, scriptSha, [credentials.password, token]);
+        let child: Bun.Subprocess<'ignore', 'pipe', 'pipe'>;
+        try { child = Bun.spawn([process.execPath, '--no-env-file', script], {
             cwd: writableDir,
-            stdin: 'ignore', stdout: 'pipe', stderr: 'inherit',
+            stdin: 'ignore', stdout: 'pipe', stderr: 'pipe',
             env: {
                 ...process.env, BOT_USERNAME: credentials.username, PASSWORD: credentials.password,
                 SERVER: 'rs-sdk.maxbittker.com', SHOW_CHAT: 'false', GATEWAY_DIRECT: 'false',
-                RS_ACTIVITY: name, RS_PLANNED: planned ? '1' : '0', RS_ACTIVITY_SKILL: skill ?? '',
+                RS_ACTIVITY: name, RS_ACTIVITY_AUDIT: auditId ? '1' : '0', RS_PLANNED: planned ? '1' : '0', RS_ACTIVITY_SKILL: skill ?? '',
             },
-        });
-        const running: Task = { process: child, startedAt: new Date().toISOString(), name, activity: activity(name).label };
+        }); } catch (error) {
+            if (auditId) {
+                audit?.append(auditId, { kind: 'failure', name: 'spawn', message: error instanceof Error ? error.message : String(error) });
+                audit?.finish(auditId, 1, false);
+            }
+            throw error;
+        }
+        const running: Task = { auditId, process: child, startedAt: new Date().toISOString(), name, activity: activity(name).label };
         task = running;
         taskExit = null;
         taskStopped = false;
         event('task-started', { task: name, pid: child.pid });
+        if (auditId) audit?.append(auditId, { kind: 'worker', name: 'task-started', pid: child.pid, planned, skill });
         const readEvents = consumeTaskEvents(child.stdout, running).catch(() => { event('task-event-reader-failed'); });
+        const readErrors = child.stderr && consumeTaskErrors(child.stderr).catch(() => { event('task-error-reader-failed'); });
         void child.exited.then(async exitCode => {
+            const errorOutput = await readErrors;
             await readEvents;
             taskExit = { name, exitCode, at: new Date().toISOString() };
             if (task === running) task = undefined;
             event('task-exited', { exitCode });
+            if (auditId) {
+                if (exitCode !== 0 && errorOutput?.message) audit?.append(auditId, { kind: 'failure', name: 'runtime-stderr', ...errorOutput });
+                audit?.append(auditId, { kind: 'worker', name: 'task-exited', exitCode, stopped: running.stopping });
+                audit?.finish(auditId, exitCode, !!running.stopping);
+            }
         }).catch(() => { event('task-observer-failed'); });
     }
 

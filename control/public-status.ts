@@ -9,6 +9,7 @@ import type { BotWorldState } from '../sdk/types';
 import { dashboardFleetStats } from './dashboard-fleet-stats';
 import { dashboardQuestPoints, loadQuestCatalog } from './dashboard-quests';
 import { fleetPage } from './dashboard-fleet-page';
+import { dashboardAudit } from './dashboard-audit';
 import { dashboardDemo, isBundledTask } from './dashboard-demo';
 import { activity, planCatalog, trainingSkills } from './dashboard-task-catalog';
 import { parseSteps } from './dashboard-plan';
@@ -26,7 +27,10 @@ const fleetStyle = await Bun.file(join(import.meta.dir, 'dashboard-fleet.css')).
 const controls = await Bun.file(join(import.meta.dir, 'public-status-controls.js')).text();
 const runtimeDir = join(dirname(configDir), 'rs-sdk-public-status');
 const diagnostics = dashboardDiagnostics(runtimeDir, token);
-const demo = dashboardDemo(runtimeDir, botsDir, configDir, token);
+const audit = dashboardAudit(runtimeDir);
+const git = Bun.spawnSync(['git', 'rev-parse', 'HEAD'], { cwd: import.meta.dir, stderr: 'ignore' });
+const revision = git.success ? git.stdout.toString().trim() : undefined;
+const demo = dashboardDemo(runtimeDir, botsDir, configDir, token, undefined, audit, revision);
 const rosterControllers = new Map<string, ReturnType<typeof dashboardDemo>>();
 const botRoster = dashboardRoster(botsDir, runtimeDir);
 const plans = createPlanManager(runtimeDir, planBackend);
@@ -105,7 +109,7 @@ function getWorker(profile: BotProfile) {
     const key = profile.name.toLowerCase();
     let worker = rosterControllers.get(key);
     if (!worker) {
-        worker = dashboardDemo(runtimeDir, botsDir, configDir, token, profile);
+        worker = dashboardDemo(runtimeDir, botsDir, configDir, token, profile, audit, revision);
         rosterControllers.set(key, worker);
     }
     return worker;
@@ -359,6 +363,9 @@ const collectInBackground = () => void refreshSnapshot().catch(() => console.err
 collectInBackground();
 setInterval(collectInBackground, refreshSeconds * 1000).unref();
 plans.restore();
+setInterval(() => {
+    try { audit.prune(); } catch { console.error('Activity audit retention check failed'); }
+}, 15 * 60_000).unref();
 
 Bun.serve({
     hostname: '127.0.0.1',
@@ -378,6 +385,20 @@ Bun.serve({
             const session = await sessions.authenticate(request).catch(() => undefined);
             const view = searchParams.get('view');
             const bot = searchParams.get('bot');
+            if (view === 'audit') {
+                const headers = { 'Cache-Control': 'no-store', ...(session ? { 'Set-Cookie': session } : {}) };
+                const reply = (data: unknown, status = 200) => Response.json(data, { status, headers });
+                if (request.method !== 'GET') return new Response(null, { status: 405, headers: { ...headers, Allow: 'GET' } });
+                if (!session && !await demo.allowed(request)) return reply({ error: 'Sign in to view audit history.' }, 401);
+                try {
+                    const report = audit.read(searchParams);
+                    return report ? reply(report) : reply({ error: 'Run not found.' }, 404);
+                } catch (error) {
+                    const message = error instanceof Error ? error.message : '';
+                    return /^(Invalid \w+|Unknown audit mode)$/.test(message) ? reply({ error: message }, 400)
+                        : reply({ error: 'Audit history is temporarily unavailable.' }, 503);
+                }
+            }
             if (view === 'plan') {
                 try { return await handlePlan(request, bot, session); }
                 catch { return Response.json({ error: 'Activity plans are temporarily unavailable.' }, { status: 503 }); }

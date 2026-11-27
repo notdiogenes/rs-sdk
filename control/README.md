@@ -254,6 +254,46 @@ or control Bearer credential and reads the selected bot's diagnostics. Fleet des
 and task process per bot. It can take over from an idle primary controller
 client when starting a plan.
 
+### Activity audit history
+
+Fleet desk stores activity runs in `activity-audit.sqlite` in the dashboard
+runtime directory. Each dashboard-managed task and the Lumbridge demo worker
+record lifecycle events, selected SDK action dispatches, observation timeouts,
+and periodic game snapshots. The audit starts collecting when it is deployed.
+It does not import earlier dashboard events or cover standalone and primary
+`/v1` scripts. Requests are read-only and accept a dashboard session or a
+control Bearer credential.
+
+| HTTPS request | Result |
+| --- | --- |
+| `GET /bots/activity?view=audit&mode=summary&days=35` | Cross-bot phase totals, milestones, setbacks and repeated breakpoints grouped by task and revision |
+| `GET /bots/activity?view=audit&mode=runs&bot=A%20Pirate&days=14` | Recent run IDs, script hashes, exit status and failure locations |
+| `GET /bots/activity?view=audit&run=RUN_ID` | Phase totals, retained failure evidence and the latest chronological events for the run |
+
+Use `task=TASK_ID` to narrow reports and `phase=PHASE_ID` to narrow summaries
+and detail streams. Use `limit` (1–100, default 50) and the returned
+`nextBefore` as the next request's `before` cursor. Summary and run-list
+windows cover runs started within the requested 1–35 days. The store keeps
+run summaries, bounded terminal failure evidence, and the latest evidence
+sample for each setback type per run and phase for 35 days. Detailed
+events share a rolling budget of 240,000 across bots, so older detail can age
+out sooner.
+
+For a repeat quest breakpoint, start with `breakpoints` and open a matching
+run. A floor-change trace records the scanned candidates, the selected ID and
+option, the starting location, the expected plane or region change, the SDK
+result and the observed location and system feedback. A dispatched action
+and a confirmed game effect have separate records. The run also reports the
+terminal error and its source frame when the script supplies a stack.
+
+For Witch's House, filter by `task=witchs-house&phase=garden-crossing`.
+Compare garden attempts, successful crossings, catches, elapsed time, and
+dispatch and timeout counts by strategy and revision. The report counts those
+signals both in successful runs and before later failures. Detailed garden
+legs include the bot position and, when visible, the witch's position at the
+start and end of each leg. The current instrumentation labels the existing
+strategy `direct-waypoints`.
+
 ### Separate Lumbridge pickpocket demo
 
 The HTTPS dashboard also exposes a second, isolated client and task for the

@@ -1,3 +1,4 @@
+import { auditEvent, auditFeedback, auditFrame } from '../../../sdk/audit-trace';
 import type { ScriptContext } from '../../../sdk/runner';
 
 export type QuestContext = Pick<ScriptContext, 'bot' | 'sdk'>;
@@ -9,11 +10,16 @@ export function readQuest({ sdk }: QuestContext, component: number) {
 }
 
 export async function walk({ bot, sdk }: QuestContext, x: number, z: number, tolerance = 4) {
+    const before = auditFrame(sdk.getState());
+    const began = performance.now();
     const result = await bot.walkTo(x, z, tolerance, { timeout: 150_000 });
     const p = sdk.getState()?.player;
-    if (!result.success && (!p || Math.max(Math.abs(x - p.worldX), Math.abs(z - p.worldZ)) > tolerance)) {
-        throw new Error(`Could not walk to ${x}, ${z}: ${result.message}`);
-    }
+    const arrived = result.success || (!!p && Math.max(Math.abs(x - p.worldX), Math.abs(z - p.worldZ)) <= tolerance);
+    auditEvent('check', 'quest-travel', {
+        outcome: arrived ? 'complete' : 'failed', elapsedMs: Math.round(performance.now() - began),
+        destination: { x, z, tolerance }, before, after: auditFrame(sdk.getState()), message: result.message,
+    });
+    if (!arrived) throw new Error(`Could not walk to ${x}, ${z}: ${result.message}`);
 }
 
 export async function changeFloor(ctx: QuestContext, direction: 'up' | 'down', x: number, z: number, radius = 7) {
@@ -26,6 +32,13 @@ export async function changeFloor(ctx: QuestContext, direction: 'up' | 'down', x
         const option = loc.optionsWithIndex.find(entry => search.test(entry.text));
         return option ? [{ loc, option }] : [];
     }).sort((a, b) => a.loc.distance - b.loc.distance);
+    auditEvent('check', 'floor-candidates', {
+        direction, origin: auditFrame(sdk.getState()), anchor: { x, z, radius },
+        candidates: candidates.slice(0, 8).map(({ loc, option }) => ({
+            id: loc.id, name: loc.name, x: loc.x, z: loc.z, plane: loc.level,
+            reachable: loc.reachable, option: option.text, index: option.opIndex,
+        })),
+    });
     const moved = (state: ReturnType<QuestContext['sdk']['getState']>) => {
         const player = state?.player;
         return !!player && (player.level !== before.level || Math.abs(player.worldZ - before.worldZ) > 1000);
@@ -33,15 +46,27 @@ export async function changeFloor(ctx: QuestContext, direction: 'up' | 'down', x
     for (const { loc, option } of candidates) {
         if (moved(sdk.getState())) return;
         // Surface-to-dungeon ladders can change region while retaining plane zero.
-        await bot.interactLoc(loc, option.opIndex);
+        const began = performance.now();
+        const tick = sdk.getState()?.tick ?? 0;
+        const action = await bot.interactLoc(loc, option.opIndex);
         const changed = await sdk.waitForCondition(moved, 11_000).catch(() => null);
-        if (changed || moved(sdk.getState())) return;
+        const arrived = !!changed || moved(sdk.getState());
+        auditEvent('check', 'floor-change', {
+            outcome: arrived ? 'complete' : 'unconfirmed', direction, candidateId: loc.id,
+            expected: 'plane or region change', elapsedMs: Math.round(performance.now() - began),
+            sdk: { success: action.success, reason: action.reason, message: action.message },
+            after: auditFrame(sdk.getState()), feedback: auditFeedback(sdk.getState(), tick),
+        });
+        if (arrived) return;
     }
+    auditEvent('check', 'floor-change', { outcome: 'failed', direction, candidateCount: candidates.length,
+        expected: 'plane or region change', anchor: { x, z, radius }, after: auditFrame(sdk.getState()) });
     throw new Error(`Could not climb ${direction} near ${x}, ${z} on plane ${before.level}`);
 }
 
 export async function talk(ctx: QuestContext, npc: RegExp, choices: RegExp[]) {
     const { bot, sdk } = ctx;
+    auditEvent('milestone', 'quest-dialogue', { npc: npc.source });
     const target = sdk.findNearbyNpc(npc);
     if (!target) throw new Error(`Could not find ${npc}`);
     const conversation = await bot.talkTo(target);
@@ -105,6 +130,7 @@ export async function bankForQuest(ctx: QuestContext, supplies: readonly { name:
             if (count > 0 && !(await bot.depositItem(exact(name), count)).success) throw new Error(`Could not bank ${name}`);
         }
     };
+    auditEvent('phase', 'quest-loadout', { bank, supplies });
     questLog('banking-quest-loadout');
     await walk(ctx, bank[0], bank[1], 4);
     await open();
@@ -136,6 +162,7 @@ export async function bankForQuest(ctx: QuestContext, supplies: readonly { name:
     if (surplus || sdk.getEquipment().some(item => !wanted.has(item.name.toLowerCase()))) {
         throw new Error('Unexpected items remained after banking');
     }
+    auditEvent('phase', 'quest-execution');
     questLog('quest-loadout-ready', { items: current().map(item => [item.name, item.count]) });
 }
 

@@ -2,6 +2,7 @@
 // Auto-finds bot.env sibling to script, or from command line arg, or --env-file
 
 import { BotSDK, deriveGatewayUrl } from './index';
+import { auditEnabled, auditEvent, auditState } from './audit-trace';
 import { BotActions } from './actions';
 import { executionContext, abortable } from './execution-context';
 import { initPathfinding } from './pathfinding';
@@ -335,6 +336,7 @@ export async function runScript(
                 managedConnection = true;
             }
         } catch (error: any) {
+            auditEvent('failure', 'connect', { outcome: 'failed', message: error?.message });
             console.error(`[Runner] Failed to connect: ${error?.message ?? error}`);
             // Same as a script error below: `bun script.ts` must exit non-zero.
             process.exitCode = 1;
@@ -352,6 +354,21 @@ export async function runScript(
         bot,
         sdk,
     };
+
+    let lastAuditState = 0;
+    let lastQuestPoints: number | undefined;
+    const auditSample = (state: BotWorldState) => {
+        const now = Date.now();
+        if (now - lastAuditState < 20_000 && state.questPoints === lastQuestPoints) return;
+        auditEvent('state', 'game-snapshot', auditState(state));
+        lastAuditState = now;
+        lastQuestPoints = state.questPoints;
+    };
+    const auditUnsubscribe = auditEnabled ? sdk.onStateUpdate(auditSample) : undefined;
+    if (auditEnabled) {
+        const current = sdk.getState();
+        if (current) auditSample(current);
+    }
 
     // Baseline XP so the summary can report what the script actually earned
     const xpBefore: Record<string, number> = {};
@@ -435,6 +452,7 @@ export async function runScript(
             unsubscribeConnection();
         }
         // Remove signal handlers
+        auditUnsubscribe?.();
         process.off('SIGTERM', onSigterm);
         process.off('SIGINT', onSigint);
         process.off('SIGHUP', onSighup);
@@ -443,6 +461,12 @@ export async function runScript(
     // Get final state
     const finalState = sdk.getState();
     const duration = Date.now() - startTime;
+
+    if (auditEnabled) auditEvent(error ? 'failure' : 'milestone', 'script-finish', {
+        outcome: error ? 'failed' : 'complete', elapsedMs: duration,
+        message: error?.message, stack: error?.stack?.split('\n').slice(1, 6),
+        state: finalState && auditState(finalState),
+    });
 
     // Print result if any
     if (result !== undefined && !error) {
