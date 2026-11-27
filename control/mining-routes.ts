@@ -64,6 +64,7 @@ const sites: MiningSite[] = [
 ];
 
 export const miningDistance = (a: Tile, b: Tile) => Math.max(Math.abs(a.x - b.x), Math.abs(a.z - b.z));
+export const miningTravelTimeout = (distance: number) => Math.min(480_000, Math.max(35_000, 25_000 + distance * 950));
 
 export const guildLadder = place('Mining Guild ladders', 3019, 3339);
 export function inMiningGuild(p: Tile) {
@@ -78,7 +79,7 @@ export function rankMiningSites(resource: MiningResource, mode: MiningMode, from
         const origin = inMiningGuild(from) ? guildLadder : from;
         const ladder = site.guild ? 25 : 0;
         const banking = mode === 'bank' ? 2 * (miningDistance(start, site.bank) + ladder) / 27 : 0;
-        return Math.max(0, respawn / stock - 2) + banking + (miningDistance(start, origin) + ladder) / 120;
+        return Math.max(0, respawn / stock - 2) + banking + (miningDistance(start, origin) + ladder) / 55;
     };
     return sites.filter(site => site.rocks[resource] && (!site.guild || level >= 60)).sort((a, b) => score(a) - score(b));
 }

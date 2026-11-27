@@ -2,7 +2,7 @@ import { expect, test } from 'bun:test';
 import type { ScriptContext } from '../sdk/runner';
 import type { BotWorldState, InventoryItem } from '../sdk/types';
 import { activity, isActivity } from './dashboard-task-catalog';
-import { miningBanks, miningResources, rankMiningSites } from './mining-routes';
+import { miningBanks, miningResources, miningTravelTimeout, rankMiningSites } from './mining-routes';
 import { mineResources } from './tasks/mine-resources';
 
 test('every supported resource has both modes and resource-specific routes', () => {
@@ -21,6 +21,8 @@ test('every supported resource has both modes and resource-specific routes', () 
     expect(rankMiningSites('coal', 'bank', from, 61)[0]?.mine.name).toBe('Mining Guild');
     expect(rankMiningSites('iron', 'bank', from, 61)[0]?.mine.name)
         .not.toBe(rankMiningSites('iron', 'power', from, 61)[0]?.mine.name);
+    expect(miningTravelTimeout(378)).toBeGreaterThan(150000);
+    expect(miningTravelTimeout(8)).toBeLessThan(150000);
 });
 
 for (const mode of ['bank', 'power'] as const) {

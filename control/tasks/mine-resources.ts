@@ -2,7 +2,8 @@ import { auditEvent, auditFrame, auditOperation } from '../../sdk/audit-trace';
 import { findLongPath, isTileWalkable } from '../../sdk/pathfinding';
 import type { ScriptContext } from '../../sdk/runner';
 import type { BotWorldState, InventoryItem, NearbyLoc } from '../../sdk/types';
-import { guildLadder, inMiningGuild, miningBanks, miningDistance, miningResources, miningSelection, rankMiningSites, type MiningSite, type Tile } from '../mining-routes';
+import { guildLadder, inMiningGuild, miningBanks, miningDistance, miningResources, miningSelection,
+    miningTravelTimeout, rankMiningSites, type MiningSite, type Tile } from '../mining-routes';
 
 const pickaxe = 1275;
 const capacity = 28;
@@ -57,8 +58,11 @@ export async function mineResources({ bot, sdk }: ScriptContext, task = process.
     }
 
     async function walk(target: Tile & { name: string }, radius: number) {
-        if (miningDistance(tile(current()), target) <= radius) return;
-        await act('mining-walk', `Reach ${target.name}`, target, () => bot.walkTo(target.x, target.z, radius, { timeout: 150_000 }));
+        const distance = miningDistance(tile(current()), target);
+        if (distance <= radius) return;
+        const timeout = miningTravelTimeout(distance);
+        await act('mining-walk', `Reach ${target.name}`, { ...target, distance, timeout },
+            () => bot.walkTo(target.x, target.z, radius, { timeout }));
         if (miningDistance(tile(current()), target) > radius) throw new Error(`Arrival at ${target.name} was not confirmed.`);
     }
 
@@ -214,9 +218,12 @@ export async function mineResources({ bot, sdk }: ScriptContext, task = process.
     const retryAfter = new Map<string, number>();
     const rockKey = (loc: NearbyLoc) => `${loc.x}:${loc.z}`;
     while (quietSweeps < 3) {
-        const sites = rankMiningSites(resource, selection.mode, tile(current()), level);
+        const visited = new Set<MiningSite>();
         let produced = false;
-        for (const site of sites) {
+        for (;;) {
+            const site = rankMiningSites(resource, selection.mode, tile(current()), level).find(candidate => !visited.has(candidate));
+            if (!site) break;
+            visited.add(site);
             try {
                 await travel(site);
                 phase('mining-extract', { site: site.mine.name });
