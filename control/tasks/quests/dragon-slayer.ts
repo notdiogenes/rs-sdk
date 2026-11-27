@@ -920,7 +920,7 @@ if (import.meta.main) {
             if (has(ctx, 1535) || has(ctx, 1538)) await leaveMazeWithMap(ctx);
             if (has(ctx, 1537) || has(ctx, 1538)) await leaveDwarvenMine(ctx);
             if (shipRepaired.test(page)) await leaveShip(ctx);
-            if (!inMazeBasement(ctx) && !area(ctx, 2930, 3248, 14) && !inDwarvenMine(ctx) && !inShipHold(ctx)) {
+            if (!has(ctx, 1538) && !inMazeBasement(ctx) && !area(ctx, 2930, 3248, 14) && !inDwarvenMine(ctx) && !inShipHold(ctx)) {
                 questPhase('dragon-slayer-map-preflight');
                 await prepareQuestStep(ctx, { bank: mapSupplyBank(ctx), slots: 13, withdraw: [
                     { name: 'Maze key', count: 1 }, ...mapPieces, { name: 'Crandor map', count: 1 },

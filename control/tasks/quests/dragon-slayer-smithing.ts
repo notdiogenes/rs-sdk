@@ -1,4 +1,5 @@
 import { auditEvent, auditOperation } from '../../../sdk/audit-trace';
+import { findLongPath, isTileWalkable } from '../../../sdk/pathfinding';
 import { questSkill } from './quest-combat';
 import { buyQuestSupply, itemNamed, prepareQuestStep, questPhase, readQuest, walk, type QuestContext } from './shared';
 
@@ -18,9 +19,21 @@ function count({ sdk }: QuestContext, name: string) {
     return sdk.countInventoryItems(itemNamed(name));
 }
 
+function miningApproach(ctx: QuestContext, rock: { x: number; z: number }) {
+    const p = ctx.sdk.getState()?.player;
+    if (!p) return undefined;
+    const candidates = [[rock.x + 1, rock.z], [rock.x, rock.z - 1], [rock.x - 1, rock.z], [rock.x, rock.z + 1]] as const;
+    return candidates.find(([x, z]) => {
+        if (p.worldX === x && p.worldZ === z) return true;
+        if (!isTileWalkable(p.level, x, z)) return false;
+        const end = findLongPath(p.level, p.worldX, p.worldZ, x, z, 50).at(-1);
+        return end?.x === x && end.z === z;
+    });
+}
+
 async function collectOre(ctx: QuestContext, ore: Ore, amount: number) {
     if (count(ctx, stock[ore]) >= amount) return;
-    const { sdk, bot } = ctx;
+    const { sdk } = ctx;
     const anchor = ore === 'iron' ? [2903, 3353] : [2908, 3363];
     await walk(ctx, anchor[0]!, anchor[1]!, 3);
     let misses = 0;
@@ -35,19 +48,27 @@ async function collectOre(ctx: QuestContext, ore: Ore, amount: number) {
             continue;
         }
         attempted.set(key(rock), sdk.getState()?.tick ?? 0);
+        const approach = miningApproach(ctx, rock);
         const before = count(ctx, stock[ore]);
-        const mined = await auditOperation('dragon-slayer-mine-ship-ore', 'Gather ore to make the ship repair nails',
-            { ore, id: rock.id, x: rock.x, z: rock.z, remaining: amount - before }, () => sdk.getState(),
+        const mined = await auditOperation('dragon-slayer-mine-ship-ore', 'Stand beside the rock and wait for the ore before trying another',
+            { ore, id: rock.id, x: rock.x, z: rock.z, approach, remaining: amount - before }, () => sdk.getState(),
             async () => {
-                const result = await bot.mineRock(rock, { timeout: 9_000 });
-                if (count(ctx, stock[ore]) <= before) await sdk.waitForTicks(4);
-                return result;
-            }, result => ({
+                if (!approach) return 'No reachable tile beside the rock';
+                await walk(ctx, approach[0], approach[1], 0);
+                const current = (await sdk.scanNearbyLocs(5)).find(loc => loc.id === rock.id && loc.x === rock.x && loc.z === rock.z);
+                const option = current?.optionsWithIndex.find(option => /^mine$/i.test(option.text));
+                if (!current || !option) return 'The rock was depleted before the swing';
+                const click = await sdk.sendInteractLoc(current.x, current.z, current.id, option.opIndex);
+                if (!click.success) return click.message;
+                const observed = await sdk.waitForCondition(() => count(ctx, stock[ore]) > before, 12_000).catch(() => null);
+                return observed ? 'Ore observed in inventory' : 'No inventory change after the mining swing';
+            }, message => ({
                 outcome: count(ctx, stock[ore]) > before ? 'complete' : 'unconfirmed',
-                message: result.message, available: count(ctx, stock[ore]),
+                message, available: count(ctx, stock[ore]),
             }));
         if (count(ctx, stock[ore]) > before) misses = 0;
-        else if (++misses >= 12) throw new Error(`Could not gather ${stock[ore]}: ${mined.message}`);
+        else if (++misses >= 12) throw new Error(`Could not gather ${stock[ore]}: ${mined}`);
+        else await sdk.waitForTicks(2);
     }
 }
 
@@ -110,10 +131,11 @@ export async function makeShipNails(ctx: QuestContext) {
         }
     }
     while (!qualified()) {
-        await prepareQuestStep(ctx, { bank: faladorBank, slots: 12, keep });
-        const before = sdk.getSkill('Smithing')?.experience ?? 0;
         const bars = 6;
         const missing = Math.max(0, bars - count(ctx, 'Bronze bar'));
+        const oreSlots = Math.max(0, missing - count(ctx, 'Copper ore')) + Math.max(0, missing - count(ctx, 'Tin ore'));
+        await prepareQuestStep(ctx, { bank: faladorBank, slots: oreSlots, keep });
+        const before = sdk.getSkill('Smithing')?.experience ?? 0;
         await collectOre(ctx, 'copper', missing);
         await collectOre(ctx, 'tin', missing);
         await smeltBars(ctx, 'Bronze', bars);
@@ -127,7 +149,8 @@ export async function makeShipNails(ctx: QuestContext) {
     const bars = Math.ceil(needed() / 2);
     if (count(ctx, 'Steel bar') < bars) {
         const missing = bars - count(ctx, 'Steel bar');
-        await prepareQuestStep(ctx, { bank: faladorBank, slots: 3 * missing, keep, withdraw: [
+        const oreSlots = Math.max(0, missing - count(ctx, 'Iron ore')) + Math.max(0, 2 * missing - count(ctx, 'Coal'));
+        await prepareQuestStep(ctx, { bank: faladorBank, slots: oreSlots, keep, withdraw: [
             { name: 'Iron ore', count: missing }, { name: 'Coal', count: 2 * missing },
         ] });
         while (questSkill(ctx, 'Mining') < 30 && count(ctx, 'Coal') < 2 * missing) {
