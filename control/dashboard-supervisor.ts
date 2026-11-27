@@ -3,6 +3,8 @@ import { hostedBotName, hostedBotState, isFreshBotState } from './hosted-bot';
 import { controllerRequest, dashboardActivity, handleActivity, type ControllerStatus } from './dashboard-activity';
 import { dashboardSessions } from './dashboard-session';
 import { dashboardDiagnostics } from './dashboard-diagnostics';
+import { inventoryActionResponse, inventoryItems } from './dashboard-inventory';
+import { parseInventoryCommand, type InventoryCommand } from '../sdk/inventory-command';
 import { dashboardLastActivity } from './dashboard-last-activity';
 import type { BotObservation, LastActivity } from './dashboard-last-activity';
 import type { BotWorldState } from '../sdk/types';
@@ -223,9 +225,17 @@ export async function createDashboardSupervisor(botsDir: string, configDir: stri
         }
     }
 
-    async function inventory(name: string) {
-        const profile = await botProfile(name);
-        if (!profile) return null;
+    async function inventoryController(profile: BotProfile & { worker?: ReturnType<typeof dashboardDemo> }) {
+        const local = profile.worker?.inventoryClient();
+        if (local) return async (command: InventoryCommand) =>
+            inventoryActionResponse(await local.inventory.send(local.process, command));
+        const primary = await primaryStatus().catch(() => null);
+        if (primary?.bot !== profile.name || !primary.client?.inventoryActions || primary.client.stopping) return undefined;
+        return (command: InventoryCommand) =>
+            controllerRequest('/v1/inventory/action', `Bearer ${token}`, { bot: profile.name, ...command });
+    }
+
+    async function inventory(profile: BotProfile & { worker?: ReturnType<typeof dashboardDemo> }) {
         const result = await hostedBotState(profile.name, profile.directory);
         const empty = { bot: profile.name, items: [] };
         if (result?.botStatus === 'stale') return { ...empty, availability: 'stale' };
@@ -233,7 +243,8 @@ export async function createDashboardSupervisor(botsDir: string, configDir: stri
         if (!isFreshBotState(result.stateAge)) return { ...empty, availability: 'stale' };
         return {
             bot: profile.name, availability: 'live', capturedAt: Date.now() - result.stateAge,
-            items: result.state.inventory.map(({ id, slot, name, count }) => ({ id, slot, name, count })).sort((a, b) => a.slot - b.slot),
+            controls: Boolean(await inventoryController(profile)),
+            items: inventoryItems(result.state.inventory),
         };
     }
 
@@ -392,15 +403,30 @@ export async function createDashboardSupervisor(botsDir: string, configDir: stri
             }
             if (view === 'inventory') {
                 const headers: Record<string, string> = { 'Cache-Control': 'no-store' };
-                if (request.method !== 'GET') return new Response(null, { status: 405, headers: { ...headers, Allow: 'GET' } });
-                if (!session) return Response.json({ error: 'Sign in to view inventory.' }, { status: 401, headers });
+                const reply = (data: object, status = 200) => Response.json(data, { status, headers });
+                if (request.method !== 'GET' && request.method !== 'POST') {
+                    return new Response(null, { status: 405, headers: { ...headers, Allow: 'GET, POST' } });
+                }
+                if (!session) return reply({ error: 'Sign in to use the backpack.' }, 401);
                 headers['Set-Cookie'] = session;
                 try {
-                    const result = bot && await inventory(bot);
-                    return result ? Response.json(result, { headers })
-                        : Response.json({ error: 'Bot profile not found.' }, { status: 404, headers });
+                    const profile = bot && await botProfile(bot);
+                    if (!profile) return reply({ error: 'Bot profile not found.' }, 404);
+                    if (request.method === 'GET') return reply(await inventory(profile));
+                    if (request.headers.get('Content-Type')?.split(';')[0]?.trim().toLowerCase() !== 'application/json') {
+                        return reply({ error: 'Send an inventory action as JSON.' }, 415);
+                    }
+                    const command = parseInventoryCommand(await request.json().catch(() => null));
+                    if (!command) return reply({ error: 'Invalid inventory action.' }, 400);
+                    const control = await inventoryController(profile);
+                    if (!control) return reply({ error: 'Inventory controls are unavailable for this game client.' }, 409);
+                    const response = await control(command);
+                    response.headers.set('Set-Cookie', session);
+                    return response;
                 } catch {
-                    return Response.json({ error: 'Current inventory is temporarily unavailable.' }, { status: 503, headers });
+                    return reply({ error: request.method === 'POST'
+                        ? 'The inventory action could not be confirmed. Check the inventory before retrying.'
+                        : 'Current inventory is temporarily unavailable.' }, 503);
                 }
             }
             if (view === 'diagnostics' && bot !== null) {

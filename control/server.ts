@@ -2,6 +2,8 @@ import { createHash, timingSafeEqual } from 'node:crypto';
 import { realpath } from 'node:fs/promises';
 import { join } from 'node:path';
 import { botCredentials, hostedBotName, hostedBotState, isFreshBotState } from './hosted-bot';
+import { inventoryActionResponse, inventoryControls } from './dashboard-inventory';
+import { parseInventoryCommand } from '../sdk/inventory-command';
 
 const root = join(import.meta.dir, '..');
 const configDir = process.env.RS_CONTROL_CONFIG_DIR;
@@ -22,7 +24,7 @@ const error = (message: string, status: number) => reply({ error: message }, sta
 
 type Profile = { bot: string; directory: string; tasks: Map<string, string> };
 type ProcessInfo = { process: Bun.Subprocess; startedAt: string; stop?: Promise<void> };
-let client: (ProcessInfo & { profile: Profile }) | undefined;
+let client: (ProcessInfo & { profile: Profile; inventory: ReturnType<typeof inventoryControls> }) | undefined;
 let task: (ProcessInfo & { name: string }) | undefined;
 let lastTask: { name: string; exitCode: number; finishedAt: string } | undefined;
 let mutating = false;
@@ -66,9 +68,9 @@ async function gameState(profile: Profile) {
     };
 }
 
-function spawn(args: string[], cwd: string): ProcessInfo {
+function spawn(args: string[], cwd: string, ipc?: (message: unknown) => void): ProcessInfo {
     return {
-        process: Bun.spawn([process.execPath, ...args], { cwd, stdin: 'ignore', stdout: 'inherit', stderr: 'inherit' }),
+        process: Bun.spawn([process.execPath, ...args], { cwd, stdin: 'ignore', stdout: 'inherit', stderr: 'inherit', ipc }),
         startedAt: new Date().toISOString(),
     };
 }
@@ -88,7 +90,9 @@ function status(profile: Profile | null) {
         configured: profile !== null,
         bot: profile?.bot ?? null,
         tasks: [...(profile?.tasks.keys() ?? [])],
-        client: client ? { startedAt: client.startedAt, stopping: Boolean(client.stop) } : null,
+        client: client ? {
+            startedAt: client.startedAt, stopping: Boolean(client.stop), inventoryActions: client.inventory.available(),
+        } : null,
         task: task ? { name: task.name, startedAt: task.startedAt, stopping: Boolean(task.stop) } : null,
         lastTask: lastTask ?? null,
     };
@@ -107,6 +111,17 @@ const server = Bun.serve({
             return Response.json({ error: 'Unauthorized' }, {
                 status: 401, headers: { ...headers, 'WWW-Authenticate': 'Bearer' },
             });
+        }
+        if (route === 'POST /v1/inventory/action') {
+            if (!timingSafeEqual(expected[0]!, offered)) return error('Unauthorized', 401);
+            const body = await request.json().catch(() => null);
+            const command = parseInventoryCommand(body);
+            if (!command) return error('Invalid inventory action.', 400);
+            const running = client;
+            if (!running || running.stop || running.profile.bot !== body.bot) {
+                return error('Inventory controls are unavailable for this game client.', 409);
+            }
+            return inventoryActionResponse(await running.inventory.send(running.process, command));
         }
         if (request.method === 'GET') {
             try {
@@ -136,9 +151,11 @@ const server = Bun.serve({
                 const profile = await readProfile();
                 if (!profile) return error('Bot not configured', 409);
                 await botCredentials(profile.bot, profile.directory);
-                const running = { ...spawn(['src/lite/runner.ts', profile.bot], join(root, 'server/webclient')), profile };
+                const inventory = inventoryControls();
+                const running = { ...spawn(['src/lite/runner.ts', profile.bot], join(root, 'server/webclient'), inventory.receive), profile, inventory };
                 client = running;
                 void running.process.exited.then(async () => {
+                    inventory.disconnect();
                     // Keep client ownership until any controller has stopped.
                     try { await stop(task); } finally { if (client === running) client = undefined; }
                 }).catch(() => console.error('Could not stop the task after client exit'));

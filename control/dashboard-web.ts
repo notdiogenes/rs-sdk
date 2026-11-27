@@ -13,6 +13,14 @@ const displayTimeZone = 'America/New_York';
 const refreshSeconds = 15;
 const noStore = { 'Cache-Control': 'no-store' };
 
+function withItemSprites(inventory: { items: Item[] }) {
+    return { ...inventory, items: inventory.items.map(item => ({
+        ...item,
+        spriteUrl: Number.isInteger(item.id) && item.id >= 0 && item.id <= 999_999
+            ? `${itemSpriteBase}${item.id}.png` : null,
+    })) };
+}
+
 function jsonError(error: string, status: number) {
     return Response.json({ error }, { status, headers: noStore });
 }
@@ -77,16 +85,14 @@ export function dashboardWebHandler(worker: CallSupervisor, presentation: LoadPr
                 if (dataView && view === 'audit') return await audit(request, searchParams);
 
                 const response = await call('/bots/activity' + search, request);
-                if (!dataView || view !== 'inventory' || request.method !== 'GET' || !response.ok) return response;
-                const inventory = await response.json() as { items: Item[] };
+                if (!dataView || view !== 'inventory' || !response.ok) return response;
+                type Inventory = { items: Item[] };
+                const data = await response.json() as Inventory | { message: string; inventory: Inventory };
                 const { status } = response;
                 const headers = new Headers(response.headers);
                 headers.delete('Content-Length');
-                return Response.json({ ...inventory, items: inventory.items.map(item => ({
-                    ...item,
-                    spriteUrl: Number.isInteger(item.id) && item.id >= 0 && item.id <= 999_999
-                        ? `${itemSpriteBase}${item.id}.png` : null,
-                })) }, { status, headers });
+                const result = 'inventory' in data ? { ...data, inventory: withItemSprites(data.inventory) } : withItemSprites(data);
+                return Response.json(result, { status, headers });
             } catch {
                 return jsonError('Dashboard data is temporarily unavailable.', 503);
             }

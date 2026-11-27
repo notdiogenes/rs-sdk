@@ -1,7 +1,7 @@
 export type ControllerStatus = {
     bot: string | null;
     tasks: string[];
-    client: { startedAt: string; stopping: boolean } | null;
+    client: { startedAt: string; stopping: boolean; inventoryActions?: boolean } | null;
     task: {
         name: string;
         startedAt: string;

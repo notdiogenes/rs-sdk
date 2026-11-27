@@ -2,6 +2,7 @@ import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { createDashboardActivity, type ControllerStatus } from './dashboard-activity';
+import { inventoryControls } from './dashboard-inventory';
 import { botCredentials, hostedBotState, isFreshBotState } from './hosted-bot';
 import type { BotProfile } from './dashboard-roster';
 import { auditPrefix } from '../sdk/audit-trace';
@@ -48,7 +49,7 @@ export function dashboardDemo(runtimeDir: string, botsDir: string, configDir: st
     const delegatedKey = Bun.file(join(configDir, 'caller.sha256'));
     const events: Event[] = [];
     let nextEventId = 1;
-    let client: Process | undefined;
+    let client: (Process & { inventory: ReturnType<typeof inventoryControls> }) | undefined;
     let task: Task | undefined;
     let clientExit: Exit | null = null;
     let taskExit: (Exit & { name: DemoTaskName }) | null = null;
@@ -156,19 +157,22 @@ export function dashboardDemo(runtimeDir: string, botsDir: string, configDir: st
     }
 
     function startClient(bot: string) {
+        const inventory = inventoryControls();
         const child = Bun.spawn([process.execPath, '--no-env-file', join(webclient, 'src/lite/runner.ts'), bot], {
             cwd: webclient,
             stdin: 'ignore', stdout: 'inherit', stderr: 'inherit',
+            ipc: inventory.receive,
             env: {
                 ...process.env, GATEWAY_DIRECT: 'false', NODE_PATH: dependencies, RS_LITE_BOT_ENV: envFile,
                 RS_LITE_CACHE_DIR: join(writableDir, 'cache'),
             },
         });
-        const running = { process: child, startedAt: new Date().toISOString() };
+        const running = { process: child, startedAt: new Date().toISOString(), inventory };
         client = running;
         clientExit = null;
         event('client-started', { bot, pid: child.pid });
         void child.exited.then(async exitCode => {
+            inventory.disconnect();
             clientExit = { exitCode, at: new Date().toISOString() };
             event('client-exited', { exitCode });
             try { await stopProcess(task, 'SIGTERM'); }
@@ -409,5 +413,9 @@ export function dashboardDemo(runtimeDir: string, botsDir: string, configDir: st
             signal,
         }), path.slice('/v1/'.length), true));
 
-    return { handle, profile, status, allowed, recentEvents, planBackend, ...actions };
+    function inventoryClient() {
+        return client && !client.stopping && client.inventory.available() ? client : undefined;
+    }
+
+    return { handle, profile, status, allowed, recentEvents, planBackend, inventoryClient, ...actions };
 }
