@@ -8,6 +8,9 @@ bun=$(command -v bun || true)
 bun=${bun:-"$HOME/.bun/bin/bun"}
 service=rs-sdk-public-status
 refresh=rs-sdk-public-status-refresh
+worker=rs-sdk-fleet-workers
+worker_refresh=rs-sdk-fleet-workers-refresh
+socket=/run/rs-sdk-fleet-workers/worker.sock
 site=/etc/nginx/sites-enabled/rs-sdk-control-hostname
 include_dir=/etc/nginx/rs-sdk-control/https
 snippet="$include_dir/public-status.conf"
@@ -46,17 +49,20 @@ sudo -v
 scratch=$(mktemp -d)
 trap 'rm -rf -- "$scratch"' EXIT
 install -d -m 0700 "$runtime"
-revision="$runtime/source.sha256"
-cat > "$scratch/$service.service" <<EOF
+web_revision="$runtime/web.sha256"
+worker_revision="$runtime/workers.sha256"
+cat > "$scratch/$worker.service" <<EOF
 [Unit]
-Description=RS-SDK public bot status page
+Description=RS-SDK Fleet Desk bot worker supervisor
 Wants=network-online.target
 After=network-online.target rs-sdk-control.service
 
 [Service]
 User=$owner
-ExecStart=$bun --no-env-file $source_dir/public-status.ts $active_repo/bots $config
-ExecStartPost=/bin/bash $source_dir/dashboard-revision.sh $source_dir $revision record
+RuntimeDirectory=$worker
+RuntimeDirectoryMode=0700
+ExecStart=$bun --no-env-file $source_dir/dashboard-worker.ts $active_repo/bots $config $socket
+ExecStartPost=/bin/bash $source_dir/dashboard-revision.sh $source_dir $worker_revision record worker
 Restart=on-failure
 RestartSec=5
 UMask=0077
@@ -69,19 +75,43 @@ PrivateTmp=yes
 [Install]
 WantedBy=multi-user.target
 EOF
-cat > "$scratch/$refresh.service" <<EOF
+cat > "$scratch/$service.service" <<EOF
 [Unit]
-Description=Reload the RS-SDK public dashboard after a source update
+Description=RS-SDK Fleet Desk web service
+Wants=$worker.service
+After=$worker.service
+
+[Service]
+User=$owner
+ExecStart=$bun --no-env-file $source_dir/dashboard-web.ts $runtime $socket
+ExecStartPost=/bin/bash $source_dir/dashboard-revision.sh $source_dir $web_revision record web
+Restart=on-failure
+RestartSec=5
+UMask=0077
+NoNewPrivileges=yes
+ProtectSystem=full
+ProtectHome=read-only
+ReadWritePaths=$runtime
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target
+EOF
+write_refresh_units() {
+    local unit=$1 target=$2 stamp=$3 role=$4
+    cat > "$scratch/$unit.service" <<EOF
+[Unit]
+Description=Reload the RS-SDK Fleet Desk $role service after a source update
 
 [Service]
 Type=oneshot
 User=$owner
-ExecCondition=/bin/bash $source_dir/dashboard-revision.sh $source_dir $revision changed
-ExecStart=+/usr/bin/systemctl restart $service.service
+ExecCondition=/bin/bash $source_dir/dashboard-revision.sh $source_dir $stamp changed $role
+ExecStart=+/usr/bin/systemctl restart $target.service
 EOF
-cat > "$scratch/$refresh.path" <<EOF
+    cat > "$scratch/$unit.path" <<EOF
 [Unit]
-Description=Watch the RS-SDK sync checkout for dashboard updates
+Description=Watch the RS-SDK sync checkout for $role service updates
 
 [Path]
 PathChanged=$reflog
@@ -89,9 +119,19 @@ PathChanged=$reflog
 [Install]
 WantedBy=multi-user.target
 EOF
-sudo install -m 0644 "$scratch/$service.service" "/etc/systemd/system/$service.service"
-sudo install -m 0644 "$scratch/$refresh.service" "$scratch/$refresh.path" /etc/systemd/system/
+}
+write_refresh_units "$refresh" "$service" "$web_revision" web
+write_refresh_units "$worker_refresh" "$worker" "$worker_revision" worker
+sudo install -m 0644 "$scratch/$service.service" "$scratch/$worker.service" /etc/systemd/system/
+sudo install -m 0644 "$scratch/$refresh.service" "$scratch/$refresh.path" \
+    "$scratch/$worker_refresh.service" "$scratch/$worker_refresh.path" /etc/systemd/system/
 sudo systemctl daemon-reload
+
+if ! systemctl is-active --quiet "$worker"; then
+    # Stop the legacy owner before opening the same plans and audit databases.
+    sudo systemctl stop "$service"
+fi
+sudo systemctl enable --now "$worker"
 sudo systemctl restart "$service"
 curl --fail --silent --show-error --retry 4 --retry-connrefused --max-time 15 \
     http://127.0.0.1:3721/bots >/dev/null
@@ -128,5 +168,5 @@ url="https://$hostname/bots"
 curl --fail --silent --show-error --max-time 15 --resolve "$hostname:443:127.0.0.1" "$url" >/dev/null
 [[ $(curl --silent --show-error --max-time 15 --resolve "$hostname:443:127.0.0.1" \
     --output /dev/null --write-out '%{http_code}' "$url/activity") == 401 ]]
-sudo systemctl enable --now "$refresh.path"
+sudo systemctl enable --now "$refresh.path" "$worker_refresh.path"
 printf '\nPublic bot status page: %s\n' "$url"
