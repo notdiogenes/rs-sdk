@@ -1,10 +1,10 @@
 import { auditEnabled, auditEvent, auditFrame } from '../../../sdk/audit-trace';
 import { runScript } from '../../../sdk/runner';
-import { bankForQuest, buyQuestSupply, changeFloor, continueDialog, equipQuestSword, groundItem, journalText, questLoc, questLog, questPhase, waitForQuestJournal, readQuest, talkAt, walk, type QuestContext } from './shared';
+import { prepareQuestStep, buyQuestSupply, changeFloor, continueDialog, equipQuestSword, groundItem, journalText, questLog, questPhase, waitForQuestJournal, readQuest, talkAt, walk, type QuestContext } from './shared';
 
 const quest = "Witch's House";
 const journal = 7351;
-const supply = ['Leather gloves', 'Cheese', 'Door key', 'Magnet', 'Diary', 'Key', 'Ball', 'Adamant longsword'];
+const keep = /^(?:leather gloves|cheese|door key|magnet|diary|key|ball|adamant longsword|coins)$/i;
 
 async function locById({ sdk }: QuestContext, id: number) {
     const loc = (await sdk.scanNearbyLocs(10)).find(candidate => candidate.id === id);
@@ -29,21 +29,41 @@ const result = await runScript(async ctx => {
     };
     await exitCellar();
     await descendDiary();
-    await bankForQuest(ctx, [...supply.map(name => ({name,count:1})), {name:'Coins',count:30}], [2946,3369]);
     questPhase('witch-meet-boy');
     if (readQuest(ctx, journal) === 'not-started') { questLog('quest-start', { quest }); await boy(); }
+    const textAtStart = has(2407) ? '' : await journalText(ctx, journal, /^witch.s house$/i);
+    const defeated = /shapeshifter.*dead/i.test(textAtStart);
+    if (defeated && !has(2407)) {
+        const nearbyBall = sdk.getInventory().length < 28
+            ? (await sdk.scanGroundItems(8)).find(item => item.id === 2407 && item.reachable === true) : undefined;
+        if (nearbyBall) await bot.pickupItem(nearbyBall);
+        if (!has(2407)) await prepareQuestStep(ctx, { slots: 1, keep, withdraw: [{ name: 'Ball', count: 1 }], bank: [2946, 3369] });
+    }
     if (has(2407)) {
         await boy();
     } else {
-        let text = await journalText(ctx, journal, /^witch.s house$/i);
+        let text = textAtStart;
         const unlocked = () => /unlock the back door|shapeshifter.*dead/i.test(text);
         questPhase('witch-gather-supplies');
+        if (!unlocked() && !has(2410) && /i have found a magnet/i.test(text)) {
+            await prepareQuestStep(ctx, { slots: 1, keep, withdraw: [{ name: 'Magnet', count: 1 }], bank: [2946, 3369] });
+        }
+        const needsGloves = !unlocked() && !has(2410) && !has(1059) && !sdk.getEquipment().some(i => i.id === 1059);
+        const needsCheese = !unlocked() && !has(1985);
+        const coins = (needsGloves ? 12 : 0) + (needsCheese ? 8 : 0);
+        const frontKey = Number(!has(2409));
+        const supplies = frontKey + Number(needsGloves) + Number(needsCheese) + Number(!unlocked() && !has(2410));
+        const gardenSlots = frontKey + Number(!defeated && !has(2408)) + Number(!defeated && !has(2411)) + 1;
+        await prepareQuestStep(ctx, {
+            slots: Math.max(supplies, gardenSlots) + Number(coins > 0 && !sdk.findInventoryItem(/^coins$/i)), keep,
+            withdraw: coins ? [{ name: 'Coins', count: coins }] : [], bank: [2946, 3369],
+        });
         if (!unlocked()) {
-            if (!has(1059) && !sdk.getEquipment().some(i => i.id === 1059)) {
+            if (needsGloves) {
                 await walk(ctx, 3204, 3417, 3);
                 await buyQuestSupply(ctx, /^thessalia$/i, 'Leather gloves', 12);
             }
-            if (!has(1985)) {
+            if (needsCheese) {
                 await walk(ctx, 3014, 3204, 3);
                 await buyQuestSupply(ctx, /^wydin$/i, 'Cheese', 8);
             }
@@ -93,18 +113,20 @@ const result = await runScript(async ctx => {
             text = await journalText(ctx, journal, /^witch.s house$/i);
             if (!unlocked()) throw new Error('The journal did not confirm the garden door was unlocked');
         }
-        questPhase('witch-read-diary');
-        if (!has(2408)) {
-            await walk(ctx, 2906, 3469, 2); await changeFloor(ctx, 'up', 2906, 3469);
-            await groundItem(ctx, /^diary$/i, 2900, 3473);
-            await descendDiary();
+        if (!defeated) {
+            questPhase('witch-read-diary');
+            if (!has(2408)) {
+                await walk(ctx, 2906, 3469, 2); await changeFloor(ctx, 'up', 2906, 3469);
+                await groundItem(ctx, /^diary$/i, 2900, 3473);
+                await descendDiary();
+            }
+            const diary = has(2408);
+            if (!diary) throw new Error('Missing the Witch’s diary');
+            await sdk.sendUseItem(diary.slot, diary.optionsWithIndex?.find(o => /^read$/i.test(o.text))?.opIndex ?? 1);
+            await sdk.waitForTicks(2);
+            await bot.closeInterface();
+            await equipQuestSword(ctx);
         }
-        const diary = has(2408);
-        if (!diary) throw new Error('Missing the Witch’s diary');
-        await sdk.sendUseItem(diary.slot, diary.optionsWithIndex?.find(o => /^read$/i.test(o.text))?.opIndex ?? 1);
-        await sdk.waitForTicks(2);
-        await bot.closeInterface();
-        await equipQuestSword(ctx);
 
         const caught = () => {
             const p = sdk.getState()?.player;
@@ -142,21 +164,25 @@ const result = await runScript(async ctx => {
                 auditEvent('phase', 'garden-crossing', { strategy: 'direct-waypoints' });
                 auditEvent('milestone', 'garden-attempt', { attempt: attempt + 1, strategy: 'direct-waypoints' });
                 await garden();
-                await gardenRoute([[2901,3460],[2933,3460],[2933,3466],[2912,3466],[2912,3467],[2911,3469]]);
-                if (!has(2411)) {
+                await gardenRoute([[2901,3460],[2933,3460],[2933,3466]]);
+                if (!defeated && !has(2411)) {
+                    await gardenRoute([[2912,3466],[2912,3467],[2911,3469]]);
                     await bot.interactLoc(await locById(ctx, 2864), /^check$/i);
                     await continueDialog(ctx);
+                    if (!has(2411)) throw new Error('The fountain did not yield the shed key');
+                    await gardenRoute([[2912,3467],[2912,3466],[2933,3466]]);
                 }
-                if (!has(2411)) throw new Error('The fountain did not yield the shed key');
-                await gardenRoute([[2912,3467],[2912,3466],[2933,3466],[2933,3463]]);
+                await gardenRoute([[2933,3463]]);
                 auditEvent('milestone', 'garden-crossed', { attempt: attempt + 1, strategy: 'direct-waypoints' });
                 auditEvent('phase', 'shed-fight');
-                await bot.useItemOnLoc(has(2411)!, await locById(ctx, 2863));
+                const shed = await locById(ctx, 2863);
+                if (defeated) await bot.interactLoc(shed, /^open$/i);
+                else await bot.useItemOnLoc(has(2411)!, shed);
                 for (let fight=0; fight<28 && !has(2407); fight++) {
                     const player = sdk.getState()?.player;
                     if (player?.isDead || (player?.hp ?? 0) < 20) throw new Error('Too little Hitpoints to continue the experiment fight');
                     const npc = sdk.getNearbyNpcs().find(candidate => candidate.id >= 897 && candidate.id <= 900);
-                    if (npc && !player?.combat.inCombat) await bot.attack(npc);
+                    if (npc && !defeated && !player?.combat.inCombat) await bot.attack(npc);
                     else if (!npc) {
                         const ball = (await sdk.scanGroundItems(10)).find(item => item.id === 2407);
                         if (ball) await bot.pickupItem(ball);

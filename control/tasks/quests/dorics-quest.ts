@@ -1,5 +1,5 @@
 import { runScript } from '../../../sdk/runner';
-import { bankForQuest, groundItem, itemNamed, questLog, questPhase, waitForQuestJournal, readQuest, talkAt, walk } from './shared';
+import { prepareQuestStep, groundItem, itemNamed, questLog, questPhase, waitForQuestJournal, readQuest, talkAt, walk } from './shared';
 
 const quest = "Doric's Quest";
 const journal = 7336;
@@ -13,15 +13,21 @@ const result = await runScript(async ctx => {
     await waitForQuestJournal(ctx, journal, 'available', 15_000);
     questPhase('quest-prepare');
     if (readQuest(ctx, journal) === 'complete') { questLog('quest-already-complete', { quest }); return; }
-    await bankForQuest(ctx, [
-        ...ores.map(([name, count]) => ({ name, count })), { name: 'Bronze pickaxe', count: 1 },
-    ], [2946, 3369]);
     const visit = () => talkAt(ctx, 2952, 3451, /^doric$/i, [/wanted to use your anvils/i, /yes,? i will get you materials/i]);
     questPhase('doric-start');
     if (readQuest(ctx, journal) === 'not-started') { questLog('quest-start', { quest }); await visit(); }
     const held = (name: string) => sdk.countInventoryItems(itemNamed(name));
-    if (ores.some(([name, count]) => held(name) < count) && !sdk.findInventoryItem(pickaxe) && !sdk.findEquipmentItem(pickaxe)) {
-        await groundItem(ctx, /^bronze pickaxe$/i, 2963, 3216);
+    const missing = ores.reduce((total, [name, count]) => total + Math.max(0, count - held(name)), 0);
+    const ironMissing = Math.max(0, 2 - held('Iron ore'));
+    const iron = ironMissing > 0 && (sdk.getSkill('Mining')?.baseLevel ?? 0) < 15;
+    const needsPickaxe = missing > (iron ? ironMissing : 0) && !sdk.findInventoryItem(pickaxe) && !sdk.findEquipmentItem(pickaxe);
+    if (missing) {
+        await prepareQuestStep(ctx, {
+            slots: missing + Number(needsPickaxe), keep: /^(?:clay|copper ore|iron ore|.* pickaxe)$/i,
+            withdraw: iron ? [{ name: 'Iron ore', count: 2 }] : [], bank: [2946, 3369],
+        });
+        if (iron && held('Iron ore') < 2) throw new Error("Doric needs two iron ore. Bring them or reach level 15 Mining.");
+        if (needsPickaxe && ores.some(([name, count]) => held(name) < count)) await groundItem(ctx, /^bronze pickaxe$/i, 2963, 3216);
     }
     questPhase('doric-mine-ores');
     for (const [name, count, x, z, ids] of ores) {

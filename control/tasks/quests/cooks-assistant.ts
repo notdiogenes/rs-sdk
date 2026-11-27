@@ -1,5 +1,5 @@
 import { runScript } from '../../../sdk/runner';
-import { bankForQuest, changeFloor, groundItem, questLog, questPhase, waitForQuestJournal, readQuest, talk, walk } from './shared';
+import { prepareQuestStep, changeFloor, groundItem, questLog, questPhase, waitForQuestJournal, readQuest, talk, walk } from './shared';
 
 // Coordinates and the ingredient sequence are cross-checked against the
 // LostHQ 2004 guide and rs2b2t/rs2b0t's cooksassistant quest definition.
@@ -13,10 +13,7 @@ const bucket = /^bucket$/i;
 const grain = /^grain$/i;
 const mill = { x: 3166, z: 3306 };
 const cookChoices = [/what.s wrong/i, /yes,? i.ll help/i];
-const supplies = [
-    { name: 'Pot of flour', count: 1 }, { name: 'Egg', count: 1 }, { name: 'Bucket of milk', count: 1 },
-    { name: 'Pot', count: 1 }, { name: 'Bucket', count: 1 }, { name: 'Grain', count: 1 },
-];
+const keep = /^(?:pot of flour|egg|bucket of milk|pot|bucket|grain)$/i;
 
 const result = await runScript(async ctx => {
     const { bot, sdk } = ctx;
@@ -35,11 +32,6 @@ const result = await runScript(async ctx => {
         while ((sdk.getState()?.player?.level ?? 0) > 0) await changeFloor(ctx, 'down', mill.x, mill.z);
     }
     const got = (item: RegExp) => !!sdk.findInventoryItem(item);
-    const kitReady = atMill && readQuest(ctx, journal) === 'in-progress' && (got(pot) || got(flour)) &&
-        (got(bucket) || got(milk)) && sdk.getEquipment().length === 0 && sdk.getInventory().every(item =>
-            supplies.some(supply => supply.name.toLowerCase() === item.name.toLowerCase() &&
-                sdk.countInventoryItems(item.name) <= supply.count));
-    if (!kitReady) await bankForQuest(ctx, supplies);
     const visitCook = async () => {
         await walk(ctx, 3209, 3215, 4);
         await talk(ctx, cook, cookChoices);
@@ -56,6 +48,7 @@ const result = await runScript(async ctx => {
     }
     questPhase('cook-mill-flour');
     if (!got(flour)) {
+        await prepareQuestStep(ctx, { slots: Number(!got(pot)), keep });
         if (!got(pot)) await groundItem(ctx, pot, 3208, 3213);
         // Try the flour bin first, including on resume after earlier milling.
         await walk(ctx, mill.x, mill.z, 4);
@@ -72,6 +65,7 @@ const result = await runScript(async ctx => {
         await takeFlour();
         if (!got(flour)) {
             if (!got(grain)) {
+                await prepareQuestStep(ctx, { slots: 1, keep });
                 await walk(ctx, 3158, 3300, 4);
                 const wheat = sdk.findNearbyLoc(/^wheat$/i);
                 if (!wheat) throw new Error('Could not find wheat next to the mill');
@@ -99,11 +93,13 @@ const result = await runScript(async ctx => {
     }
     questPhase('cook-gather-egg');
     if (!got(egg)) {
+        await prepareQuestStep(ctx, { slots: 1, keep });
         await groundItem(ctx, egg, 3227, 3300);
         questLog('quest-ingredient', { item: 'Egg' });
     }
     questPhase('cook-fetch-milk');
     if (!got(milk)) {
+        await prepareQuestStep(ctx, { slots: Number(!got(bucket)), keep });
         if (!got(bucket)) await groundItem(ctx, bucket, 3225, 3294);
         await walk(ctx, 3255, 3288, 5);
         const dairy = sdk.findNearbyLoc(/dairy cow/i);

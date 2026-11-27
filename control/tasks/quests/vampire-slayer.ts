@@ -1,5 +1,5 @@
 import { runScript } from '../../../sdk/runner';
-import { bankForQuest, buyQuestSupply, changeFloor, equipQuestSword, questLoc, questLog, questPhase, waitForQuestJournal, readQuest, talkAt, walk } from './shared';
+import { prepareQuestStep, buyQuestSupply, changeFloor, equipQuestSword, questLoc, questLog, questPhase, waitForQuestJournal, readQuest, talkAt, walk } from './shared';
 
 const quest = 'Vampire Slayer';
 const journal = 7347;
@@ -21,20 +21,22 @@ const result = await runScript(async ctx => {
         }
     };
     const has = (item: RegExp) => !!sdk.findInventoryItem(item);
-    const crypt = (sdk.getState()?.player?.worldZ ?? 0) >= 9700;
-    const safePack = sdk.getInventory().every(i => /^(stake|hammer|coins|adamant longsword)$/i.test(i.name));
+    const inCrypt = () => (sdk.getState()?.player?.worldZ ?? 0) >= 9700;
     questPhase('vampire-prepare');
-    if (!crypt || !has(stake) || !has(hammer) || !safePack) {
+    if (readQuest(ctx, journal) === 'not-started') {
         await leaveCrypt();
-        await bankForQuest(ctx, [
-            { name: 'Stake', count: 1 }, { name: 'Hammer', count: 1 }, { name: 'Beer', count: 1 },
-            { name: 'Coins', count: 10 }, { name: 'Adamant longsword', count: 1 },
-        ]);
-        if (readQuest(ctx, journal) === 'not-started') {
-            questLog('quest-start', { quest });
-            await talkAt(ctx, 3098, 3268, /^morgan$/i, [/up for an adventure/i]);
-        }
+        questLog('quest-start', { quest });
+        await talkAt(ctx, 3098, 3268, /^morgan$/i, [/up for an adventure/i]);
+    }
+    if (!has(stake) || !has(hammer)) {
+        const coinsNeeded = (has(hammer) ? 0 : 8) + (!has(stake) && !has(beer) ? 2 : 0);
+        await leaveCrypt();
         questPhase('vampire-gather-gear');
+        await prepareQuestStep(ctx, {
+            slots: Number(!has(hammer)) + Number(!has(stake) && !has(beer)) + Number(coinsNeeded > 0 && !has(/^coins$/i)),
+            keep: /^(?:stake|hammer|beer|coins|garlic|adamant longsword)$/i,
+            withdraw: coinsNeeded ? [{ name: 'Coins', count: coinsNeeded }] : [],
+        });
         if (!has(hammer)) {
             await walk(ctx, 3218, 3415, 3);
             await buyQuestSupply(ctx, /^shop (?:keeper|assistant)$/i, 'Hammer', 8);
@@ -49,7 +51,9 @@ const result = await runScript(async ctx => {
             if (!has(stake)) throw new Error('Dr Harlow did not provide a stake');
             questLog('quest-ingredient', { quest, item: 'Stake' });
         }
-        await equipQuestSword(ctx);
+    }
+    await equipQuestSword(ctx);
+    if (!inCrypt()) {
         questPhase('vampire-enter-crypt');
         await walk(ctx, 3115, 3357, 2);
         await changeFloor(ctx, 'down', 3115, 3357);

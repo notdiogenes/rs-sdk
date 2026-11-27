@@ -1,11 +1,12 @@
 import { runScript } from '../../../sdk/runner';
-import { bankForQuest, buyQuestSupply, changeFloor, continueDialog, itemNamed, journalText, questLoc, questLog, questPhase, waitForQuestJournal, readQuest, talkAt, walk } from './shared';
+import { prepareQuestStep, buyQuestSupply, changeFloor, continueDialog, itemNamed, journalText, questLoc, questLog, questPhase, waitForQuestJournal, readQuest, talkAt, walk } from './shared';
 
 const quest = "Black Knight's Fortress";
 const journal = 7332;
 const chain = 'Iron chainbody';
 const helm = 'Bronze med helm';
 const cabbageId = 1965;
+const keep = /^(?:iron chainbody|bronze med helm|cabbage|coins)$/i;
 const questChoice = [/i seek a quest/i, /i laugh in the face of danger/i];
 
 const result = await runScript(async ctx => {
@@ -68,30 +69,38 @@ const result = await runScript(async ctx => {
     if (!resumeEavesdrop) {
         if (player && Math.abs(player.worldX - 2960) < 15 && Math.abs(player.worldZ - 3338) < 15) await castleExit();
         if (floor() > 0) throw new Error('A Pirate is upstairs away from Sir Amik’s tower. Exit the fortress before retrying.');
-        await bankForQuest(ctx, [
-            { name: chain, count: 1 }, { name: helm, count: 1 }, { name: 'Coins', count: 350 }, { name: 'Cabbage', count: 1 },
-        ], [2946, 3369]);
         questPhase('fortress-briefing');
         if (readQuest(ctx, journal) === 'not-started') { questLog('quest-start', { quest }); await sirAmik(); }
     }
     const page = savedPage ?? await story();
+    const hasCabbage = () => sdk.getInventory().some(item => item.id === cabbageId);
+    const gatherCabbage = async () => {
+        await walk(ctx, 3053, 3295, 2);
+        await bot.interactLoc(await questLoc(ctx, /^cabbage$/i, /^pick$/i), /^pick$/i);
+        await sdk.waitForCondition(hasCabbage, 8000);
+    };
     questPhase('fortress-infiltration');
     if (!/sabotaged the witch.s potion/i.test(page)) {
         if (!resumeEavesdrop) {
-            if (!sdk.findInventoryItem(itemNamed(chain)) && !sdk.findEquipmentItem(itemNamed(chain))) {
+            const needsGear = (name: string) => !sdk.findInventoryItem(itemNamed(name)) && !sdk.findEquipmentItem(itemNamed(name));
+            const needChain = needsGear(chain);
+            const needHelm = needsGear(helm);
+            const coins = (needChain ? 300 : 0) + (needHelm ? 50 : 0);
+            await prepareQuestStep(ctx, {
+                keep, slots: Number(needChain) + Number(needHelm) + Number(!hasCabbage()) +
+                    Number(coins > 0 && !sdk.findInventoryItem(/^coins$/i)),
+                withdraw: coins ? [{ name: 'Coins', count: coins }] : [], bank: [2946, 3369],
+            });
+            if (needChain) {
                 await walk(ctx, 2973, 3312, 3); await buyQuestSupply(ctx, /^wayne$/i, chain, 300);
             }
-            if (!sdk.findInventoryItem(itemNamed(helm)) && !sdk.findEquipmentItem(itemNamed(helm))) {
+            if (needHelm) {
                 await walk(ctx, 3076, 3429, 3); await buyQuestSupply(ctx, /^peksa$/i, helm, 50);
             }
             for (const name of [chain, helm]) {
                 if (!sdk.findEquipmentItem(itemNamed(name)) && !(await bot.equipItem(itemNamed(name))).success) throw new Error(`Could not equip ${name}`);
             }
-            if (!sdk.getInventory().some(i => i.id === cabbageId)) {
-                await walk(ctx, 3053, 3295, 2);
-                await bot.interactLoc(await questLoc(ctx, /^cabbage$/i, /^pick$/i), /^pick$/i);
-                await sdk.waitForCondition(s => s.inventory.some(i => i.id === cabbageId), 8000);
-            }
+            if (!hasCabbage()) await gatherCabbage();
             await passage(2337, /^open$/i, 3016, 3513);
         }
         questPhase('fortress-eavesdrop');
@@ -118,6 +127,12 @@ const result = await runScript(async ctx => {
             await passage(2341, /^push$/i, 3016, 3517);
         }
         questPhase('fortress-sabotage');
+        if (!hasCabbage()) {
+            await passage(2337, /^open$/i, 3016, 3514);
+            await prepareQuestStep(ctx, { slots: 1, keep, bank: [2946, 3369] });
+            await gatherCabbage();
+            await passage(2337, /^open$/i, 3016, 3513);
+        }
         await passage(2338, /^open$/i, 3019, 3515, [/i don.t care.*going in anyway/i]);
         await climb('up', 3022, 3518);
         await passage(2341, /^push$/i, 3030, 3511);

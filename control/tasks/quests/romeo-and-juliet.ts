@@ -1,14 +1,12 @@
 import { auditEvent } from '../../../sdk/audit-trace';
 import { runScript } from '../../../sdk/runner';
-import { bankForQuest, changeFloor, groundItem, journalText, questLog, questPhase, waitForQuestJournal, readQuest, talk, walk } from './shared';
+import { prepareQuestStep, changeFloor, groundItem, journalText, questLog, questPhase, waitForQuestJournal, readQuest, talk, walk } from './shared';
 
 const journal = 7343;
 const quest = 'Romeo & Juliet';
 const juliet = { x: 3158, z: 3425 };
 const stairs = { x: 3156, z: 3435 };
-const supplies = [
-    { name: 'Message', count: 1 }, { name: 'Cadava berries', count: 1 }, { name: 'Cadava potion', count: 1 },
-];
+const keep = /^(?:message|cadava berries|cadava potion)$/i;
 const choices = [/i guess i could find him/i, /certainly,? i will do so/i, /can i help find her/i];
 
 const result = await runScript(async ctx => {
@@ -20,23 +18,28 @@ const result = await runScript(async ctx => {
     const status = () => readQuest(ctx, journal);
     if (status() === 'complete') { questLog('quest-already-complete', { quest }); return; }
     const leaveHouse = async () => {
-        if ((sdk.getState()?.player?.level ?? 0) > 0) await changeFloor(ctx, 'down', stairs.x, stairs.z);
+        const p = sdk.getState()?.player;
+        if (p?.level === 1 && Math.max(Math.abs(p.worldX - juliet.x), Math.abs(p.worldZ - juliet.z)) < 15) {
+            await changeFloor(ctx, 'down', stairs.x, stairs.z);
+        }
     };
-    const here = sdk.getState()?.player;
-    if (here?.level === 1 && Math.max(Math.abs(here.worldX - juliet.x), Math.abs(here.worldZ - juliet.z)) < 15) await leaveHouse();
-    await bankForQuest(ctx, supplies, [3185, 3440]);
+    const prepare = (slots: number) => prepareQuestStep(ctx, { slots, keep, bank: [3185, 3440], beforeBank: leaveHouse });
     const visitRomeo = async () => {
+        await leaveHouse();
         await walk(ctx, 3211, 3425, 4);
         await talk(ctx, /^romeo$/i, [...choices, /he sent me to the apothecary/i]);
     };
     const visitJuliet = async () => {
-        await walk(ctx, stairs.x, stairs.z, 2);
-        await changeFloor(ctx, 'up', stairs.x, stairs.z);
+        if (sdk.getState()?.player?.level !== 1) {
+            await walk(ctx, stairs.x, stairs.z, 2);
+            await changeFloor(ctx, 'up', stairs.x, stairs.z);
+        }
         await walk(ctx, juliet.x, juliet.z, 3);
         await talk(ctx, /^juliet$/i, choices);
         await leaveHouse();
     };
     const visitApothecary = async () => {
+        await leaveHouse();
         await walk(ctx, 3195, 3404, 4);
         await talk(ctx, /^apothecary$/i, []);
     };
@@ -60,6 +63,8 @@ const result = await runScript(async ctx => {
             if (has(/^cadava potion$/i)) await visitJuliet();
             else if (has(/^cadava berries$/i)) await visitApothecary();
             else {
+                await leaveHouse();
+                await prepare(1);
                 await groundItem(ctx, /^cadava berries$/i, 3272, 3369);
                 questLog('quest-ingredient', { quest, item: 'Cadava berries' });
             }
@@ -68,14 +73,23 @@ const result = await runScript(async ctx => {
             await visitApothecary();
         } else if (/i should find father lawrence/i.test(text)) {
             questPhase('romeo-father-lawrence');
+            await leaveHouse();
             await walk(ctx, 3254, 3475, 4);
             await talk(ctx, /^father lawrence$/i, []);
         } else if (/i should take the message.*to romeo/i.test(text)) {
             questPhase('romeo-deliver-message');
             if (has(/^message$/i)) await visitRomeo();
-            else await visitJuliet();
-        } else if (/i should go and speak to juliet|i can start this quest/i.test(text)) {
+            else {
+                await prepareQuestStep(ctx, { keep, withdraw: [{ name: 'Message', count: 1 }], bank: [3185, 3440], beforeBank: leaveHouse });
+                if (has(/^message$/i)) await visitRomeo();
+                else await visitJuliet();
+            }
+        } else if (/i can start this quest/i.test(text)) {
+            questPhase('romeo-start');
+            await visitRomeo();
+        } else if (/i should go and speak to juliet/i.test(text)) {
             questPhase('romeo-meet-juliet');
+            await prepare(1);
             await visitJuliet();
         } else {
             throw new Error('Unrecognized Romeo & Juliet journal page: ' + text.slice(-180));

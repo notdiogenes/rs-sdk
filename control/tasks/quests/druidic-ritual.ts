@@ -1,5 +1,5 @@
 import { runScript } from '../../../sdk/runner';
-import { bankForQuest, changeFloor, equipQuestSword, itemNamed, journalText, lootFromNpc, questLoc, questLog, questPhase, waitForQuestJournal, readQuest, talkAt, walk } from './shared';
+import { prepareQuestStep, changeFloor, equipQuestSword, itemNamed, journalText, lootFromNpc, questLoc, questLog, questPhase, waitForQuestJournal, readQuest, talkAt, walk } from './shared';
 
 const quest = 'Druidic Ritual';
 const journal = 7355;
@@ -17,8 +17,9 @@ const result = await runScript(async ctx => {
     await waitForQuestJournal(ctx, journal, 'available', 15_000);
     questPhase('quest-prepare');
     if (readQuest(ctx, journal) === 'complete') { questLog('quest-already-complete', { quest }); return; }
+    const inDungeon = () => (sdk.getState()?.player?.worldZ ?? 0) >= 9700;
     const dungeonExit = async () => {
-        if ((sdk.getState()?.player?.worldZ ?? 0) < 9700) return;
+        if (!inDungeon()) return;
         await walk(ctx, 2884, 9797, 3);
         await changeFloor(ctx, 'up', 2884, 9797);
     };
@@ -27,18 +28,21 @@ const result = await runScript(async ctx => {
     };
     const kaqemeex = () => talkAt(ctx, 2924, 3486, /^kaqemeex$/i, [/in search of a quest/i, /i will try and help/i]);
     const sanfew = async () => {
-        await walk(ctx, 2898, 3428, 2);
-        await changeFloor(ctx, 'up', 2898, 3428);
+        await dungeonExit();
+        if (sdk.getState()?.player?.level !== 1) {
+            await walk(ctx, 2898, 3428, 2);
+            await changeFloor(ctx, 'up', 2898, 3428);
+        }
         await talkAt(ctx, 2897, 3426, /^Sanfew$/i, [/sent to help purify/i, /i.ll do that then/i, /i.ll get on with it/i], 3_000);
         await townExit();
     };
-    await dungeonExit();
-    await townExit();
-    await bankForQuest(ctx, [{ name: 'Adamant longsword', count: 1 },
-        ...meats.flatMap(([raw, charged]) => [raw, charged].map(name => ({ name, count: 1 }))),
-    ], [2946, 3369]);
     questPhase('druidic-start');
-    if (readQuest(ctx, journal) === 'not-started') { questLog('quest-start', { quest }); await kaqemeex(); }
+    if (readQuest(ctx, journal) === 'not-started') {
+        await dungeonExit();
+        await townExit();
+        questLog('quest-start', { quest });
+        await kaqemeex();
+    }
     let text = await journalText(ctx, journal, /^druidic ritual$/i);
     questPhase('druidic-sanfew-briefing');
     if (/should speak to Sanfew/i.test(text)) {
@@ -46,16 +50,26 @@ const result = await runScript(async ctx => {
         text = await journalText(ctx, journal, /^druidic ritual$/i);
     }
     if (!/gave them to Sanfew/i.test(text)) {
-        await equipQuestSword(ctx);
         const has = (name: string) => !!sdk.findInventoryItem(itemNamed(name));
-        questPhase('druidic-gather-meats');
-        for (const [raw, charged, target, x, z] of meats) {
-            if (!has(charged) && !has(raw)) await lootFromNpc(ctx, itemNamed(raw), target, x, z);
+        const missing = meats.filter(([raw, charged]) => !has(charged) && !has(raw));
+        if (missing.length) {
+            await dungeonExit();
+            await townExit();
+            questPhase('druidic-gather-meats');
+            await prepareQuestStep(ctx, {
+                slots: missing.length, keep: /^(?:raw (?:bear meat|rat meat|chicken|beef)|enchanted (?:bear|rat|chicken|beef)|adamant longsword)$/i,
+                bank: [2946, 3369],
+            });
+            await equipQuestSword(ctx);
+            for (const [raw, , target, x, z] of missing) await lootFromNpc(ctx, itemNamed(raw), target, x, z);
         }
         questPhase('druidic-enchant-meats');
         if (meats.some(([, charged]) => !has(charged))) {
-            await walk(ctx, 2884, 3397, 2);
-            await changeFloor(ctx, 'down', 2884, 3397);
+            if (!inDungeon()) {
+                await townExit();
+                await walk(ctx, 2884, 3397, 2);
+                await changeFloor(ctx, 'down', 2884, 3397);
+            }
             await walk(ctx, 2888, 9831, 1);
             for (let attempt = 0; attempt < 7; attempt++) {
                 const cauldron = await questLoc(ctx, /^cauldron of thunder$/i);
@@ -80,6 +94,8 @@ const result = await runScript(async ctx => {
         await sanfew();
     }
     questPhase('druidic-report');
+    await dungeonExit();
+    await townExit();
     await kaqemeex();
     await waitForQuestJournal(ctx, journal, 'complete', 12_000);
     questLog('quest-complete', { quest, evidence: 'journal', questPoints: sdk.getState()?.questPoints });

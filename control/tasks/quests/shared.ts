@@ -142,60 +142,58 @@ export async function groundItem(ctx: QuestContext, item: RegExp, x: number, z: 
     throw new Error(`Could not find ${item} near ${x}, ${z}`);
 }
 
-export async function bankForQuest(ctx: QuestContext, supplies: readonly { name: string; count: number }[],
-    bank: readonly [number, number] = [3092, 3243]) {
+type QuestStepSupplies = {
+    slots?: number;
+    keep?: RegExp;
+    withdraw?: readonly { name: string; count: number }[];
+    bank?: readonly [number, number];
+    beforeBank?: () => Promise<void>;
+};
+
+export async function prepareQuestStep(ctx: QuestContext, {
+    slots = 0, keep, withdraw = [], bank = [3092, 3243], beforeBank,
+}: QuestStepSupplies) {
     const { bot, sdk } = ctx;
-    const wanted = new Map(supplies.map(item => [item.name.toLowerCase(), item.count]));
-    const current = () => sdk.getInventory();
-    const exact = (name: string) => new RegExp('^' + name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '$', 'i');
-    const have = (name: string) => sdk.countInventoryItems(exact(name));
-    const open = async () => {
-        const result = await bot.openBank();
-        if (!result.success) throw new Error(result.message);
-    };
-    const deposit = async () => {
-        for (const name of new Set(current().map(item => item.name))) {
-            const count = have(name) - (wanted.get(name.toLowerCase()) ?? 0);
-            if (count > 0 && !(await bot.depositItem(exact(name), count)).success) throw new Error(`Could not bank ${name}`);
-        }
-    };
-    auditEvent('phase', 'quest-loadout', { bank, supplies });
+    const have = (name: string) => sdk.countInventoryItems(itemNamed(name));
+    const freeSlots = () => 28 - sdk.getInventory().length;
+    const missing = withdraw.filter(item => have(item.name) < item.count);
+    const requiredSlots = Math.max(slots, missing.filter(item => have(item.name) === 0).length);
+    if (freeSlots() >= requiredSlots && !missing.length) {
+        auditEvent('check', 'quest-bank-loadout', { outcome: 'skipped', requiredSlots, freeSlots: freeSlots() });
+        return;
+    }
+
+    auditEvent('check', 'quest-bank-loadout', { outcome: 'needed', bank, requiredSlots, missing });
     questLog('banking-quest-loadout');
+    await beforeBank?.();
     await walk(ctx, bank[0], bank[1], 4);
-    await open();
+    const opened = await bot.openBank();
+    if (!opened.success) throw new Error(opened.message);
     try {
-        await deposit();
-        if (sdk.getEquipment().length) {
-            await bot.closeBank();
-            for (const item of sdk.getEquipment()) {
-                if ((wanted.get(item.name.toLowerCase()) ?? 0) > 0) continue;
-                const result = await bot.unequipItem(item);
-                if (!result.success) throw new Error(result.message);
-            }
-            await open();
-            await deposit();
+        while (freeSlots() < requiredSlots) {
+            const item = sdk.getInventory().findLast(entry => !keep?.test(entry.name) &&
+                !withdraw.some(supply => itemNamed(supply.name).test(entry.name)));
+            if (!item) throw new Error(`Need ${requiredSlots} free inventory slots for this quest step; the carried quest items fill the backpack`);
+            const before = freeSlots();
+            const deposited = await bot.depositItem(item, item.count);
+            if (!deposited.success || freeSlots() <= before) throw new Error(`Could not free a slot by banking ${item.name}`);
         }
-        for (const supply of supplies) {
-            const entry = sdk.findBankItem(exact(supply.name));
-            const needed = supply.count - have(supply.name);
-            if (entry && needed > 0) {
-                const amount = Math.min(entry.count, needed);
+        for (const item of missing) {
+            const entry = sdk.findBankItem(itemNamed(item.name));
+            const amount = Math.min(entry?.count ?? 0, item.count - have(item.name));
+            if (entry && amount > 0) {
                 const taken = await bot.withdrawItem(entry, amount);
-                if (!taken.success) throw new Error(`Could not withdraw ${supply.name}`);
+                if (!taken.success) throw new Error(`Could not withdraw ${item.name}: ${taken.message}`);
             }
         }
     } finally {
         if (sdk.isBankOpen()) await bot.closeBank();
     }
-    const surplus = current().find(item => have(item.name) > (wanted.get(item.name.toLowerCase()) ?? 0));
-    const unexpected = sdk.getEquipment().find(item => !wanted.has(item.name.toLowerCase()));
-    auditEvent('check', 'quest-bank-loadout', { outcome: surplus || unexpected ? 'failed' : 'complete',
-        surplus: surplus?.name, unexpectedEquipment: unexpected?.name, supplies: supplies.map(s => ({ ...s, carried: have(s.name) })) });
-    if (surplus || unexpected) {
-        throw new Error('Unexpected items remained after banking');
-    }
-    auditEvent('phase', 'quest-execution');
-    questLog('quest-loadout-ready', { items: current().map(item => [item.name, item.count]) });
+    auditEvent('check', 'quest-bank-loadout', {
+        outcome: 'complete', requiredSlots, freeSlots: freeSlots(),
+        supplies: missing.map(item => ({ ...item, carried: have(item.name) })),
+    });
+    questLog('quest-loadout-ready', { items: sdk.getInventory().map(item => [item.name, item.count]) });
 }
 
 export async function journalText({ bot, sdk }: QuestContext, component: number, title: RegExp) {

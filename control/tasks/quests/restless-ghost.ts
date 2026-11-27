@@ -1,5 +1,5 @@
 import { runScript } from '../../../sdk/runner';
-import { bankForQuest, changeFloor, continueDialog, groundItem, questLog, questPhase, waitForQuestJournal, readQuest, talk, walk } from './shared';
+import { prepareQuestStep, changeFloor, continueDialog, groundItem, journalText, questLog, questPhase, waitForQuestJournal, readQuest, talk, walk } from './shared';
 
 // Route cross-checked against LostHQ's 2004 guide and the rs2b0t
 // restlessghost and runemysteries modules (for the tower ladder).
@@ -7,6 +7,7 @@ const journal = 7337;
 const quest = 'The Restless Ghost';
 const skull = /^(?:skull|ghost.s skull)$/i;
 const amulet = /^ghostspeak amulet$/i;
+const keep = /^(?:ghostspeak amulet|skull|ghost.s skull)$/i;
 const grave = { x: 3250, z: 3193 };
 const leaveTower = async (ctx: Parameters<typeof changeFloor>[0]) => {
     if ((ctx.sdk.getState()?.player?.worldZ ?? 0) < 9000) return;
@@ -24,10 +25,7 @@ const result = await runScript(async ctx => {
         questLog('quest-already-complete', { quest });
         return;
     }
-    await leaveTower(ctx);
-    await bankForQuest(ctx, [
-        { name: 'Ghostspeak amulet', count: 1 }, { name: 'Skull', count: 1 }, { name: "Ghost's skull", count: 1 },
-    ]);
+    const prepare = (slots: number) => prepareQuestStep(ctx, { slots, keep, beforeBank: () => leaveTower(ctx) });
     const openCoffin = async () => {
         await walk(ctx, grave.x, grave.z, 4);
         const coffin = sdk.getNearbyLocs().find(loc => /^coffin$/i.test(loc.name) &&
@@ -39,14 +37,19 @@ const result = await runScript(async ctx => {
     };
     questPhase('ghost-start');
     if (readQuest(ctx, journal) === 'not-started') {
+        await leaveTower(ctx);
         questLog('quest-start', { quest });
         await walk(ctx, 3244, 3206, 4);
         await talk(ctx, /^father aereck$/i, [/looking for a quest/i]);
         await sdk.waitForCondition(s => s.questJournal?.[journal] === 'in-progress', 8000);
     }
-    if (!sdk.findInventoryItem(skull)) {
+    const text = await journalText(ctx, journal, /^(?:the )?restless ghost$/i);
+    const returningSkull = /take the skull back to the ghost/i.test(text);
+    if (!sdk.findInventoryItem(skull) && !returningSkull && !/evil wizard had stolen his skull/i.test(text)) {
+        await leaveTower(ctx);
         questPhase('ghost-obtain-amulet');
         if (!sdk.findInventoryItem(amulet) && !sdk.findEquipmentItem(amulet)) {
+            await prepare(1);
             await walk(ctx, 3235, 3154, 4);
             await talk(ctx, /^father urhney$/i, [/father aereck sent/i, /ghost haunting/i, /lost the amulet/i]);
             if (!sdk.findInventoryItem(amulet) && !sdk.findEquipmentItem(amulet)) throw new Error('Urhney did not give the amulet');
@@ -60,14 +63,27 @@ const result = await runScript(async ctx => {
         await openCoffin();
         await sdk.waitForCondition(s => s.nearbyNpcs.some(npc => /^restless ghost$/i.test(npc.name)), 6500).catch(() => null);
         await talk(ctx, /^restless ghost$/i, [/tell me what the problem is/i]);
+    }
+    if (!sdk.findInventoryItem(skull)) {
         questPhase('ghost-recover-skull');
-        await walk(ctx, 3108, 3162, 3);
-        await changeFloor(ctx, 'down', 3105, 3162);
+        if (returningSkull) {
+            await prepareQuestStep(ctx, {
+                slots: 1, keep, beforeBank: () => leaveTower(ctx),
+                withdraw: [{ name: "Ghost's skull", count: 1 }],
+            });
+        }
+    }
+    if (!sdk.findInventoryItem(skull)) {
+        await prepare(1);
+        if ((sdk.getState()?.player?.worldZ ?? 0) < 9000) {
+            await walk(ctx, 3108, 3162, 3);
+            await changeFloor(ctx, 'down', 3105, 3162);
+        }
         await groundItem(ctx, skull, 3120, 9565);
         questLog('quest-ingredient', { quest, item: 'Skull' });
-        await leaveTower(ctx);
     }
     questPhase('ghost-return-skull');
+    await leaveTower(ctx);
     await openCoffin();
     const coffin = sdk.findNearbyLoc(/^coffin$/i);
     if (!coffin) throw new Error('Could not find the ghost’s coffin');

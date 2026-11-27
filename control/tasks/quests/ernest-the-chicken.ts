@@ -1,9 +1,9 @@
 import { runScript } from '../../../sdk/runner';
-import { bankForQuest, changeFloor, continueDialog, groundItem, itemNamed, journalText, questLoc, questLog, questPhase, waitForQuestJournal, readQuest, talkAt, useTogether, walk, type QuestContext } from './shared';
+import { prepareQuestStep, changeFloor, continueDialog, groundItem, itemNamed, journalText, questLoc, questLog, questPhase, waitForQuestJournal, readQuest, talkAt, useTogether, walk, type QuestContext } from './shared';
 
 const quest = 'Ernest the Chicken';
 const journal = 7339;
-const supplies = ['Spade', 'Poison', 'Fish food', 'Poisoned fish food', 'Key', 'Rubber tube', 'Pressure gauge', 'Oil can'];
+const keep = /^(?:spade|poison|fish food|poisoned fish food|key|rubber tube|pressure gauge|oil can)$/i;
 const levers = { A: [3108, 9745], B: [3118, 9752], C: [3112, 9760], D: [3108, 9767], E: [3097, 9767], F: [3096, 9765] } as const;
 type Tile = readonly [number, number];
 type Move = { lever: keyof typeof levers; down: boolean } | { from: Tile; to: Tile };
@@ -79,16 +79,10 @@ const result = await runScript(async ctx => {
         await talkAt(ctx, 3110, 3367, /^professor oddenstein$/i, [/looking for a guy called ernest/i, /change him back this instant/i]);
         await leaveFloors();
     };
-    const player = sdk.getState()?.player;
-    const inManor = player && Math.abs(player.worldX - 3110) < 17 && Math.abs(player.worldZ - 3363) < 16;
-    const loadoutReady = inManor && readQuest(ctx, journal) === 'in-progress' && !sdk.getEquipment().length &&
-        sdk.getInventory().every(item => item.count === 1 && supplies.some(name => itemNamed(name).test(item.name)));
-    if (!loadoutReady) {
-        await leaveFloors();
-        await bankForQuest(ctx, supplies.map(name => ({name,count:1})));
-    }
+    const prepare = (slots: number) => prepareQuestStep(ctx, { slots, keep, beforeBank: leaveFloors });
     questPhase('ernest-start');
     if (readQuest(ctx, journal) === 'not-started') {
+        await leaveFloors();
         questLog('quest-start', { quest });
         await talkAt(ctx, 3110, 3330, /^veronica$/i, [/sounds like a quest/i]);
     }
@@ -97,6 +91,7 @@ const result = await runScript(async ctx => {
     else if (top() > 0) await leaveFloors();
     questPhase('ernest-pressure-gauge');
     if (!has('Pressure gauge')) {
+        if (!has('Poisoned fish food')) await prepare(1);
         await walk(ctx, 3087, 3336, 3);
         const search = async () => {
             await bot.interactLoc(await questLoc(ctx, /^fountain$/i, /^search$/i), /^search$/i);
@@ -105,6 +100,7 @@ const result = await runScript(async ctx => {
         await search();
         if (!has('Pressure gauge')) {
             if (!has('Poisoned fish food')) {
+                await prepare(Number(!has('Poison')) + Number(!has('Fish food')));
                 if (!has('Poison')) await groundItem(ctx, /^poison$/i, 3097, 3366);
                 if (!has('Fish food')) {
                     await enterMidFloor();
@@ -124,6 +120,7 @@ const result = await runScript(async ctx => {
     }
     questPhase('ernest-rubber-tube');
     if (!has('Rubber tube')) {
+        await prepare(Number(!has('Spade') && !has('Key')) + Number(!has('Key')) + 1);
         if (!has('Key')) {
             await groundItem(ctx, /^spade$/i, 3120, 3359);
             await walk(ctx, 3085, 3360, 3);
@@ -142,6 +139,7 @@ const result = await runScript(async ctx => {
     }
     questPhase('ernest-cellar-puzzle');
     if (!has('Oil can')) {
+        await prepare(1);
         await walk(ctx, 3098, 3358, 0);
         const bookcase = (await sdk.scanNearbyLocs(5)).find(loc => loc.id === 155);
         if (!bookcase) throw new Error('Could not find the secret bookcase');
