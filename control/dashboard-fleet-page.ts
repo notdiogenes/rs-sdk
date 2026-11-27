@@ -201,10 +201,8 @@ export function fleetPage({ nonce, data, questCatalog, fleetStyle, controls, ref
         </button>
       </div>
       <p class="inventory-selection-meta inventory-read-only" id="inventory-read-only" hidden>Item actions are unavailable for this client.</p>
-      <div class="inventory-confirmation" id="inventory-drop-confirmation" role="group"
-           aria-labelledby="inventory-drop-question" aria-describedby="inventory-drop-context" hidden>
+      <div class="inventory-confirmation" id="inventory-drop-confirmation" role="group" aria-labelledby="inventory-drop-question" hidden>
         <p id="inventory-drop-question"></p>
-        <p id="inventory-drop-context" class="inventory-selection-meta"></p>
         <div class="inventory-toolbar">
           <button type="button" id="inventory-drop-cancel">Cancel</button>
           <button type="button" id="inventory-drop-submit" class="inventory-destructive">Confirm drop</button>

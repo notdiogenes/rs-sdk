@@ -60,7 +60,6 @@
     const inventoryDrop = document.querySelector('#inventory-drop');
     const inventoryDropConfirmation = document.querySelector('#inventory-drop-confirmation');
     const inventoryDropQuestion = document.querySelector('#inventory-drop-question');
-    const inventoryDropContext = document.querySelector('#inventory-drop-context');
     const inventoryDropCancel = document.querySelector('#inventory-drop-cancel');
     const inventoryDropSubmit = document.querySelector('#inventory-drop-submit');
     const inventoryActionStatus = document.querySelector('#inventory-action-status');
@@ -425,7 +424,7 @@
         const item = selectedInventoryItem();
         inventoryDetail.textContent = item?.name ?? (inventoryBySlot.size ? 'Select an item' : 'Backpack is empty');
         inventoryMeta.hidden = !item;
-        inventoryMeta.textContent = item ? `Slot ${item.slot + 1} · ${number(item.count)} ${item.count === 1 ? 'item' : 'items'}` : '';
+        inventoryMeta.textContent = item ? `Quantity ${number(item.count)}` : '';
         inventoryPreview.classList.remove('has-sprite');
         inventoryPreview.innerHTML = item ? itemSprite(item) : '';
         inventoryPreview.hidden = !inventoryPreview.firstElementChild;
@@ -460,7 +459,6 @@
         showInventoryAction();
         inventoryDropItem = item;
         inventoryDropQuestion.textContent = `Drop ${inventoryActionTarget('drop', item)}?`;
-        inventoryDropContext.textContent = `Slot ${item.slot + 1}${item.count > 1 ? ' · Entire stack' : ''}`;
         inventoryDropConfirmation.hidden = false;
         updateInventoryActions();
         inventoryDropCancel.focus();

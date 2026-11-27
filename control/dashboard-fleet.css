@@ -64,7 +64,6 @@ button:disabled{opacity:.6;cursor:default}
 .inventory-confirmation{margin-top:10px;padding:9px;background:#32241e;border:1px solid #775141;border-radius:6px}
 .inventory-confirmation p{color:#efc9b6;font-size:13px;overflow-wrap:anywhere}
 .inventory-confirmation p:first-child{font-weight:700}
-.inventory-confirmation .inventory-selection-meta{color:var(--muted);font-size:12px}
 .inventory-confirmation .inventory-toolbar{margin-top:8px}
 @media(max-width:570px){
   #inventory-dialog .dialog-body{padding:12px}
