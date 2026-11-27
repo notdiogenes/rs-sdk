@@ -878,10 +878,13 @@ async function fightElvarg(ctx: QuestContext, page: string) {
                 const ned = sdk.findNearbyNpc(/^ned$/i);
                 if (!ned) throw new Error('Ned was no longer in view when giving him the map');
                 await auditOperation('dragon-slayer-give-map', 'Give Ned the completed map so he joins the repaired ship',
-                    { npc: ned.index, map: map.id }, () => sdk.getState(), () => sdk.sendUseItemOnNpc(map.slot, ned.index),
-                    result => ({ outcome: result.success ? 'dispatched' : 'failed', message: result.message }));
-                await sdk.waitForCondition(() => !has(ctx, 1538), 8000);
-                await continueDialog(ctx);
+                    { npc: ned.index, map: map.id }, () => sdk.getState(), async () => {
+                        const sent = await sdk.sendUseItemOnNpc(map.slot, ned.index);
+                        if (!sent.success) throw new Error(sent.message);
+                        await sdk.waitForCondition(state => state.dialog.isOpen || !has(ctx, 1538), 8000);
+                        await continueDialog(ctx);
+                        await sdk.waitForCondition(() => !has(ctx, 1538), 8000);
+                    }, () => ({ outcome: 'complete', mapTransferred: true }));
             }
             if (!nedHired.test(await journalText(ctx, journal, title))) throw new Error('The journal did not confirm that Ned was hired');
         }
