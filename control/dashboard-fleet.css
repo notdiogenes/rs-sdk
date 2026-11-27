@@ -35,9 +35,39 @@ button:disabled{opacity:.6;cursor:default}
 .status-online{color:var(--green)}.status-unknown{color:var(--amber)}
 .group-title h2{color:inherit}.group-title h2.attention{color:var(--amber)}.group-title h2.active{color:var(--green)}
 #dashboard-diagnostics{max-width:min(720px,calc(100vw - 24px))}
-#inventory-dialog{max-width:min(370px,calc(100vw - 24px))}
-#inventory-dialog h2{font-size:19px}
-#inventory-status{min-height:1.35em;font-size:12px}
+#inventory-dialog{max-width:min(680px,calc(100vw - 24px))}
+#inventory-dialog .dialog-header{align-items:center;margin-bottom:8px}
+#inventory-dialog h2{font-size:19px;overflow-wrap:anywhere}
+#inventory-status{min-height:1.35em;font-size:12px;margin-bottom:12px}
+.inventory-header-actions{display:flex;gap:6px;flex:none}
+.inventory-header-actions button{display:inline-grid;place-items:center;min-width:38px;min-height:38px}
+.inventory-action-icon{width:15px;height:15px;flex:none;fill:none;stroke:currentColor;stroke-width:1.4;stroke-linecap:round;stroke-linejoin:round}
+.inventory-layout{display:grid;grid-template-columns:minmax(0,1.35fr) minmax(0,1fr);gap:12px;align-items:start}
+.inventory-layout .inventory-grid{margin:0}
+.inventory-inspector{min-width:0;padding:12px;background:#28231e;border:1px solid #493a2c;border-radius:8px}
+.inventory-selection{display:flex;align-items:center;gap:10px;min-height:46px}
+.inventory-selection-name{color:#efeae0;font-weight:700;overflow-wrap:anywhere}
+.inventory-selection-meta{font-size:12px;color:var(--muted);margin-top:3px}
+.inventory-preview{display:grid;place-items:center;flex:0 0 46px;height:46px;background:#37291e;border:1px solid #59412e;border-radius:6px}
+.inventory-toolbar{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px;margin-top:10px}
+.inventory-toolbar button{display:flex;align-items:center;justify-content:center;gap:6px;min-width:0;min-height:40px;padding:5px 7px;font-size:13px}
+.inventory-destructive{color:var(--amber);border-color:#775141}
+.inventory-destructive:not([aria-disabled=true]):hover{background:#4b2f25;border-color:#a7654e}
+#inventory-dialog button[aria-disabled=true]{opacity:.55;cursor:default}
+#inventory-dialog button[aria-disabled=true]:hover{background:#26231e}
+@media(prefers-reduced-motion:no-preference){
+  #inventory-refresh[aria-busy=true] .inventory-action-icon{animation:inventory-spin .8s linear infinite}
+}
+@keyframes inventory-spin{to{transform:rotate(360deg)}}
+.inventory-read-only{margin-top:8px}
+.inventory-confirmation{margin-top:10px;padding:9px;background:#32241e;border:1px solid #775141;border-radius:6px}
+.inventory-confirmation p{color:#efc9b6;font-size:13px;overflow-wrap:anywhere}
+.inventory-confirmation .inventory-toolbar{margin-top:8px}
+@media(max-width:570px){
+  #inventory-dialog .dialog-body{padding:12px}
+  .inventory-layout{grid-template-columns:minmax(0,1fr)}
+  .inventory-layout .inventory-cell{height:46px}
+}
 .inventory-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:6px;list-style:none;margin:12px 0 0;padding:11px;
   background:#35271d;border:1px solid #6b4d32;border-radius:8px;box-shadow:inset 0 0 0 2px #241b15}
 .inventory-cell{min-width:0;height:49px;border-radius:5px;background:#2a211a;border:1px solid #523d2c}
@@ -56,9 +86,9 @@ button:disabled{opacity:.6;cursor:default}
 .inventory-quantity{position:absolute;top:3px;left:4px;color:#ffe07d;text-shadow:0 1px 2px #160f08,1px 0 #160f08;
   font:700 10px/1 ui-monospace,monospace;pointer-events:none}
 .inventory-item-detail{margin-top:10px;min-height:2.5em;color:#ead2a8;font-size:12px;overflow-wrap:anywhere}
-.inventory-toolbar{display:flex;flex-wrap:wrap;gap:7px;margin-top:10px}
-.inventory-action-status{margin:10px 0 0;font-size:12px}
+.inventory-action-status{margin:10px 0 0;font-size:12px;overflow-wrap:anywhere}
 .inventory-action-status:empty{margin:0}
+.inventory-action-status[data-outcome=pending]{color:var(--gold)}
 .inventory-action-status[data-outcome=success]{color:var(--green)}
 .inventory-action-status[data-outcome=error]{color:var(--amber)}
 #banks-dialog[data-bank-view=account]{max-width:min(747px,calc(100vw - 24px))}

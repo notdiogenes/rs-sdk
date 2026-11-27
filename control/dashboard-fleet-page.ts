@@ -173,16 +173,44 @@ export function fleetPage({ nonce, data, questCatalog, fleetStyle, controls, ref
   <div id="fleet-details-content"></div>
 </div></dialog>
 <dialog id="inventory-dialog" aria-labelledby="inventory-title"><div class="dialog-body">
-  <div class="dialog-header"><h2 id="inventory-title">Current inventory</h2><button type="button" data-close>Close</button></div>
-  <p id="inventory-status" role="status"></p>
-  <ol id="inventory-items" class="inventory-grid" role="list" aria-label="Backpack slots" hidden></ol>
-  <p id="inventory-item-detail" class="inventory-item-detail" aria-live="polite" hidden></p>
-  <div class="inventory-toolbar">
-    <button type="button" id="inventory-eat" hidden>Eat</button>
-    <button type="button" id="inventory-drop" hidden>Drop</button>
-    <button type="button" id="inventory-refresh">Refresh inventory</button>
+  <div class="dialog-header"><h2 id="inventory-title">Current inventory</h2>
+    <div class="inventory-header-actions">
+      <button type="button" id="inventory-refresh" aria-label="Refresh inventory" title="Refresh inventory">
+        <svg class="inventory-action-icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M13.8 5.6a6 6 0 1 0 .1 4.5M13.8 1.9v3.7h-3.7"/></svg>
+      </button>
+      <button type="button" data-close>Close</button>
+    </div>
   </div>
-  <p id="inventory-action-status" class="inventory-action-status" role="status"></p>
+  <p id="inventory-status" role="status"></p>
+  <div class="inventory-layout" id="inventory-layout" hidden>
+    <ol id="inventory-items" class="inventory-grid" role="list" aria-label="Backpack slots"></ol>
+    <section class="inventory-inspector" aria-label="Selected item">
+      <div class="inventory-selection">
+        <div id="inventory-preview" class="inventory-preview" aria-hidden="true" hidden></div>
+        <div aria-live="polite" aria-atomic="true">
+          <p id="inventory-item-detail" class="inventory-selection-name"></p>
+          <p id="inventory-item-meta" class="inventory-selection-meta" hidden></p>
+        </div>
+      </div>
+      <div class="inventory-toolbar" role="group" aria-label="Item actions">
+        <button type="button" id="inventory-eat" aria-disabled="true">
+          <svg class="inventory-action-icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 1.5v4a2.5 2.5 0 0 0 5 0v-4m-2.5 0v13m8.5 0v-13c-2 0-3 2.5-3 5v1h3"/></svg>Eat
+        </button>
+        <button type="button" id="inventory-drop" class="inventory-destructive" aria-disabled="true">
+          <svg class="inventory-action-icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2v8m-3-3 3 3 3-3M3 11v2.5h10V11"/></svg>Drop
+        </button>
+      </div>
+      <p class="inventory-selection-meta inventory-read-only" id="inventory-read-only" hidden>Item actions are unavailable.</p>
+      <div class="inventory-confirmation" id="inventory-drop-confirmation" role="group" aria-labelledby="inventory-drop-question" hidden>
+        <p id="inventory-drop-question"></p>
+        <div class="inventory-toolbar">
+          <button type="button" id="inventory-drop-cancel">Cancel</button>
+          <button type="button" id="inventory-drop-submit" class="inventory-destructive">Confirm drop</button>
+        </div>
+      </div>
+      <p id="inventory-action-status" class="inventory-action-status" role="status"></p>
+    </section>
+  </div>
 </div></dialog>
 <dialog id="banks-dialog" aria-labelledby="bank-title"><div class="dialog-body">
   <div class="dialog-header"><h2 id="bank-title" tabindex="-1">Bank snapshots</h2><button type="button" data-close>Close</button></div>

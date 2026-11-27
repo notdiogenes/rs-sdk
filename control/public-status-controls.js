@@ -49,11 +49,19 @@
     const detailsDialog = document.querySelector('#fleet-details');
     const inventoryDialog = document.querySelector('#inventory-dialog');
     const inventoryStatus = document.querySelector('#inventory-status');
+    const inventoryLayout = document.querySelector('#inventory-layout');
     const inventoryItems = document.querySelector('#inventory-items');
     const inventoryDetail = document.querySelector('#inventory-item-detail');
+    const inventoryMeta = document.querySelector('#inventory-item-meta');
+    const inventoryPreview = document.querySelector('#inventory-preview');
+    const inventoryReadOnly = document.querySelector('#inventory-read-only');
     const inventoryRefresh = document.querySelector('#inventory-refresh');
     const inventoryEat = document.querySelector('#inventory-eat');
     const inventoryDrop = document.querySelector('#inventory-drop');
+    const inventoryDropConfirmation = document.querySelector('#inventory-drop-confirmation');
+    const inventoryDropQuestion = document.querySelector('#inventory-drop-question');
+    const inventoryDropCancel = document.querySelector('#inventory-drop-cancel');
+    const inventoryDropSubmit = document.querySelector('#inventory-drop-submit');
     const inventoryActionStatus = document.querySelector('#inventory-action-status');
     let inventoryBot;
     let inventoryVersion = 0;
@@ -61,6 +69,7 @@
     let inventoryCanAct = false;
     let inventoryLoading = false;
     let inventoryPending = false;
+    let inventoryDropItem;
     const cards = [...document.querySelectorAll('[data-bot-row]')];
     const groupElements = [...document.querySelectorAll('[data-group]')];
     const fleetEmpty = document.querySelector('#fleet-empty');
@@ -368,14 +377,15 @@
     }
 
     const backpackSlots = 28;
+    const backpackColumns = 4;
 
     function resetInventory() {
         inventoryBySlot.clear();
         inventoryCanAct = false;
         inventoryItems.replaceChildren();
-        inventoryItems.hidden = true;
-        inventoryDetail.hidden = true;
-        updateInventoryActions();
+        inventoryLayout.hidden = true;
+        dismissInventoryDrop();
+        showInventorySelection();
     }
 
     function selectedInventoryItem() {
@@ -385,11 +395,14 @@
 
     function updateInventoryActions() {
         const item = inventoryCanAct && selectedInventoryItem();
-        inventoryEat.hidden = !item?.canEat;
-        inventoryDrop.hidden = !item?.canDrop;
-        inventoryEat.disabled = inventoryLoading || inventoryPending;
-        inventoryDrop.disabled = inventoryLoading || inventoryPending;
-        inventoryRefresh.disabled = inventoryLoading || inventoryPending;
+        const busy = inventoryLoading || inventoryPending;
+        inventoryEat.setAttribute('aria-disabled', String(busy || Boolean(inventoryDropItem) || !item?.canEat));
+        inventoryDrop.setAttribute('aria-disabled', String(busy || Boolean(inventoryDropItem) || !item?.canDrop));
+        inventoryRefresh.setAttribute('aria-disabled', String(busy));
+        inventoryRefresh.setAttribute('aria-busy', String(inventoryLoading));
+        inventoryEat.title = item && !item.canEat ? 'This item has no Eat option.' : 'Eat the selected item';
+        inventoryDrop.title = item && !item.canDrop ? 'This item has no Drop option.' : 'Drop the selected item';
+        inventoryReadOnly.hidden = inventoryBySlot.size === 0 || inventoryCanAct;
     }
 
     function showInventoryAction(message, outcome = '') {
@@ -397,12 +410,65 @@
         inventoryActionStatus.dataset.outcome = outcome;
     }
 
+    function showInventorySelection() {
+        const item = selectedInventoryItem();
+        inventoryDetail.textContent = item?.name ?? (inventoryBySlot.size ? 'Select an item' : 'Backpack is empty');
+        inventoryMeta.hidden = !item;
+        inventoryMeta.textContent = item ? `Slot ${item.slot + 1} · Quantity ${number(item.count)}` : '';
+        inventoryPreview.classList.remove('has-sprite');
+        inventoryPreview.innerHTML = item ? itemSprite(item) : '';
+        inventoryPreview.hidden = !inventoryPreview.firstElementChild;
+        updateInventoryActions();
+    }
+
+    function setInventoryTabStop(button) {
+        const previous = inventoryItems.querySelector('[tabindex="0"]');
+        if (previous) previous.tabIndex = -1;
+        if (button) button.tabIndex = 0;
+    }
+
     function selectInventoryItem(button) {
+        dismissInventoryDrop();
         inventoryItems.querySelector('[aria-pressed="true"]')?.setAttribute('aria-pressed', 'false');
         button.setAttribute('aria-pressed', 'true');
-        inventoryDetail.textContent = button.dataset.inventoryDescription;
-        inventoryDetail.hidden = false;
+        setInventoryTabStop(button);
+        showInventorySelection();
+    }
+
+    function dismissInventoryDrop(restoreFocus = false) {
+        if (!inventoryDropItem) return;
+        inventoryDropItem = undefined;
+        inventoryDropConfirmation.hidden = true;
         updateInventoryActions();
+        if (restoreFocus) inventoryDrop.focus();
+    }
+
+    function stageInventoryDrop() {
+        const item = selectedInventoryItem();
+        if (inventoryDrop.getAttribute('aria-disabled') === 'true' || !item?.canDrop) return;
+        inventoryDropItem = item;
+        inventoryDropQuestion.textContent = `Drop ${number(item.count)} × ${item.name} from slot ${item.slot + 1}?`;
+        inventoryDropConfirmation.hidden = false;
+        updateInventoryActions();
+        inventoryDropCancel.focus();
+    }
+
+    function moveInventoryFocus(event) {
+        const current = event.target.closest('[data-inventory-slot]');
+        if (!current || event.altKey || event.metaKey || event.ctrlKey) return;
+        const step = { ArrowLeft: -1, ArrowRight: 1, ArrowUp: -backpackColumns, ArrowDown: backpackColumns }[event.key];
+        if (!step) return;
+        event.preventDefault();
+        const slot = Number(current.dataset.inventorySlot);
+        const row = Math.floor(slot / backpackColumns);
+        for (let next = slot + step; next >= 0 && next < backpackSlots; next += step) {
+            if (Math.abs(step) === 1 && Math.floor(next / backpackColumns) !== row) break;
+            const button = inventoryItems.querySelector(`[data-inventory-slot="${next}"]`);
+            if (!button) continue;
+            setInventoryTabStop(button);
+            button.focus();
+            break;
+        }
     }
 
     function inventoryQuantity(count) {
@@ -428,23 +494,37 @@
     }
 
     function renderInventory(items) {
-        const previousSlot = inventoryItems.querySelector('[aria-pressed="true"]')?.dataset.inventorySlot;
-        inventoryBySlot = new Map(items.filter(({ slot }) => Number.isInteger(slot) && slot >= 0 && slot < backpackSlots)
+        const previous = selectedInventoryItem();
+        const nextBySlot = new Map(items.filter(({ slot }) => Number.isInteger(slot) && slot >= 0 && slot < backpackSlots)
             .map(item => [item.slot, item]));
+        const sameContents = !inventoryLayout.hidden && nextBySlot.size === inventoryBySlot.size &&
+            [...nextBySlot.values()].every(({ slot, id, name, count, spriteUrl }) => {
+                const item = inventoryBySlot.get(slot);
+                return item?.id === id && item.name === name && item.count === count && item.spriteUrl === spriteUrl;
+            });
+        inventoryBySlot = nextBySlot;
+        if (sameContents) {
+            updateInventoryActions();
+            return inventoryBySlot.size;
+        }
+        const focused = document.activeElement?.dataset.inventorySlot;
         inventoryItems.innerHTML = Array.from({ length: backpackSlots }, (_, slot) => {
             const item = inventoryBySlot.get(slot);
             if (!item) return '<li class="inventory-cell inventory-empty" aria-hidden="true"></li>';
             const description = escape(`Slot ${slot + 1} · ${item.name} · ${number(item.count)}`);
             return `<li class="inventory-cell"><button type="button" class="inventory-slot" data-inventory-slot="${slot}"
-                aria-label="${description}" title="${description}" aria-pressed="false" data-inventory-description="${description}">
+                aria-label="${description}" title="${description}" aria-pressed="false" tabindex="-1">
                 <span class="inventory-fallback" aria-hidden="true">${escape(item.name)}</span>${itemSprite(item)}${itemQuantity(item)}</button></li>`;
         }).join('');
-        inventoryItems.hidden = false;
-        inventoryDetail.hidden = true;
-        const buttons = [...inventoryItems.querySelectorAll('[data-inventory-slot]')];
-        const selected = buttons.find(button => button.dataset.inventorySlot === previousSlot) ?? buttons[0];
-        if (selected) selectInventoryItem(selected);
-        else updateInventoryActions();
+        inventoryLayout.hidden = false;
+        const selected = previous && inventoryBySlot.get(previous.slot)?.id === previous.id
+            ? inventoryItems.querySelector(`[data-inventory-slot="${previous.slot}"]`) : null;
+        const tabStop = (focused !== undefined && inventoryItems.querySelector(`[data-inventory-slot="${focused}"]`)) ||
+            selected || inventoryItems.querySelector('[data-inventory-slot]');
+        selected?.setAttribute('aria-pressed', 'true');
+        setInventoryTabStop(tabStop);
+        showInventorySelection();
+        if (focused !== undefined) (tabStop ?? inventoryRefresh).focus();
         return inventoryBySlot.size;
     }
 
@@ -459,25 +539,28 @@
 
     async function loadInventory() {
         const version = ++inventoryVersion;
+        const hadSnapshot = !inventoryLayout.hidden;
+        dismissInventoryDrop();
         inventoryLoading = true;
         updateInventoryActions();
-        inventoryStatus.textContent = 'Reading inventory…';
+        if (!hadSnapshot) inventoryStatus.textContent = 'Reading inventory…';
         inventoryItems.setAttribute('aria-busy', 'true');
         try {
             const snapshot = await request(inventoryPath());
             if (version !== inventoryVersion || !inventoryDialog.open) return;
             if (snapshot.availability !== 'live') {
-                resetInventory();
-                inventoryStatus.textContent = snapshot.availability === 'offline'
+                inventoryCanAct = false;
+                const reason = snapshot.availability === 'offline'
                     ? 'This bot is offline.' : 'The game has not published a fresh inventory.';
+                inventoryStatus.textContent = hadSnapshot ? reason + ' Showing the last snapshot.' : reason;
                 return;
             }
             inventoryCanAct = snapshot.controls === true;
             showInventory(snapshot);
         } catch (error) {
             if (version === inventoryVersion && inventoryDialog.open) {
-                resetInventory();
-                inventoryStatus.textContent = error.message;
+                inventoryCanAct = false;
+                inventoryStatus.textContent = hadSnapshot ? 'Refresh failed. Showing the last snapshot.' : error.message;
             }
         } finally {
             if (version === inventoryVersion) {
@@ -488,15 +571,14 @@
         }
     }
 
-    async function runInventoryAction(action) {
+    async function runInventoryAction(action, item = selectedInventoryItem()) {
         if (inventoryPending || inventoryLoading || !inventoryCanAct) return;
-        const item = selectedInventoryItem();
         if (!item || (action === 'eat' ? !item.canEat : !item.canDrop)) return;
-        if (action === 'drop' && !window.confirm(`Drop ${number(item.count)} × ${item.name} from slot ${item.slot + 1}?`)) return;
+        if (inventoryDropItem || item !== selectedInventoryItem()) return;
         const version = inventoryVersion;
         inventoryPending = true;
         updateInventoryActions();
-        showInventoryAction(action === 'eat' ? 'Waiting for the game to confirm Eat…' : 'Waiting for the game to confirm Drop…');
+        showInventoryAction(`Waiting for the game to confirm ${action === 'eat' ? 'Eat' : 'Drop'}…`, 'pending');
         try {
             const { message, inventory } = await request(inventoryPath(), { action, slot: item.slot, id: item.id, count: item.count });
             if (version !== inventoryVersion || !inventoryDialog.open) return;
@@ -509,9 +591,6 @@
         } finally {
             inventoryPending = false;
             updateInventoryActions();
-            if (document.activeElement === document.body && inventoryDialog.open) {
-                inventoryItems.querySelector('[aria-pressed="true"]')?.focus();
-            }
         }
     }
 
@@ -585,12 +664,28 @@
             modal.addEventListener('close', scheduleRefresh);
         }
         inventoryRefresh.addEventListener('click', () => {
+            if (inventoryRefresh.getAttribute('aria-disabled') === 'true') return;
             showInventoryAction('');
             void loadInventory();
         });
         inventoryEat.addEventListener('click', () => void runInventoryAction('eat'));
-        inventoryDrop.addEventListener('click', () => void runInventoryAction('drop'));
-        inventoryDialog.addEventListener('close', () => { inventoryVersion++; });
+        inventoryDrop.addEventListener('click', stageInventoryDrop);
+        inventoryDropCancel.addEventListener('click', () => dismissInventoryDrop(true));
+        inventoryDropSubmit.addEventListener('click', () => {
+            const item = inventoryDropItem;
+            if (!item) return;
+            dismissInventoryDrop(true);
+            void runInventoryAction('drop', item);
+        });
+        inventoryDialog.addEventListener('cancel', event => {
+            if (!inventoryDropItem) return;
+            event.preventDefault();
+            dismissInventoryDrop(true);
+        });
+        inventoryDialog.addEventListener('close', () => {
+            inventoryVersion++;
+            dismissInventoryDrop();
+        });
         banksDialog.addEventListener('close', () => { bankVersion++; });
         bankBack.addEventListener('click', () => {
             showBankOverview();
@@ -611,9 +706,14 @@
             bankDetail.hidden = false;
         });
         inventoryItems.addEventListener('load', showLoadedSprite, true);
+        inventoryPreview.addEventListener('load', showLoadedSprite, true);
+        inventoryItems.addEventListener('keydown', moveInventoryFocus);
         inventoryItems.addEventListener('click', event => {
             const button = event.target.closest('[data-inventory-slot]');
-            if (button) selectInventoryItem(button);
+            if (button && !inventoryPending) {
+                showInventoryAction('');
+                selectInventoryItem(button);
+            }
         });
         document.addEventListener('click', async event => {
             const button = event.target.closest('button');
