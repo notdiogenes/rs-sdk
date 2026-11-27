@@ -180,25 +180,39 @@ export async function fishSharks({ bot, sdk }: ScriptContext, cook = process.env
     async function fishBackpack(stage: Stage) {
         await walk(beach, 3, 'Reach the Catherby fishing spots');
         let missed = 0;
-        while (current().inventory.length < capacity && selectFishingStage(current(), cook) === stage) {
+        const batchComplete = (state: BotWorldState) =>
+            state.inventory.length >= capacity || selectFishingStage(state, cook) !== stage;
+        cast: while (!batchComplete(current())) {
             const nearby = current().nearbyNpcs
                 .filter(npc => npc.id === stage.spot && npc.reachable !== false && npc.optionsWithIndex.some(option => stage.option.test(option.text)))
                 .sort((a, b) => a.distance - b.distance);
             const spot = nearby[missed % nearby.length];
-            if (!spot) {
+            const option = spot?.optionsWithIndex.find(entry => stage.option.test(entry.text));
+            if (!spot || !option) {
                 if (++missed >= 6) throw new Error(`No reachable Catherby fishing spot for ${stage.label}.`);
                 await sdk.waitForTicks(4);
                 continue;
             }
             const before = current();
             const stillHere = (state: BotWorldState) =>
-                state.nearbyNpcs.some(npc => npc.index === spot.index && npc.id === spot.id && npc.x === spot.x && npc.z === spot.z);
-            const action = await bot.interactNpc(spot, stage.option);
+                state.nearbyNpcs.some(npc => npc.index === spot.index && npc.id === spot.id
+                    && (npc.tileX ?? npc.x) === (spot.tileX ?? spot.x) && (npc.tileZ ?? npc.z) === (spot.tileZ ?? spot.z));
+            // Clicking a fishing spot clears a level-up dialog and starts a
+            // new cast. The high-level interaction would click Continue first.
+            const action = await sdk.sendInteractNpc(spot.index, option.opIndex);
+            let closingPreviousDialog = before.dialog.isOpen;
             let xp = skill(before, 'Fishing')?.experience ?? 0;
-            while (action.success && current().inventory.length < capacity && selectFishingStage(current(), cook) === stage) {
-                const state = await sdk.waitForCondition(state => !state.inGame || !!state.player?.isDead
-                    || state.inventory.length >= capacity || !stillHere(state)
-                    || (skill(state, 'Fishing')?.experience ?? 0) > xp, 35_000).catch(() => null);
+            let failure = action.message;
+            while (action.success) {
+                failure = closingPreviousDialog ? 'The dialog stayed open after recasting.' : 'No Fishing XP was observed after casting.';
+                const state = await sdk.waitForCondition(state =>
+                    !state.inGame || !!state.player?.isDead || batchComplete(state) || !stillHere(state)
+                    || (skill(state, 'Fishing')?.experience ?? 0) > xp
+                    || (closingPreviousDialog ? state.tick > before.tick && !state.dialog.isOpen : state.dialog.isOpen),
+                closingPreviousDialog ? 5_000 : 35_000).catch(error => {
+                    if (error instanceof Error && error.message === 'waitForCondition timed out') return null;
+                    throw error;
+                });
                 if (!state) break;
                 current();
                 const gained = skill(state, 'Fishing')?.experience ?? 0;
@@ -206,10 +220,15 @@ export async function fishSharks({ bot, sdk }: ScriptContext, cook = process.env
                     missed = 0;
                     xp = gained;
                 }
-                if (!stillHere(state)) break;
+                if (batchComplete(state)) return;
+                if (closingPreviousDialog && state.tick > before.tick && !state.dialog.isOpen) {
+                    closingPreviousDialog = false;
+                    auditEvent('milestone', 'fishing-recast-closed-dialog', { spot: spot.id, npcIndex: spot.index });
+                }
+                if (!stillHere(state) || (!closingPreviousDialog && state.dialog.isOpen)) continue cast;
             }
-            if (current().inventory.length >= capacity || selectFishingStage(current(), cook) !== stage) return;
-            if (++missed >= 6) throw new Error(`Could not sustain fishing for ${stage.label}: ${action.message}`);
+            if (batchComplete(current())) return;
+            if (++missed >= 6) throw new Error(`Could not sustain fishing for ${stage.label}: ${failure}`);
             await sdk.waitForTicks(2);
         }
     }
