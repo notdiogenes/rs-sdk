@@ -1,6 +1,7 @@
 import { auditEvent, auditOperation } from '../../../sdk/audit-trace';
 import { runScript } from '../../../sdk/runner';
 import { Spells } from '../../../sdk/spells';
+import { returnToOziachsHouse } from './dragon-slayer-return';
 import { makeShipNails } from './dragon-slayer-smithing';
 import {
     availableQuestTarget, canMeleeQuest, fightQuestNpc, planQuestFight, questFood, questFoodSupplies, questSkill, questSpellSupplies, withQuestProtection,
@@ -954,7 +955,10 @@ if (import.meta.main) {
         const { sdk } = ctx;
         await sdk.waitForReady();
         await waitForQuestJournal(ctx, journal, 'available', 15000);
-        if (readQuest(ctx, journal) === 'complete') return;
+        if (readQuest(ctx, journal) === 'complete') {
+            await returnToOziachsHouse(ctx);
+            return;
+        }
         await exitZanaris(ctx);
         await getBriefing(ctx);
         let page = await journalText(ctx, journal, title);
@@ -987,6 +991,7 @@ if (import.meta.main) {
         }
         await fightElvarg(ctx, page);
         questLog('quest-complete', { quest, evidence: 'journal', questPoints: sdk.getState()?.questPoints });
+        await returnToOziachsHouse(ctx);
     }, { printState: false, timeout: 7_200_000 });
 
     if (!result.success) {
