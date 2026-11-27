@@ -101,7 +101,7 @@ fields and runs in a separate service from the control API and gameplay
 processes.
 
 The Fleet desk groups bots by recent game activity and connection or task
-issues. **Producing** means combat is in progress or movement, XP gain, or
+issues. **Running** means combat is in progress or movement, XP gain, or
 a combat change was observed in the last two minutes. A running managed task
 without an observed effect for five minutes appears under **Needs attention**.
 

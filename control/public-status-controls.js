@@ -642,10 +642,11 @@
         const row = stats.get(name);
         const snapshot = row?.skills;
         document.querySelector('#fleet-details-title').textContent = name;
-        document.querySelector('#fleet-details-status').textContent = card.querySelector('.reason').textContent.trim();
+        const status = card.querySelector('.bot-status');
+        document.querySelector('#fleet-details-status').textContent = [status.textContent.trim(), status.title].filter(Boolean).join(' · ');
         const report = document.querySelector('#fleet-details-content');
         report.replaceChildren();
-        for (const element of card.querySelectorAll('.task-line, .log, .facts, .location-line, .skills')) {
+        for (const element of card.querySelectorAll('.task-line, .last-activity, .facts, .location-line, .skills')) {
             report.append(element.cloneNode(true));
         }
         const summary = document.createElement('p');

@@ -6,7 +6,7 @@ import type { Bot, ControlActivity, Snapshot } from './public-status';
 
 const escape = (value: string) => value.replaceAll('&', '&amp;').replaceAll('<', '&lt;')
     .replaceAll('>', '&gt;').replaceAll('"', '&quot;').replaceAll("'", '&#39;');
-const groups = { attention: 'Needs attention', active: 'Producing', idle: 'Idle', offline: 'Offline' } as const;
+const groups = { attention: 'Needs attention', active: 'Running', idle: 'Idle', offline: 'Offline' } as const;
 // Row order from the game's stats tab. Runecraft shares the last row with the total.
 const skillTabOrder = [
     'Attack', 'Hitpoints', 'Mining',
@@ -69,7 +69,11 @@ function cardAction(label: string, icon: FleetActionIcon, attributes: string) {
 function card(bot: Bot, category: Group, reason: string, managed: ControlActivity | undefined, now: number) {
     const name = escape(bot.name);
     const last = bot.lastActivity;
-    const effect = last ? `<time datetime="${escape(last.at)}">${activityClock.format(new Date(last.at))}</time>` : '—';
+    const effect = last ? `<time datetime="${escape(last.at)}">${activityClock.format(new Date(last.at))}</time>` : '';
+    const activityDetail = last?.reason.split(' · ').map(signal => {
+        if (signal !== 'Moved') return signal;
+        return bot.location ? `Moved to ${bot.location}` : 'Position changed';
+    }).join(' · ') ?? 'No activity observed';
     const watch = bot.status === 'Online'
         ? `<a class="card-action" href="https://maxbittker.github.io/rs-world/?follow=${encodeURIComponent(bot.name)}" target="_blank" rel="noopener"
             aria-label="Watch live" title="Watch live in a new tab">${fleetActionIcon('watch')}</a>` : '';
@@ -77,14 +81,16 @@ function card(bot: Bot, category: Group, reason: string, managed: ControlActivit
     const activityButton = managed?.running
         ? cardAction(pausePlan ? 'Pause plan' : 'Stop activity', pausePlan ? 'pause' : 'stop', `data-bot="${name}" data-action="stop"`) : '';
     const planButton = cardAction(bot.plan ? 'View plan' : 'Plan activities', 'plan', `data-plan-bot="${name}"`);
-    const planDetail = bot.plan && bot.plan.status !== 'complete'
-        ? `<small class="plan-card-status" title="${escape(bot.plan.message ?? '')}">Plan · ${bot.plan.status} · step ${bot.plan.index + 1} of ${bot.plan.length}</small>` : '';
+    const showReason = reason !== bot.activity && (category === 'attention' || managed?.waiting === reason);
     return `<article class="bot" data-bot-row data-name="${name}" data-status="${category}">
-    <div class="bot-header"><h3>${name} <span class="badge">Managed</span></h3>
+    <div class="bot-header">
+      <div class="bot-identity"><h3>${name}</h3><span class="badge bot-status ${category}" title="${escape(reason)}">${groups[category]}</span></div>
       <span class="quest-count" data-card-levels hidden></span></div>
-    <p class="reason" title="${escape(reason)}"><span class="badge ${category}">${groups[category]}</span> ${escape(reason)}</p>
-    ${bot.activity === reason ? '' : `<p class="task-line" data-activity>${escape(bot.activity)}</p>`}${planDetail}
-    <p class="log" title="Last activity">Last activity · ${effect}${last ? ' · ' + escape(last.reason) : ''}</p>
+    ${bot.activity === '—' ? '' : `<p class="task-line" data-activity>${escape(bot.activity)}</p>`}
+    ${showReason ? `<p class="reason">${escape(reason)}</p>` : ''}
+    <div class="last-activity">
+      <div><span>Last activity</span><strong>${escape(activityDetail)}</strong></div>${effect}
+    </div>
     <dl class="facts">
       ${fact('Heartbeat', timeAgo(now, bot.heartbeat))}
       ${fact('Progress', managed?.startedAt ? timeAgo(now, Date.parse(managed.startedAt)) + ' running' : '—')}
@@ -98,13 +104,16 @@ function card(bot: Bot, category: Group, reason: string, managed: ControlActivit
       </span>`).join('')}
     </div>
     <div class="card-footer">
-      ${cardAction('Details', 'details', `data-detail="${name}"`)}
-      ${cardAction('Current inventory', 'inventory', `data-inventory="${name}"`)}
-      ${cardAction('View skill stats', 'skills', `data-skill-stats="${name}" aria-haspopup="dialog"`)}
-      ${cardAction('Diagnostics', 'diagnostics', `data-diagnostics="${name}"`)}
-      ${cardAction('Audit history', 'audit', `data-audit-bot="${name}"`)}
-      ${cardAction('Bank', 'bank', `data-bank="${name}"`)}
-      ${planButton}${activityButton}${watch}
+      <div class="card-actions">
+        ${cardAction('Details', 'details', `data-detail="${name}"`)}
+        ${cardAction('Current inventory', 'inventory', `data-inventory="${name}"`)}
+        ${cardAction('View skill stats', 'skills', `data-skill-stats="${name}" aria-haspopup="dialog"`)}
+        ${cardAction('Diagnostics', 'diagnostics', `data-diagnostics="${name}"`)}
+        ${cardAction('Audit history', 'audit', `data-audit-bot="${name}"`)}
+        ${cardAction('Bank', 'bank', `data-bank="${name}"`)}
+        ${planButton}
+      </div>
+      ${activityButton || watch ? `<div class="card-actions card-primary-actions">${activityButton}${watch}</div>` : ''}
     </div>
     </article>`;
 }
@@ -148,7 +157,7 @@ export function fleetPage({ nonce, data, questCatalog, fleetStyle, controls, ref
 <body>
 <header>
   <div class="brand"><strong>Fleet desk</strong><div>
-    <p>${counts.active} producing, ${counts.attention} need attention, ${counts.offline} offline</p>
+    <p>${counts.active} running, ${counts.attention} need attention, ${counts.offline} offline</p>
     ${data ? `<small>Snapshot <time datetime="${data.checkedAt}">${clock.format(new Date(now))}</time></small>` : ''}
   </div></div>
   <div class="toolbar">
@@ -165,7 +174,7 @@ export function fleetPage({ nonce, data, questCatalog, fleetStyle, controls, ref
 </header>
 <main>
   <div class="summary" aria-label="Fleet summary">
-    ${metric('Producing', counts.active, 'Recent game activity', 'active')}
+    ${metric(groups.active, counts.active, 'Recent game activity', 'active')}
     ${metric('Online', online, `of ${roster.length} accounts`, 'swarm')}
     ${metric('Needs attention', counts.attention, 'Check game state or activity', 'attention')}
     ${metric('Idle', counts.idle, 'Waiting or no recent activity', 'paused')}
