@@ -651,9 +651,25 @@ async function buyWormbrainMap(ctx: QuestContext) {
     if (held(ctx, 995) < cost) throw new Error('Wormbrain requires Telekinetic Grab supplies or 10,000 coins for his map piece');
     await auditOperation('dragon-slayer-buy-wormbrain-map', 'Buy Wormbrain’s map piece at the fixed quest price',
         { cost }, () => sdk.getState(), async () => {
-            await talkAt(ctx, 3014, 3186, /^wormbrain$/i,
-                [/piece of map that I need/i, /could pay you for the map piece/i, /10,000 it is/i], 12000);
-            await sdk.waitForCondition(() => has(ctx, 1536), 8000);
+            for (const z of [3187, 3186, 3188]) {
+                await walk(ctx, 3012, z, 0);
+                const npc = sdk.findNearbyNpc(/^wormbrain$/i);
+                const option = npc?.optionsWithIndex.find(candidate => /^talk-to$/i.test(candidate.text));
+                if (!npc || !option) {
+                    auditEvent('check', 'dragon-slayer-wormbrain-bars', { outcome: 'unavailable', x: 3012, z, target: npc?.index });
+                    continue;
+                }
+                const opened = await auditOperation('dragon-slayer-wormbrain-bars', 'Talk to Wormbrain through the prison railing',
+                    { x: 3012, z, target: npc.index, option: option.opIndex }, () => sdk.getState(), async () => {
+                        const sent = await sdk.sendInteractNpc(npc.index, option.opIndex);
+                        return sent.success && !!await sdk.waitForCondition(s => s.dialog.isOpen, 4000).catch(() => null);
+                    }, open => ({ outcome: open ? 'open' : 'unconfirmed' }));
+                if (!opened) continue;
+                await continueDialog(ctx, [/piece of map that I need/i, /could pay you for the map piece/i, /10,000 it is/i]);
+                await sdk.waitForCondition(() => has(ctx, 1536), 8000);
+                return;
+            }
+            throw new Error('Wormbrain did not open a dialogue from the accessible side of his bars');
         }, () => ({ outcome: 'complete', item: 1536 }));
 }
 
@@ -662,7 +678,7 @@ async function wormbrainMap(ctx: QuestContext) {
     const telegrab = 1168;
     questPhase('dragon-slayer-wormbrain-map');
     const magic = questSkill(ctx, 'Magic');
-    if (magic < 33) return buyWormbrainMap(ctx);
+    if (magic < 33 || (held(ctx, 995) >= 10_000 && area(ctx, 3012, 3187, 12))) return buyWormbrainMap(ctx);
     await prepareQuestStep(ctx, { bank: mapSupplyBank(ctx), slots: 5, withdraw: [
         ...questSpellSupplies(ctx, 5).map(item => item.name === 'Air rune' ? { ...item, count: item.count + 1 } : item),
         { name: 'Law rune', count: 1 }, { name: 'Coins', count: 400 },
