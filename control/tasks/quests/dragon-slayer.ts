@@ -510,15 +510,27 @@ async function makeUnfiredBowl(ctx: QuestContext) {
         await useTogether(ctx, /^bucket of water$/i, /^clay$/i);
         await sdk.waitForCondition(() => has(ctx, 1761), 5000);
     }
-    await activate(ctx, [2642], 3087, 3409, 'Open the Barbarian Village pottery wheel with soft clay', { item: 1761 });
-    const bowlName = /^\s*bowl\s*$/i;
-    const state = await sdk.waitForCondition(s => s.dialog.options.some(option => bowlName.test(option.text)) ||
-        !!s.interface?.options.some(option => bowlName.test(option.text)), 8000);
-    const interfaceBowl = state.interface?.options.find(option => bowlName.test(option.text));
+    const bowlComponent = 8897; // skill_multi3:make1_c in interface.pack
+    const bowlName = /\bbowl\b/i;
+    const bowlOption = (option: { componentId?: number; text: string }) =>
+        option.componentId === bowlComponent || bowlName.test(option.text);
+
+    await walk(ctx, 3086, 3409, 0);
+    await activate(ctx, [2642], 3087, 3409, 'Open the Barbarian Village pottery wheel with soft clay',
+        { item: 1761, walkFirst: false });
     await auditOperation('dragon-slayer-shape-bowl', 'Select one unfired bowl from the pottery wheel menu',
-        { offered: (interfaceBowl ? state.interface?.options : state.dialog.options)?.map(option => option.text) },
-        () => sdk.getState(), async () => {
-            const clicked = interfaceBowl ? await sdk.clickInterfaceOption(interfaceBowl) : await sdk.clickDialogByText(bowlName);
+        { bowlComponent }, () => sdk.getState(), async () => {
+            const state = await sdk.waitForCondition(s => s.dialog.options.some(bowlOption) ||
+                !!s.interface?.options.some(bowlOption), 8000).catch(() => sdk.getState());
+            const dialogBowl = state?.dialog.options.find(bowlOption);
+            const interfaceBowl = state?.interface?.options.find(bowlOption);
+            auditEvent('check', 'dragon-slayer-pottery-options', {
+                outcome: dialogBowl || interfaceBowl ? 'ready' : 'missing-bowl',
+                dialog: state?.dialog.options, components: state?.dialog.allComponents,
+                interface: state?.interface?.options,
+            });
+            if (!dialogBowl && !interfaceBowl) throw new Error('The pottery menu did not expose the Bowl button');
+            const clicked = interfaceBowl ? await sdk.clickInterfaceOption(interfaceBowl) : await sdk.sendClickDialog(dialogBowl!.index);
             if (!clicked.success) throw new Error(clicked.message);
             await sdk.waitForCondition(() => has(ctx, 1791), 8000);
         }, () => ({ outcome: 'complete', item: 1791 }));
