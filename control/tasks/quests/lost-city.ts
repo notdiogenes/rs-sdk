@@ -1,7 +1,8 @@
 import { auditEvent, auditOperation } from '../../../sdk/audit-trace';
 import { runScript } from '../../../sdk/runner';
+import { PRAYER_INDICES } from '../../../sdk/types';
 import { Spells } from '../../../sdk/spells';
-import { canMeleeQuest, fightQuestNpc, planQuestFight, questFood, questFoodSupplies, questSpellSupplies } from './quest-combat';
+import { fightQuestNpc, planQuestFight, questFood, questFoodSupplies, questSpellSupplies } from './quest-combat';
 import {
     buyQuestSupply, changeFloor, continueDialog, groundItem, journalText, lootFromNpc, prepareQuestStep, questLoc,
     questLog, questPhase, readQuest, talk, talkAt, useTogether, waitForQuestJournal, walk, type QuestContext,
@@ -113,7 +114,7 @@ async function prepareEntrana(ctx: QuestContext) {
         { name: 'Knife', count: 1 }, { name: 'Air rune', count: 3 }, { name: 'Earth rune', count: 1 },
         { name: 'Law rune', count: 1 },
         ...questFoodSupplies,
-        ...canMeleeQuest(ctx, spiritFight) ? [] : questSpellSupplies(ctx, spiritFight.hitpoints),
+        ...questSpellSupplies(ctx, spiritFight.hitpoints),
     ];
     await prepareQuestStep(ctx, { slots: Math.max(6, sdk.getEquipment().length), withdraw });
     if (!sdk.getEquipment().length && sdk.getInventory().every(item => keep(item.name))) return;
@@ -132,6 +133,26 @@ async function prepareEntrana(ctx: QuestContext) {
         }
     } finally {
         await bot.closeBank();
+    }
+}
+
+async function leaveCave(ctx: QuestContext) {
+    const { sdk } = ctx;
+    const left = () => {
+        const p = sdk.getState()?.player;
+        return p && !cave(p.worldX, p.worldZ);
+    };
+    if (sdk.findInventoryItem(/^law rune$/i)) {
+        await sdk.sendClickComponent(Spells.LUMBRIDGE_TELEPORT);
+        await sdk.waitForCondition(() => !!left(), 8000).catch(() => null);
+    }
+    if (!left()) {
+        await walk(ctx, 2874, 9749, 1);
+        const portal = (await sdk.scanNearbyLocs(8)).find(loc => loc.id === 2407);
+        if (!portal) throw new Error('The Entrana cave exit was not visible');
+        await sdk.sendInteractLoc(portal.x, portal.z, portal.id, 1);
+        await sdk.waitForCondition(() => !!left(), 10000);
+        await walk(ctx, 3251, 3525, 8);
     }
 }
 
@@ -164,6 +185,10 @@ const result = await runScript(async ctx => {
     await waitForQuestJournal(ctx, journal, 'available', 15000);
     if (readQuest(ctx, journal) === 'complete') return;
 
+    if (inside() && !has(771) && !has(772) && sdk.countInventoryItems(questFood) < spiritFight.minimumFood) {
+        questPhase('lost-city-restore-depleted-supplies');
+        await leaveCave(ctx);
+    }
     if (!inside() && !onIsland() && !has(771) && !has(772)) {
         if (readQuest(ctx, journal) === 'not-started') {
             questPhase('lost-city-adventurers');
@@ -242,9 +267,29 @@ const result = await runScript(async ctx => {
                     const wielded = await bot.equipItem(axe);
                     if (!wielded.success) throw new Error(wielded.message);
                 }
-                await fightQuestNpc(ctx, spirit, spiritFight, plan, {
-                    retreat: () => walk(ctx, 2854, 9744, 2),
-                });
+                const protection = 'protect_from_melee';
+                const prayer = sdk.getPrayerState();
+                const activate = prayer && prayer.prayerLevel >= 43 && prayer.prayerPoints > 0 &&
+                    !prayer.activePrayers[PRAYER_INDICES[protection]];
+                if (activate) {
+                    const protectedState = await bot.activatePrayer(protection);
+                    auditEvent('check', 'lost-city-protect-from-melee', {
+                        outcome: protectedState.success ? 'complete' : 'unavailable', message: protectedState.message,
+                    });
+                }
+                try {
+                    await fightQuestNpc(ctx, spirit, spiritFight, plan, {
+                        retreat: () => walk(ctx, 2854, 9744, 2),
+                        reposition: async (target, retry) => {
+                            const [dx, dz] = [[-2, 0], [2, 0], [0, -2], [0, 2]][(retry - 1) % 4]!;
+                            await sdk.sendWalk(target.x + dx!, target.z + dz!);
+                            await sdk.waitForTicks(3);
+                        },
+                    });
+                } finally {
+                    if (activate) await bot.deactivatePrayer(protection);
+                }
+            });
             }
         }
         if (!has(771)) throw new Error('Could not verify a Dramen branch after the Tree Spirit fight');
@@ -256,18 +301,7 @@ const result = await runScript(async ctx => {
     }
     if (inside()) {
         questPhase('lost-city-leave-cave');
-        if (sdk.findInventoryItem(/^law rune$/i)) {
-            await sdk.sendClickComponent(Spells.LUMBRIDGE_TELEPORT);
-            await sdk.waitForCondition(() => !inside(), 8000).catch(() => null);
-        }
-        if (inside()) {
-            await walk(ctx, 2874, 9749, 1);
-            const portal = (await sdk.scanNearbyLocs(8)).find(loc => loc.id === 2407);
-            if (!portal) throw new Error('The Entrana cave exit was not visible');
-            await sdk.sendInteractLoc(portal.x, portal.z, portal.id, 1);
-            await sdk.waitForCondition(() => !inside(), 10000);
-            await walk(ctx, 3251, 3525, 8);
-        }
+        await leaveCave(ctx);
     }
     if (onIsland()) {
         await talkAt(ctx, 2835, 3335, /^monk of entrana$/i, [/yes.*ready to go/i]);

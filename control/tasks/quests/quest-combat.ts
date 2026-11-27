@@ -77,15 +77,20 @@ export function planQuestFight(ctx: QuestContext, fight: Fight, options: { magic
 }
 
 export async function fightQuestNpc(ctx: QuestContext, target: NearbyNpc, fight: Fight, plan: FightPlan, {
-    retreat, won = () => false, protectedFromDamage = () => true,
+    retreat, won = () => false, protectedFromDamage = () => true, reposition,
 }: {
     retreat: () => Promise<void>; won?: () => boolean; protectedFromDamage?: () => boolean;
+    reposition?: (target: NearbyNpc, retry: number) => Promise<void>;
 }) {
     const { sdk, bot } = ctx;
     const reserve = fight.incomingHit * 2 + 2;
     const initialLife = sdk.getState()?.player?.lifeId;
     let failures = 0;
     let attacked = false;
+    let lastAttack = -100;
+    let lastDamage = sdk.getState()?.tick ?? 0;
+    let stalled = 0;
+    let lastTargetHealth = target.hp;
     const stop = async (reason: string) => {
         await auditOperation('quest-combat-retreat', 'Leave the fight while the character still has a health reserve',
             { target: target.name, reason }, () => sdk.getState(), retreat, () => ({ outcome: 'complete' }));
@@ -100,6 +105,15 @@ export async function fightQuestNpc(ctx: QuestContext, target: NearbyNpc, fight:
         if (npc?.hp === 0 || !npc && attacked) return;
         if (!npc) throw new Error(`${target.name} left the scene before an attack was verified`);
         if (!protectedFromDamage()) await stop('required protective equipment was removed');
+        const freshHit = state.combatEvents.findLast(event => event.type === 'damage_dealt' && event.damage > 0
+            && event.targetType === 'npc' && event.targetIndex === target.index && event.tick > lastDamage);
+        if (freshHit || (lastTargetHealth !== null && npc.hp !== null && npc.hp < lastTargetHealth)) {
+            lastDamage = freshHit?.tick ?? state.tick;
+            stalled = 0;
+            auditEvent('check', 'quest-combat-damage', { outcome: 'verified', target: npc.name, index: npc.index,
+                damage: freshHit?.damage, previousTargetHp: lastTargetHealth, targetHp: npc.hp, tick: lastDamage });
+        }
+        lastTargetHealth = npc.hp;
         const healAt = Math.min(player.maxHp - 3, Math.max(reserve + fight.incomingHit, Math.ceil(player.maxHp * 0.55)));
         if (player.hp <= healAt) {
             const food = sdk.findInventoryItem(questFood);
@@ -112,13 +126,22 @@ export async function fightQuestNpc(ctx: QuestContext, target: NearbyNpc, fight:
             if (player.hp <= reserve) await stop(`Hitpoints reached ${player.hp} with no usable food`);
         }
         if (plan.style === 'magic' && availableCasts(ctx, plan.spell) < 1) await stop('ran out of combat runes');
-        if (plan.style === 'magic' || !attacked || !player.combat.inCombat) {
+        const noDamage = attacked && state.tick - Math.max(lastAttack, lastDamage) >= 9;
+        if (noDamage) {
+            auditEvent('check', 'quest-combat-damage', { outcome: 'unconfirmed', target: npc.name, index: npc.index,
+                tick: state.tick, lastAttack, lastDamage, targetHp: npc.hp, rejected: state.opFeedback?.opRejectedCount,
+                feedback: state.gameMessages.filter(message => message.tick >= lastAttack).slice(-5).map(message => message.text) });
+            if (++stalled >= 6) await stop('attacks did not produce verified damage');
+            await reposition?.(npc, stalled);
+        }
+        if (plan.style === 'magic' || !attacked || !player.combat.inCombat || noDamage) {
+            lastAttack = state.tick;
             const action = await auditOperation<{ success: boolean; message: string }>('quest-combat-attack', 'Damage the quest target with the prepared combat style',
                 { npc: npc.name, index: npc.index, hp: npc.hp, style: plan.style, spell: plan.style === 'magic' ? plan.spell.name : undefined },
                 () => sdk.getState(), () => plan.style === 'magic'
                     ? bot.castSpell(npc, plan.spell.component, 3000)
                     : bot.attack(npc, 2500),
-                result => ({ outcome: result.success ? 'complete' : 'failed', message: result.message }));
+                result => ({ outcome: result.success ? 'engaged' : 'failed', message: result.message }));
             if (action.success) { attacked = true; failures = 0; }
             else if (++failures >= 5) await stop(action.message);
         }

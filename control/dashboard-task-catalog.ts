@@ -20,6 +20,12 @@ export const activityCatalog = {
     'lost-city': {
         label: 'Lost City', category: 'Quests', usage: 'once', script: 'quests/lost-city.ts', journal: 7367,
     },
+    'dragon-slayer': {
+        label: 'Dragon Slayer', category: 'Quests', usage: 'once', script: 'quests/dragon-slayer.ts', journal: 7383,
+    },
+    'sheep-shearer': {
+        label: 'Sheep Shearer', category: 'Quests', usage: 'once', script: 'quests/sheep-shearer.ts', journal: 7344,
+    },
     'romeo-and-juliet': {
         label: 'Romeo & Juliet', category: 'Quests', usage: 'once', script: 'quests/romeo-and-juliet.ts', journal: 7343,
     },
