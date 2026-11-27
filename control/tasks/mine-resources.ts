@@ -142,16 +142,18 @@ export async function mineResources({ bot, sdk }: ScriptContext, task = process.
         const count = quantity(before);
         const rejected = before.opFeedback?.opRejectedCount ?? 0;
         const dispatch = await sdk.sendInteractLoc(rock.x, rock.z, rock.id, option.opIndex);
-        if (!dispatch.success) return false;
+        if (!dispatch.success) return { outcome: 'unconfirmed', message: dispatch.message };
         const timeout = resource === 'adamantite' || resource === 'mithril' ? 45_000 : 24_000;
         const after = await observe(state => (quantity(state) > count && (skill(state)?.experience ?? 0) > xp)
             || (state.opFeedback?.opRejectedCount ?? 0) > rejected, timeout).catch(() => null);
-        if (!after || quantity(after) <= count || (skill(after)?.experience ?? 0) <= xp) return false;
+        if (!after || quantity(after) <= count || (skill(after)?.experience ?? 0) <= xp) {
+            return { outcome: 'unconfirmed', message: after ? 'The game rejected the mining interaction.' : 'No item or XP gain was observed.' };
+        }
         auditEvent('milestone', 'mining-product-confirmed', {
             resource, rock: rock.id, x: rock.x, z: rock.z, quantity: quantity(after) - count,
             xp: skill(after)!.experience - xp,
         });
-        return true;
+        return { outcome: 'complete' };
     }
 
     async function unload(site: MiningSite) {
@@ -190,6 +192,8 @@ export async function mineResources({ bot, sdk }: ScriptContext, task = process.
     }
 
     let quietSweeps = 0;
+    const retryAfter = new Map<string, number>();
+    const rockKey = (loc: NearbyLoc) => `${loc.x}:${loc.z}`;
     while (quietSweeps < 3) {
         const sites = rankMiningSites(resource, selection.mode, tile(current()), level);
         let produced = false;
@@ -197,9 +201,9 @@ export async function mineResources({ bot, sdk }: ScriptContext, task = process.
             try {
                 await travel(site);
                 phase('mining-extract', { site: site.mine.name });
-                let missed = 0;
+                const failedRocks = new Set<string>();
                 let emptySince = 0;
-                while (missed < 3) {
+                while (failedRocks.size < 3) {
                     const state = current();
                     if (!hasPick(state)) throw new Error('The rune pickaxe is no longer usable or present.');
                     if (state.player!.hp <= Math.max(8, Math.floor(state.player!.maxHp / 3))) {
@@ -213,7 +217,9 @@ export async function mineResources({ bot, sdk }: ScriptContext, task = process.
                         phase('mining-extract', { site: site.mine.name });
                     }
                     const here = current();
+                    const now = Date.now();
                     const rock = here.nearbyLocs.filter(loc => isRock(loc) &&
+                        (retryAfter.get(rockKey(loc)) ?? 0) <= now &&
                         (site.teleport || miningDistance(loc, site.mine) <= 25)).sort((a, b) => a.distance - b.distance)[0];
                     if (!rock) {
                         emptySince ||= Date.now();
@@ -227,14 +233,18 @@ export async function mineResources({ bot, sdk }: ScriptContext, task = process.
                         continue;
                     }
                     emptySince = 0;
-                    if (await auditOperation('mining-swing', `Mine ${settings.label}`, { rock: rock.id, x: rock.x, z: rock.z },
-                        () => sdk.getState(), () => mineRock(rock), ok => ({ outcome: ok ? 'complete' : 'unconfirmed' }))) {
+                    const result = await auditOperation('mining-swing', `Mine ${settings.label}`, { rock: rock.id, x: rock.x, z: rock.z },
+                        () => sdk.getState(), () => mineRock(rock), value => value);
+                    if (result.outcome === 'complete') {
                         produced = true;
                         quietSweeps = 0;
-                        missed = 0;
+                        failedRocks.clear();
+                        if (resource !== 'essence') retryAfter.set(rockKey(rock), Date.now() + settings.respawn * 1000);
                     } else {
-                        missed++;
-                        auditEvent('setback', 'mining-swing-unconfirmed', { site: site.mine.name, x: rock.x, z: rock.z, missed });
+                        failedRocks.add(rockKey(rock));
+                        retryAfter.set(rockKey(rock), Date.now() + Math.min(24_000, settings.respawn * 1000));
+                        auditEvent('setback', 'mining-swing-unconfirmed', { site: site.mine.name, x: rock.x, z: rock.z,
+                            failedRocks: failedRocks.size, message: result.message });
                         await sdk.waitForTicks(2);
                     }
                 }

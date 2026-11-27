@@ -77,8 +77,8 @@ for (const mode of ['bank', 'power'] as const) {
                     state.player!.worldZ = z;
                     if (!Object.values(miningBanks).some(bank => bank.x === x && bank.z === z)) {
                         if (!state.nearbyLocs.some(loc => loc.x === x && loc.z === z)) mine++;
-                        state.nearbyLocs = [{ id: 2092, x, z, name: 'Rocks', distance: 0,
-                            optionsWithIndex: [{ text: 'Mine', opIndex: 1 }] }] as BotWorldState['nearbyLocs'];
+                        state.nearbyLocs = Array.from({ length: 3 }, (_, offset) => ({ id: 2092, x: x + offset, z, name: 'Rocks',
+                            distance: offset, optionsWithIndex: [{ text: 'Mine', opIndex: 1 }] })) as BotWorldState['nearbyLocs'];
                     }
                     return success;
                 },
