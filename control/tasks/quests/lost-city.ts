@@ -3,7 +3,7 @@ import { runScript } from '../../../sdk/runner';
 import { Spells } from '../../../sdk/spells';
 import { fightQuestNpc, planQuestFight, questFood, questFoodSupplies, questSpellSupplies, withQuestProtection } from './quest-combat';
 import {
-    buyQuestSupply, changeFloor, continueDialog, groundItem, journalText, lootFromNpc, prepareQuestStep, questLoc,
+    buyQuestSupply, changeFloor, continueDialog, groundItem, journalText, prepareQuestStep, questLoc,
     questLog, questPhase, readQuest, talk, talkAt, useTogether, waitForQuestJournal, walk, type QuestContext,
 } from './shared';
 
@@ -12,6 +12,9 @@ const journal = 7367;
 const axe = /^(?:bronze|iron|steel|black|mithril|adamant|rune) axe$/i;
 const flax = /^flax$/i;
 const spiritFight = { name: 'Tree Spirit', hitpoints: 85, incomingHit: 7, meleeLevel: 45, minimumFood: 3 };
+const zombieFight = { name: 'Entrana zombie', hitpoints: 30, incomingHit: 3, meleeLevel: 20, minimumFood: 0 };
+const prayerPotion = /^prayer potion\([1-4]\)$/i;
+const spiritDefeat = /Spirit defeated I can cut|I cut a branch from the tree/i;
 const combatRunes = /^(?:air|fire|mind|chaos|death) rune$/i;
 const surface = (x: number, z: number) => x >= 2800 && x < 2865 && z >= 3320 && z <= 3385;
 const cave = (x: number, z: number) => x >= 2810 && x <= 2890 && z >= 9720 && z <= 9790;
@@ -108,12 +111,15 @@ async function trainCrafting(ctx: QuestContext) {
 async function prepareEntrana(ctx: QuestContext) {
     const { sdk, bot } = ctx;
     const travelSupply = /^(?:knife|air rune|earth rune|law rune)$/i;
-    const keep = (name: string) => travelSupply.test(name) || combatRunes.test(name) || questFood.test(name);
+    const keep = (name: string) => travelSupply.test(name) || combatRunes.test(name) || questFood.test(name) || prayerPotion.test(name);
+    const spells = questSpellSupplies(ctx, spiritFight.hitpoints + 2 * zombieFight.hitpoints);
     const withdraw = [
-        { name: 'Knife', count: 1 }, { name: 'Air rune', count: 3 }, { name: 'Earth rune', count: 1 },
+        { name: 'Knife', count: 1 }, { name: 'Earth rune', count: 1 },
+        ...spells.some(item => item.name === 'Air rune') ? [] : [{ name: 'Air rune', count: 3 }],
         { name: 'Law rune', count: 1 },
         ...questFoodSupplies,
-        ...questSpellSupplies(ctx, spiritFight.hitpoints),
+        ...(sdk.getPrayerState()?.prayerLevel ?? 0) >= 43 ? [{ name: 'Prayer potion(3)', count: 1 }] : [],
+        ...spells,
     ];
     await prepareQuestStep(ctx, { slots: Math.max(6, sdk.getEquipment().length), withdraw });
     if (!sdk.getEquipment().length && sdk.getInventory().every(item => keep(item.name))) return;
@@ -133,6 +139,26 @@ async function prepareEntrana(ctx: QuestContext) {
     } finally {
         await bot.closeBank();
     }
+}
+
+async function recoverCaveAxe(ctx: QuestContext) {
+    const { bot, sdk } = ctx;
+    await walk(ctx, 2846, 9760, 2);
+    for (let attempt = 0; attempt < 12; attempt++) {
+        const drop = (await sdk.scanGroundItems(10)).find(item => axe.test(item.name) && item.reachable !== false);
+        if (drop) {
+            await bot.pickupItem(drop);
+            if (sdk.findInventoryItem(axe)) return;
+        }
+        const zombie = sdk.getNearbyNpcs().filter(n => n.id === 76 && n.reachable !== false && n.hp !== 0)
+            .sort((a, b) => a.distance - b.distance)[0];
+        if (zombie) {
+            const plan = planQuestFight(ctx, zombieFight);
+            await fightQuestNpc(ctx, zombie, zombieFight, plan, { retreat: () => walk(ctx, 2830, 9773, 2) });
+        }
+        await sdk.waitForTicks(3);
+    }
+    throw new Error('The Entrana zombies did not yield a usable axe within the attempt budget');
 }
 
 async function leaveCave(ctx: QuestContext) {
@@ -184,9 +210,15 @@ const result = await runScript(async ctx => {
     await waitForQuestJournal(ctx, journal, 'available', 15000);
     if (readQuest(ctx, journal) === 'complete') return;
 
-    if (inside() && !has(771) && !has(772) && sdk.countInventoryItems(questFood) < spiritFight.minimumFood) {
-        questPhase('lost-city-restore-depleted-supplies');
-        await leaveCave(ctx);
+    const hasDefeatedSpirit = async () => spiritDefeat.test(await journalText(ctx, journal, /^lost city$/i));
+    let defeated = false;
+    if (inside() && !has(771) && !has(772)) {
+        questPhase('lost-city-read-cave-progress');
+        defeated = await hasDefeatedSpirit();
+        if (!defeated && sdk.countInventoryItems(questFood) < spiritFight.minimumFood) {
+            questPhase('lost-city-restore-depleted-supplies');
+            await leaveCave(ctx);
+        }
     }
     if (!inside() && !onIsland() && !has(771) && !has(772)) {
         if (readQuest(ctx, journal) === 'not-started') {
@@ -246,7 +278,7 @@ const result = await runScript(async ctx => {
         if (!inside()) throw new Error('The Entrana cave entrance did not produce a dungeon state');
         if (!sdk.findInventoryItem(axe) && !sdk.findEquipmentItem(axe)) {
             questPhase('lost-city-dungeon-axe');
-            await lootFromNpc(ctx, /^bronze axe$/i, /^zombie$/i, 2846, 9760);
+            await recoverCaveAxe(ctx);
         }
         questPhase('lost-city-tree-spirit');
         await walk(ctx, 2860, 9735, 2);
@@ -257,14 +289,27 @@ const result = await runScript(async ctx => {
                 { x: tree.x, z: tree.z }, () => sdk.getState(),
                 () => sdk.sendInteractLoc(tree.x, tree.z, tree.id, 1),
                 sent => ({ outcome: sent.success ? 'dispatched' : 'failed', message: sent.message }));
-            await sdk.waitForCondition(s => has(771) || s.nearbyNpcs.some(n => /^tree spirit$/i.test(n.name)), 9000).catch(() => null);
+            await sdk.waitForCondition(s => has(771) || !defeated && s.nearbyNpcs.some(n => n.id === 655 && n.hp !== 0), 9000)
+                .catch(() => null);
             if (has(771)) break;
-            const spirit = sdk.findNearbyNpc(/^tree spirit$/i);
+            if (defeated) continue;
+            const spirit = sdk.getNearbyNpcs().find(n => n.id === 655 && n.hp !== 0);
             if (spirit) {
                 const plan = planQuestFight(ctx, spiritFight);
                 if (plan.style === 'melee' && !sdk.findEquipmentItem(axe)) {
                     const wielded = await bot.equipItem(axe);
                     if (!wielded.success) throw new Error(wielded.message);
+                }
+                const prayer = sdk.getPrayerState();
+                const potion = sdk.findInventoryItem(prayerPotion);
+                const drink = potion?.optionsWithIndex.find(option => /^drink$/i.test(option.text));
+                if (prayer && prayer.prayerLevel >= 43 && prayer.prayerPoints < 10 && potion && drink) {
+                    const before = prayer.prayerPoints;
+                    await auditOperation('lost-city-restore-prayer', 'Restore overhead prayer points after entering the cave',
+                        { potion: potion.name, before }, () => sdk.getState(), async () => {
+                            const sent = await sdk.sendUseItem(potion.slot, drink.opIndex);
+                            return sent.success && !!(await sdk.waitForCondition(state => state.prayers.prayerPoints > before, 5000).catch(() => null));
+                        }, restored => ({ outcome: restored ? 'complete' : 'unconfirmed', after: sdk.getPrayerState()?.prayerPoints }));
                 }
                 await withQuestProtection(ctx, ['protect_from_melee'], () => fightQuestNpc(ctx, spirit, spiritFight, plan, {
                     retreat: () => walk(ctx, 2854, 9744, 2),
@@ -274,6 +319,9 @@ const result = await runScript(async ctx => {
                         await sdk.waitForTicks(3);
                     },
                 }));
+                await sdk.waitForTicks(3);
+                await continueDialog(ctx);
+                defeated = await hasDefeatedSpirit();
             }
         }
         if (!has(771)) throw new Error('Could not verify a Dramen branch after the Tree Spirit fight');

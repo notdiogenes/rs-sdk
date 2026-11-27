@@ -124,9 +124,13 @@ export async function fightQuestNpc(ctx: QuestContext, target: NearbyNpc, fight:
     let failures = 0;
     let attacked = false;
     let lastAttack = -100;
+    let lastReposition = -100;
     let lastDamage = sdk.getState()?.tick ?? 0;
     let stalled = 0;
     let lastTargetHealth = target.hp;
+    let activePlan = plan;
+    const tryFallbackSpell = (remainingHp: number) => combatSpells.find(spell => spell.magic <= questSkill(ctx, 'Magic') &&
+        availableCasts(ctx, spell) >= Math.ceil(remainingHp * 2 / spell.maxHit));
     const stop = async (reason: string) => {
         await auditOperation('quest-combat-retreat', 'Leave the fight while the character still has a health reserve',
             { target: target.name, reason }, () => sdk.getState(), retreat, () => ({ outcome: 'complete' }));
@@ -161,21 +165,33 @@ export async function fightQuestNpc(ctx: QuestContext, target: NearbyNpc, fight:
             }
             if (player.hp <= reserve) await stop(`Hitpoints reached ${player.hp} with no usable food`);
         }
-        if (plan.style === 'magic' && availableCasts(ctx, plan.spell) < 1) await stop('ran out of combat runes');
-        const noDamage = attacked && state.tick - Math.max(lastAttack, lastDamage) >= 9;
+        if (activePlan.style === 'magic' && availableCasts(ctx, activePlan.spell) < 1) await stop('ran out of combat runes');
+        const noDamage = attacked && state.tick - Math.max(lastReposition, lastDamage) >= 10;
         if (noDamage) {
             auditEvent('check', 'quest-combat-damage', { outcome: 'unconfirmed', target: npc.name, index: npc.index,
                 tick: state.tick, lastAttack, lastDamage, targetHp: npc.hp, rejected: state.opFeedback?.opRejectedCount,
-                feedback: state.gameMessages.filter(message => message.tick >= lastAttack).slice(-5).map(message => message.text) });
+                feedback: state.gameMessages.filter(message => message.type === 0 && !message.sender && message.tick >= lastAttack)
+                    .slice(-5).map(message => message.text) });
+            lastReposition = state.tick;
             if (++stalled >= 6) await stop('attacks did not produce verified damage');
+            if (stalled >= 3 && activePlan.style === 'melee') {
+                const spell = tryFallbackSpell(npc.hp ?? fight.hitpoints);
+                if (spell) {
+                    activePlan = { style: 'magic', spell };
+                    auditEvent('check', 'quest-combat-switch-style', { outcome: 'selected', boss: npc.name,
+                        style: 'magic', spell: spell.name, casts: availableCasts(ctx, spell), reason: 'melee damage unverified' });
+                }
+            }
             await reposition?.(npc, stalled);
         }
-        if (plan.style === 'magic' || !attacked || !player.combat.inCombat || noDamage) {
+        if (activePlan.style === 'magic' || !attacked || !player.combat.inCombat || noDamage) {
             lastAttack = state.tick;
+            if (!attacked) lastReposition = state.tick;
+            const attackPlan = activePlan;
             const action = await auditOperation<{ success: boolean; message: string }>('quest-combat-attack', 'Damage the quest target with the prepared combat style',
-                { npc: npc.name, index: npc.index, hp: npc.hp, style: plan.style, spell: plan.style === 'magic' ? plan.spell.name : undefined },
-                () => sdk.getState(), () => plan.style === 'magic'
-                    ? bot.castSpell(npc, plan.spell.component, 3000)
+                { npc: npc.name, index: npc.index, hp: npc.hp, style: attackPlan.style, spell: attackPlan.style === 'magic' ? attackPlan.spell.name : undefined },
+                () => sdk.getState(), () => attackPlan.style === 'magic'
+                    ? bot.castSpell(npc, attackPlan.spell.component, 3000)
                     : bot.attack(npc, 2500),
                 result => ({ outcome: result.success ? 'engaged' : 'failed', message: result.message }));
             if (action.success) { attacked = true; failures = 0; }
