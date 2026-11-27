@@ -598,35 +598,63 @@ async function buyWormbrainRunes(ctx: QuestContext) {
         { id: 554, name: 'Fire rune', count: 24 },
         { id: 558, name: 'Mind rune', count: 8 },
     ];
-    const missing = supplies.filter(item => held(ctx, item.id) < item.count);
-    if (!missing.length) return;
-    await walk(ctx, 3253, 3402, 2);
-    const opened = await bot.openShop(/^aubury$/i);
-    if (!opened.success) throw new Error(opened.message);
-    try {
-        const stock = await sdk.waitForCondition(s => s.shop.isOpen &&
-            missing.every(supply => s.shop.shopItems.some(item => item.id === supply.id)), 7000).catch(() => sdk.getState());
-        auditEvent('check', 'dragon-slayer-aubury-stock', {
-            outcome: stock?.shop.isOpen ? 'open' : 'unavailable', shop: stock?.shop.title, coins: held(ctx, 995),
-            stock: stock?.shop.shopItems.map(({ id, name, count, buyPrice }) => ({ id, name, count, buyPrice })),
-        });
-        for (const supply of missing) {
-            const amount = supply.count - held(ctx, supply.id);
-            const item = sdk.getState()?.shop.shopItems.find(entry => entry.id === supply.id);
-            if (!item || item.count < amount || !Number.isFinite(item.buyPrice) || item.buyPrice > 8
-                || held(ctx, 995) < amount * item.buyPrice) {
-                throw new Error(`Aubury could not supply ${amount} ${supply.name} at 8 coins each or less (stock ${item?.count ?? 0}, quote ${item?.buyPrice ?? 'unavailable'})`);
-            }
-            await auditOperation('dragon-slayer-buy-wormbrain-runes', 'Buy missing Fire Strike and Telekinetic Grab supplies from Aubury',
-                { item: item.name, amount, unitPrice: item.buyPrice }, () => sdk.getState(), async () => {
-                    const bought = await bot.buyFromShop(item, amount);
-                    if (!bought.success || held(ctx, supply.id) < supply.count) throw new Error(bought.message);
-                    return bought;
-                }, bought => ({ outcome: 'complete', amount: bought.amountBought }));
+    const vendors = [
+        { name: 'Betty', npc: /^betty$/i, x: 3012, z: 3259 },
+        { name: 'Aubury', npc: /^aubury$/i, x: 3253, z: 3402 },
+    ];
+    const p = position(ctx);
+    const distance = ({ x, z }: (typeof vendors)[number]) => Math.abs(x - p.worldX) + Math.abs(z - p.worldZ);
+    vendors.sort((a, b) => distance(a) - distance(b));
+    for (const vendor of vendors) {
+        const missing = supplies.map(supply => ({ ...supply, amount: supply.count - held(ctx, supply.id) }))
+            .filter(supply => supply.amount > 0);
+        if (!missing.length) return true;
+        await walk(ctx, vendor.x, vendor.z, 2);
+        const opened = await bot.openShop(vendor.npc);
+        if (!opened.success) {
+            auditEvent('check', 'dragon-slayer-rune-shop-stock', { outcome: 'unavailable', vendor: vendor.name, message: opened.message });
+            continue;
         }
-    } finally {
-        await bot.closeShop();
+        try {
+            const state = await sdk.waitForCondition(s => s.shop.isOpen &&
+                missing.every(supply => s.shop.shopItems.some(item => item.id === supply.id)), 7000).catch(() => sdk.getState());
+            const stock = state?.shop.shopItems ?? [];
+            const orders = missing.map(supply => ({ supply, item: stock.find(item => item.id === supply.id) }));
+            const available = orders.every(({ supply, item }) =>
+                item && item.count >= supply.amount && Number.isFinite(item.buyPrice) && item.buyPrice <= 8);
+            const cost = orders.reduce((sum, { supply, item }) => sum + supply.amount * (item?.buyPrice ?? 0), 0);
+            auditEvent('check', 'dragon-slayer-rune-shop-stock', {
+                outcome: available && cost <= held(ctx, 995) ? 'ready' : 'unavailable',
+                vendor: vendor.name, shop: state?.shop.title, coins: held(ctx, 995), quote: cost,
+                stock: stock.map(({ id, name, count, buyPrice }) => ({ id, name, count, buyPrice })),
+            });
+            if (!available || cost > held(ctx, 995)) continue;
+            for (const { supply, item } of orders) {
+                if (!item) continue;
+                await auditOperation('dragon-slayer-buy-wormbrain-runes', 'Buy missing Fire Strike and Telekinetic Grab supplies from an NPC rune shop',
+                    { vendor: vendor.name, item: item.name, amount: supply.amount, unitPrice: item.buyPrice }, () => sdk.getState(),
+                    () => bot.buyFromShop(item, supply.amount),
+                    bought => ({ outcome: held(ctx, supply.id) >= supply.count ? 'complete' : 'partial', amount: bought.amountBought, message: bought.message }));
+            }
+            if (supplies.every(supply => held(ctx, supply.id) >= supply.count)) return true;
+        } finally {
+            await bot.closeShop();
+        }
     }
+    return false;
+}
+
+async function buyWormbrainMap(ctx: QuestContext) {
+    const { sdk } = ctx;
+    const cost = 10_000;
+    await prepareQuestStep(ctx, { bank: mapSupplyBank(ctx), slots: 2, withdraw: [{ name: 'Coins', count: cost }] });
+    if (held(ctx, 995) < cost) throw new Error('Wormbrain requires Telekinetic Grab supplies or 10,000 coins for his map piece');
+    await auditOperation('dragon-slayer-buy-wormbrain-map', 'Buy Wormbrain’s map piece at the fixed quest price',
+        { cost }, () => sdk.getState(), async () => {
+            await talkAt(ctx, 3014, 3186, /^wormbrain$/i,
+                [/piece of map that I need/i, /could pay you for the map piece/i, /10,000 it is/i], 12000);
+            await sdk.waitForCondition(() => has(ctx, 1536), 8000);
+        }, () => ({ outcome: 'complete', item: 1536 }));
 }
 
 async function wormbrainMap(ctx: QuestContext) {
@@ -634,20 +662,15 @@ async function wormbrainMap(ctx: QuestContext) {
     const telegrab = 1168;
     questPhase('dragon-slayer-wormbrain-map');
     const magic = questSkill(ctx, 'Magic');
-    await prepareQuestStep(ctx, { bank: mapSupplyBank(ctx), slots: 5, withdraw: magic >= 33 ? [
+    if (magic < 33) return buyWormbrainMap(ctx);
+    await prepareQuestStep(ctx, { bank: mapSupplyBank(ctx), slots: 5, withdraw: [
         ...questSpellSupplies(ctx, 5).map(item => item.name === 'Air rune' ? { ...item, count: item.count + 1 } : item),
         { name: 'Law rune', count: 1 }, { name: 'Coins', count: 400 },
-    ] : [{ name: 'Coins', count: 10_000 }] });
-    if (magic < 33) {
-        if (sdk.countInventoryItems(coins) < 10_000) throw new Error('Wormbrain requires level 33 Magic with Telekinetic Grab supplies, or 10,000 coins for the NPC sale');
-        await talkAt(ctx, 3014, 3186, /^wormbrain$/i, [/piece of map that I need/i, /could pay you for the map piece/i, /10,000 it is/i], 12000);
-        await sdk.waitForCondition(() => has(ctx, 1536), 8000);
-        return;
-    }
-    if (!has(ctx, 563)) throw new Error('Bring a Law rune for Telekinetic Grab before killing Wormbrain');
+    ] });
+    if (!has(ctx, 563)) return buyWormbrainMap(ctx);
     const enoughForBolt = held(ctx, 562) >= 7 && held(ctx, 556) >= 22 && held(ctx, 554) >= 28 && magic >= 35;
     const enoughForBlast = held(ctx, 560) >= 7 && held(ctx, 556) >= 29 && held(ctx, 554) >= 35 && magic >= 59;
-    if (!enoughForBolt && !enoughForBlast) await buyWormbrainRunes(ctx);
+    if (!enoughForBolt && !enoughForBlast && !await buyWormbrainRunes(ctx)) return buyWormbrainMap(ctx);
     const plan = planQuestFight(ctx, { name: 'Wormbrain', hitpoints: 5, incomingHit: 0, meleeLevel: 1, minimumFood: 0 }, { magicOnly: true });
     if (plan.style !== 'magic') throw new Error('A combat spell is required to target Wormbrain through the bars');
     await walk(ctx, 3014, 3188, 2);
