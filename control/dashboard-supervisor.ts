@@ -429,6 +429,20 @@ export async function createDashboardSupervisor(botsDir: string, configDir: stri
                         : 'Current inventory is temporarily unavailable.' }, 503);
                 }
             }
+            if (view === 'bank') {
+                const headers = { 'Cache-Control': 'no-store' };
+                if (request.method !== 'GET') return new Response(null, { status: 405, headers: { ...headers, Allow: 'GET' } });
+                if (!session) return Response.json({ error: 'Sign in to view bank snapshots.' }, { status: 401, headers });
+                const authenticated = { ...headers, 'Set-Cookie': session };
+                try {
+                    const profile = bot && await botProfile(bot);
+                    if (!profile) return Response.json({ error: 'Bot profile not found.' }, { status: 404, headers: authenticated });
+                    const { bank } = recordStats(profile.name);
+                    return Response.json({ bot: profile.name, bank }, { headers: authenticated });
+                } catch {
+                    return Response.json({ error: 'Bank snapshots are temporarily unavailable.' }, { status: 503, headers: authenticated });
+                }
+            }
             if (view === 'diagnostics' && bot !== null) {
                 const headers: Record<string, string> = { 'Cache-Control': 'no-store' };
                 if (request.method !== 'GET') return new Response(null, { status: 405, headers: { ...headers, Allow: 'GET' } });
@@ -455,9 +469,13 @@ export async function createDashboardSupervisor(botsDir: string, configDir: stri
                             scores: await dashboardQuestPoints(current.bots.map(({ name, stats }) => ({ name, score: stats?.journal?.score }))),
                             journals: Object.fromEntries(current.bots.map(({ name, stats }) => [name, stats?.journal ?? null])),
                         }
-                        : current.bots.map(({ name, stats }) => ({
-                            name, skills: stats?.skills, bank: stats?.bank, xpGained: stats?.xpGained,
-                        }));
+                        : current.bots.map(({ name, stats }) => {
+                            const bank = stats?.bank;
+                            return {
+                                name, skills: stats?.skills, xpGained: stats?.xpGained,
+                                bank: bank && { at: bank.at, stacks: bank.stacks, coins: bank.coins },
+                            };
+                        });
                     return Response.json(payload, { headers: { ...headers, 'Set-Cookie': session } });
                 } catch {
                     return Response.json({ error: 'Dashboard data is temporarily unavailable.' }, { status: 503, headers });

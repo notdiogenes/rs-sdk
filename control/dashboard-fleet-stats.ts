@@ -1,6 +1,6 @@
 import { Database } from 'bun:sqlite';
 import { join } from 'node:path';
-import type { BotWorldState, QuestJournal } from '../sdk/types';
+import type { BankItem, BotWorldState, QuestJournal } from '../sdk/types';
 
 export const fleetSkills = [
     ['Attack', 'Atk'], ['Strength', 'Str'], ['Defence', 'Def'], ['Hitpoints', 'HP'], ['Ranged', 'Rng'],
@@ -11,7 +11,7 @@ export const fleetSkills = [
 
 const minute = 60_000;
 type SkillSnapshot = { at: number; combat: number | null; levels: Record<string, number> };
-type BankSnapshot = { at: number; stacks: number; coins: number };
+export type BankSnapshot = { at: number; stacks: number; coins: number; items?: BankItem[] };
 export type GameQuestScore = { points: number; checkedAt: number; source: 'game' };
 type JournalSnapshot = { at: number; progress: QuestJournal; score?: GameQuestScore };
 type FleetStats = {
@@ -81,9 +81,10 @@ export function dashboardFleetStats(directory: string) {
                 db.query(`INSERT INTO fleet_stats (bot, skills) VALUES (?, ?)
                     ON CONFLICT (bot) DO UPDATE SET skills = excluded.skills`).run(bot, JSON.stringify(skills));
             }
-            if (observedBank) {
+            if (observedBank && (!bank || at >= bank.at)) {
                 const coins = observedBank.filter(item => item.id === 995).reduce((sum, item) => sum + item.count, 0);
-                bank = { at, stacks: observedBank.length, coins };
+                const items = observedBank.map(({ slot, id, name, count }) => ({ slot, id, name, count }));
+                bank = { at, stacks: items.length, coins, items };
                 db.query(`INSERT INTO fleet_stats (bot, bank) VALUES (?, ?)
                     ON CONFLICT (bot) DO UPDATE SET bank = excluded.bank`).run(bot, JSON.stringify(bank));
             }
