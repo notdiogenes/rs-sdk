@@ -155,8 +155,9 @@
 
     function questColumnsFor(panel) {
         const rem = parseFloat(getComputedStyle(document.documentElement).fontSize);
-        // Budget the Account and QP widths, borders, and one rem per quest.
-        const capacity = Math.max(1, Math.floor((panel.clientWidth - 2) / rem - 9.5));
+        const accountWidth = parseFloat(getComputedStyle(panel).getPropertyValue('--quest-account-width'));
+        // A 1.1rem pitch keeps adjacent 0.75rem labels clear at 45 degrees.
+        const capacity = Math.max(1, Math.floor(((panel.clientWidth - 2) / rem - accountWidth) / 1.1));
         const bandCount = Math.max(1, Math.ceil(questCatalog.length / capacity));
         return Math.max(1, Math.ceil(questCatalog.length / bandCount));
     }
@@ -166,7 +167,7 @@
             const observed = visible.map(row => journals[row.name]?.progress[id]).filter(Boolean);
             const complete = observed.filter(status => status === 'complete').length;
             const count = observed.length ? `${complete}/${observed.length}` : '';
-            return `<th scope="col"><span class="quest-column-name">${escape(name)}
+            return `<th scope="col" class="quest-heading"><span class="quest-column-name">${escape(name)}
                 ${count ? `<small aria-label="${complete} complete out of ${observed.length} reported">${count}</small>` : ''}
                 </span></th>`;
         });
@@ -187,9 +188,11 @@
             });
             const account = `<th scope="row" class="quest-account">
                 <button type="button" class="button" data-detail="${escape(name)}">${escape(name)}</button>
-                <small title="${escape(labelTime(journal?.at))}">${summary}</small></th>
-                <td class="quest-points"><a href="${escape(hiscore)}" target="_blank" rel="noopener"
-                    title="${scoreSource} · ${escape(labelTime(score?.checkedAt))}">${points}</a></td>`;
+                <small class="quest-account-meta">
+                    <a class="quest-points" href="${escape(hiscore)}" target="_blank" rel="noopener"
+                        title="${scoreSource} · ${escape(labelTime(score?.checkedAt))}">${points} QP</a>
+                    <span title="${escape(labelTime(journal?.at))}">${summary}</span>
+                </small></th>`;
             return { account, marks };
         });
         const legend = Object.entries(questMarks).map(([status, { symbol, label }]) =>
@@ -199,7 +202,6 @@
             const end = start + columns;
             bands.push(`<div class="table-wrap quest-band"><table class="quest-grid" aria-label="Quest progress">
               <thead><tr><th scope="col" class="quest-account">Account</th>
-              <th scope="col" class="quest-points" title="Quest points">QP</th>
               ${headers.slice(start, end).join('')}</tr></thead>
               <tbody>${rows.map(({ account, marks }) => `<tr>${account}${marks.slice(start, end).join('')}</tr>`).join('')}</tbody>
             </table></div>`);

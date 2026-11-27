@@ -172,31 +172,36 @@ dialog form{display:grid;gap:12px}dialog form label{display:grid;gap:4px}
 dialog h3{margin-top:12px}
 #fleet-empty{margin-top:12px}
 
+#quests-panel { --quest-account-width: 8rem; }
 .quest-band { overflow: clip; }
 .quest-band + .quest-band { margin-top: 10px; }
 .quest-grid { width: 100%; table-layout: fixed; text-align: center; }
 .quest-grid th, .quest-grid td { padding: 5px 0; }
 .quest-grid thead th { background: #2b2721; }
-.quest-grid thead th:not(.quest-account, .quest-points) {
-    vertical-align: bottom;
+.quest-grid thead th { vertical-align: bottom; }
+.quest-grid .quest-heading {
+    position: relative;
+    height: 9.5rem;
     text-transform: none;
 }
 .quest-column-name {
-    display: inline-block;
-    writing-mode: vertical-rl;
-    transform: rotate(180deg);
+    position: absolute;
+    right: 50%;
+    bottom: 10px;
+    width: max-content;
+    transform: rotate(45deg);
+    transform-origin: right bottom;
     color: #efeae0;
     font-size: .75rem;
-    line-height: 1.15;
+    line-height: 1;
     white-space: nowrap;
 }
 .quest-column-name small { font-size: .68rem; }
-.quest-grid .quest-account { width: 7rem; padding-inline: 8px; }
-.quest-grid .quest-points { width: 2.5rem; overflow-wrap: anywhere; white-space: normal; }
-.quest-account .button, .quest-account small { white-space: normal; overflow-wrap: anywhere; }
-.quest-account small { display: block; }
-.quest-points a { font-weight: 750; text-decoration: none; }
-.quest-points a:hover { text-decoration: underline; }
+.quest-grid .quest-account { width: var(--quest-account-width); padding-inline: 8px; }
+.quest-account .button { white-space: normal; overflow-wrap: anywhere; }
+.quest-account-meta { display: flex; flex-wrap: wrap; gap: 2px 6px; line-height: 1.2; }
+.quest-points { font-weight: 750; text-decoration: none; }
+.quest-points:hover { text-decoration: underline; }
 .quest-mark { font-weight: 700; }
 .quest-mark.complete { color: var(--green); }
 .quest-mark.in-progress { color: var(--gold); }
