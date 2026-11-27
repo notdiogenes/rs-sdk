@@ -540,7 +540,7 @@
 
     async function loadAudit(older = false, firstBefore, firstLimit) {
         const version = ++auditVersion;
-        const params = new URLSearchParams({ view: 'audit', limit: firstLimit || '50' });
+        const params = new URLSearchParams({ view: 'audit', format: 'json', limit: firstLimit || '50' });
         if (auditRun) {
             params.set('run', auditRun);
             if (auditPhase.value) params.set('phase', auditPhase.value);

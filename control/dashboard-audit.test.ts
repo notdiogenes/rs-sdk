@@ -3,6 +3,7 @@ import { Database } from 'bun:sqlite';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { dashboardAudit } from './dashboard-audit';
+import { dashboardSessions } from './dashboard-session';
 
 test('groups matching breakpoints and preserves bounded evidence beyond trace eviction', () => {
     const directory = mkdtempSync(join(process.cwd(), '.audit-test-'));
@@ -199,6 +200,34 @@ test('reports whole-activity rates and splits durable trend time at Eastern midn
             .toMatchObject({ sample: { runs: 0 }, trend: { days: [] } });
     } finally {
         audit.close();
+        rmSync(directory, { recursive: true, force: true });
+    }
+});
+
+test('password login for audits permits an API client and preserves browser origin checks', async () => {
+    const directory = mkdtempSync(join(process.cwd(), '.audit-test-'));
+    const origin = 'https://127-0-0-1.sslip.io';
+    const password = 'local-audit-fixture';
+    try {
+        const hash = await Bun.password.hash(password, { algorithm: 'argon2id' });
+        await Bun.write(join(directory, 'password.json'), JSON.stringify({ hash, origin }));
+        const sessions = dashboardSessions(directory, async () => origin, join(directory, 'enrollment.json'));
+        const request = (originHeader?: string) => new Request(origin + '/bots/activity?view=audit', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', ...(originHeader ? { Origin: originHeader } : {}) },
+            body: JSON.stringify({ password }),
+        });
+        expect((await sessions.handle(request(), 'login')).status).toBe(403);
+        expect((await sessions.handle(request('https://other.example'), 'login', { programmatic: true })).status).toBe(403);
+        const success = await sessions.handle(request(), 'login', { programmatic: true });
+        expect(success.status).toBe(200);
+        const cookie = success.headers.get('Set-Cookie');
+        expect(cookie).toMatch(/HttpOnly/);
+        if (!cookie) throw new Error('Expected a dashboard session');
+        const read = new Request(origin + '/bots/activity?view=audit', { headers: { Cookie: cookie.split(';')[0]! } });
+        expect(await sessions.authenticate(read)).toBe(cookie);
+        expect((await sessions.handle(request(origin), 'login')).status).toBe(429);
+    } finally {
         rmSync(directory, { recursive: true, force: true });
     }
 });

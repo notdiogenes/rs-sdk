@@ -268,9 +268,16 @@ In Fleet Desk, open **Audit history** from the toolbar to browse the fleet, or
 from a bot's card to filter to that bot. Choose **Runs** for the timeline and
 retained evidence, **Summary** for grouped totals, or **Insights** for phase
 time, outcomes, throughput, setbacks, and daily trends. Chart labels and
-ranked issues can open a representative trace. Opening a report link in a browser takes you to the relevant audit
-view and prompts for dashboard sign-in when needed. API callers can send
-`Accept: application/json` to retrieve JSON and receive a `401` when signed out.
+ranked issues can open a representative trace. API requests use
+`format=json` by default. Use `format=html` to open the matching Fleet Desk
+view in a browser and prompt for dashboard sign-in when needed.
+
+An agent with the dashboard password can POST to the same audit URL with
+`Content-Type: application/json` and a JSON body containing `password`.
+The response contains the requested report and sets the dashboard session
+cookie. Reuse that cookie for subsequent GETs. Supply the password from a
+secret variable in the POST body. Keep the password out of query strings.
+GET also accepts an existing dashboard session or authorized Bearer credential.
 
 | HTTPS request | Result |
 | --- | --- |

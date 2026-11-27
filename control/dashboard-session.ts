@@ -53,7 +53,7 @@ export function dashboardSessions(directory: string, getOrigin: () => Promise<st
         return row ? sessionCookie(id) : undefined;
     }
 
-    async function handle(request: Request, action: string) {
+    async function handle(request: Request, action: string, { programmatic = false } = {}) {
         const reply = (data: object, status = 200, headers?: Record<string, string>) =>
             Response.json(data, { status, headers: { 'Cache-Control': 'no-store', ...headers } });
         try {
@@ -95,8 +95,10 @@ export function dashboardSessions(directory: string, getOrigin: () => Promise<st
                 return signedIn(hash, request, reply);
             }
             if (!config) return reply({ error: 'Set the dashboard password on Lightsail first.' }, 409);
-            if (request.headers.get('Origin') !== config.origin ||
-                request.headers.get('Content-Type')?.split(';')[0] !== 'application/json') {
+            const origin = request.headers.get('Origin');
+            const isProgrammaticLogin = programmatic && action === 'login' && origin === null;
+            if ((!isProgrammaticLogin && origin !== config.origin) ||
+                request.headers.get('Content-Type')?.split(';')[0]?.trim().toLowerCase() !== 'application/json') {
                 return reply({ error: 'Open the HTTPS dashboard to sign in.' }, 403);
             }
             if (action === 'logout') {

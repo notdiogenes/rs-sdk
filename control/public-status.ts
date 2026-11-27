@@ -386,10 +386,26 @@ Bun.serve({
             const view = searchParams.get('view');
             const bot = searchParams.get('bot');
             if (view === 'audit') {
-                const headers = { 'Cache-Control': 'no-store', Vary: 'Accept', ...(session ? { 'Set-Cookie': session } : {}) };
+                const headers: Record<string, string> = { 'Cache-Control': 'no-store' };
+                let auditSession = session;
                 const reply = (data: unknown, status = 200) => Response.json(data, { status, headers });
-                if (request.method !== 'GET') return new Response(null, { status: 405, headers: { ...headers, Allow: 'GET' } });
-                if (/(?:^|,)\s*text\/html(?:\s*;|\s*,|\s*$)/i.test(request.headers.get('Accept') ?? '')) {
+                if (request.method !== 'GET' && request.method !== 'POST') {
+                    return new Response(null, { status: 405, headers: { ...headers, Allow: 'GET, POST' } });
+                }
+                const format = searchParams.get('format') ?? 'json';
+                if (format !== 'json' && format !== 'html') return reply({ error: 'Use format=json or format=html.' }, 400);
+                if (searchParams.has('password')) return reply({ error: 'Send password in the JSON body of a POST request.' }, 400);
+                if (request.method === 'POST') {
+                    if (request.headers.get('Content-Type')?.split(';')[0]?.trim().toLowerCase() !== 'application/json') {
+                        return reply({ error: 'Send password in an application/json body.' }, 415);
+                    }
+                    const login = await sessions.handle(request, 'login', { programmatic: true });
+                    if (!login.ok) return login;
+                    auditSession = login.headers.get('Set-Cookie') ?? undefined;
+                    if (!auditSession) return reply({ error: 'Dashboard sign-in is unavailable.' }, 503);
+                }
+                if (auditSession) headers['Set-Cookie'] = auditSession;
+                if (format === 'html') {
                     const dashboard = new URLSearchParams({ audit: '1' });
                     for (const key of ['bot', 'task', 'run', 'phase', 'mode', 'days', 'before', 'limit', 'revision']) {
                         const value = searchParams.get(key);
@@ -397,7 +413,7 @@ Bun.serve({
                     }
                     return new Response(null, { status: 303, headers: { ...headers, Location: '/bots?' + dashboard } });
                 }
-                if (!session && !await demo.allowed(request)) return reply({ error: 'Sign in to view audit history.' }, 401);
+                if (!auditSession && !await demo.allowed(request)) return reply({ error: 'Sign in to view audit history.' }, 401);
                 try {
                     const report = audit.read(searchParams);
                     return report ? reply(report) : reply({ error: 'Run not found.' }, 404);
