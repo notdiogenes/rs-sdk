@@ -322,7 +322,9 @@
             const item = bySlot.get(slot);
             if (!item) return '<li class="inventory-cell inventory-empty" aria-hidden="true"></li>';
             const description = escape(`Slot ${slot + 1} · ${item.name} · ${number(item.count)}`);
-            const sprite = item.spriteUrl ? `<img class="inventory-sprite" src="${escape(item.spriteUrl)}"
+            const stack = Number.isInteger(item.count) && item.count > 1 && item.count <= 0x7fffffff;
+            const spriteUrl = stack ? item.spriteUrl?.replace(/(?:-\d+)?\.png$/, `-${item.count}.png`) : item.spriteUrl;
+            const sprite = spriteUrl ? `<img class="inventory-sprite" src="${escape(spriteUrl)}"
                 width="32" height="32" alt="" decoding="async" referrerpolicy="no-referrer">` : '';
             const quantity = item.count > 1
                 ? `<span class="inventory-quantity" aria-hidden="true">${inventoryQuantity(item.count)}</span>` : '';
