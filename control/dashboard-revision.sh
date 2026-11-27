@@ -19,13 +19,14 @@ case "${4:-legacy}" in
     worker)
         files=(
             "$source_dir/dashboard-worker.ts" "$source_dir/dashboard-supervisor.ts"
-            "$source_dir/dashboard-activity.ts" "$source_dir/dashboard-session.ts"
+            "$source_dir/dashboard-activity.ts" "$source_dir/dashboard-session.ts" "$source_dir/dashboard-inventory.ts"
             "$source_dir/dashboard-diagnostics.ts" "$source_dir/dashboard-audit.ts" "$source_dir/dashboard-audit-schema.ts"
             "$source_dir/dashboard-audit-insights.ts" "$source_dir/dashboard-last-activity.ts" "$source_dir/hosted-bot.ts"
             "$source_dir/dashboard-fleet-stats.ts" "$source_dir/dashboard-quests.ts"
             "$source_dir/dashboard-demo.ts" "$source_dir/dashboard-task-catalog.ts" "$source_dir/dashboard-roster.ts"
             "$source_dir/dashboard-plan.ts" "$source_dir/dashboard-plan-runner.ts" "$source_dir"/tasks/*.ts
             "$source_dir/../sdk/audit-trace.ts" "$source_dir/../sdk/index.ts" "$source_dir/../sdk/runner.ts"
+            "$source_dir/../sdk/inventory-command.ts"
             "$source_dir"/tasks/quests/*.ts "$source_dir/../server/webclient/src/lite/runner.ts"
             "$source_dir/../server/webclient/src/bot/StateCollector.ts" "$source_dir/../server/webclient/src/bot/quest-journal.ts"
         )

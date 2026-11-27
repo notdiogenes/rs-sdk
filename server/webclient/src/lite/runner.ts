@@ -18,6 +18,8 @@ import { type ActionResult } from '#/bot/ActionExecutor.js';
 import { BotActionQueue, type QueuedBotAction } from '#/bot/ActionQueue.js';
 import type { BotAction, BotWorldState } from '#/bot/types.js';
 import type { LiteClient } from './LiteClient.js';
+import { parseInventoryCommand, prepareInventoryCommand,
+    type InventoryReply, type InventoryRequest, type InventoryResult } from '../../../../sdk/inventory-command';
 import {
     FAST_KBD_RUNTIME_MODE,
     findFastKbdAttackTarget,
@@ -28,12 +30,20 @@ import {
 
 const TICK_MS = 20; // matches the browser draw loop that drives BotOverlay.tick()
 const RECONNECT_MS = 3000;
+const INVENTORY_TIMEOUT_MS = 4500;
 
 class LiteGatewayRunner {
     private client: LiteClient;
     private actionQueue = new BotActionQueue();
     private waitTicks = 0;
     private serverTick = 0;
+    private lastGameTickAt = -Infinity;
+    private lastScriptDispatchTick = -1;
+    private inventoryCommand?: {
+        request: InventoryRequest;
+        deadline: number;
+        dispatched?: { tick: number; name: string; observed: (state: BotWorldState) => boolean };
+    };
     private lastFastKbdAttackTick = -1;
     private fastKbdPolicyEligible = false;
     private fastKbdWasVisible = false;
@@ -61,6 +71,7 @@ class LiteGatewayRunner {
         // activates this bot's interface table first - see LiteClient.activate.
         this.client.setOnGameTickCallback(() => {
             this.serverTick++;
+            this.lastGameTickAt = performance.now();
             // Reuse the previous authoritative one-item policy snapshot and
             // probe the newly decoded raw NPC table before full state
             // collection. This puts KBD op2 ahead of reachability, nearby
@@ -183,6 +194,70 @@ class LiteGatewayRunner {
         }
     }
 
+    acceptInventoryCommand(message: unknown): void {
+        const request = message as Partial<InventoryRequest> | null;
+        if (request?.type !== 'inventory-command' || typeof request.requestId !== 'string') return;
+        const command = parseInventoryCommand(request.command);
+        if (!command || this.inventoryCommand) {
+            this.replyInventory(request.requestId, { status: 409, message: 'The client could not queue this inventory action.' });
+            return;
+        }
+        this.inventoryCommand = {
+            request: { type: request.type, requestId: request.requestId, command },
+            deadline: performance.now() + INVENTORY_TIMEOUT_MS,
+        };
+    }
+
+    private replyInventory(requestId: string, result: InventoryResult): void {
+        const reply: InventoryReply = { type: 'inventory-result', requestId, result };
+        if (process.connected) process.send?.(reply);
+    }
+
+    private tickInventory(): boolean {
+        const pending = this.inventoryCommand;
+        if (!pending) return false;
+        const { request, deadline, dispatched } = pending;
+        const finish = (result: InventoryResult) => {
+            this.inventoryCommand = undefined;
+            this.replyInventory(request.requestId, result);
+            return true;
+        };
+        if (performance.now() >= deadline) {
+            return finish(dispatched
+                ? { status: 422, message: 'The game did not confirm the action. Check the refreshed inventory before retrying.' }
+                : { status: 409, message: 'The game client is busy. Try again.' });
+        }
+        if (dispatched) {
+            if (this.serverTick !== dispatched.tick) {
+                dispatched.tick = this.serverTick;
+                const state = this.client.collectBotState(this.serverTick);
+                if (state && dispatched.observed(state)) {
+                    const { action, count } = request.command;
+                    const message = action === 'eat' ? `Ate ${dispatched.name}.`
+                        : `Dropped ${count > 1 ? count.toLocaleString('en-US') + ' × ' : ''}${dispatched.name}.`;
+                    return finish({ status: 200, message,
+                        inventory: { capturedAt: Date.now(), items: state.inventory } });
+                }
+            }
+            return true;
+        }
+        if (this.actionQueue.active || this.waitTicks > 0) return false;
+        if (performance.now() - this.lastGameTickAt > 3500) {
+            return finish({ status: 409, message: 'The game client has no recent inventory state.' });
+        }
+        // Give the previous script packet a game tick before validating the slot.
+        if (this.lastScriptDispatchTick === this.serverTick) return true;
+        const prepared = prepareInventoryCommand(this.client.collectBotState(this.serverTick), request.command);
+        if ('status' in prepared) return finish(prepared);
+        const result = this.client.executeBotAction(prepared.action);
+        // OPHELD and DROP are synchronous packet dispatches.
+        if (result instanceof Promise || !result.success) {
+            return finish({ status: 422, message: 'The game client could not send the inventory action.' });
+        }
+        pending.dispatched = { tick: this.serverTick, name: prepared.name, observed: prepared.observed };
+        return true;
+    }
+
     private tick(): void {
         for (const expired of this.actionQueue.expirePending()) {
             const result: ActionResult = {
@@ -209,6 +284,8 @@ class LiteGatewayRunner {
             this.sendState();
         }
 
+        if (this.tickInventory()) return;
+
         if (this.waitTicks > 0) {
             this.waitTicks--;
             const active = this.actionQueue.active;
@@ -224,6 +301,7 @@ class LiteGatewayRunner {
         if (!queued) return;
 
         const action = queued.action;
+        this.lastScriptDispatchTick = this.serverTick;
         const resultOrPromise = this.client.executeBotAction(action);
 
         if (resultOrPromise instanceof Promise) {
@@ -432,6 +510,10 @@ if (fastKbdAttackEnabled) {
 }
 const runner = new LiteGatewayRunner(session, gatewayUrl, fastKbdAttackEnabled);
 runner.connect();
+if (process.connected) {
+    process.on('message', message => runner.acceptInventoryCommand(message));
+    process.send?.({ type: 'inventory-ready' });
+}
 
 process.on('SIGINT', () => {
     console.log('\n[lite-runner] SIGINT, shutting down');

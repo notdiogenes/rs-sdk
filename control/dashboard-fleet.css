@@ -56,7 +56,11 @@ button:disabled{opacity:.6;cursor:default}
 .inventory-quantity{position:absolute;top:3px;left:4px;color:#ffe07d;text-shadow:0 1px 2px #160f08,1px 0 #160f08;
   font:700 10px/1 ui-monospace,monospace;pointer-events:none}
 .inventory-item-detail{margin-top:10px;min-height:2.5em;color:#ead2a8;font-size:12px;overflow-wrap:anywhere}
-#inventory-refresh{margin-top:10px}
+.inventory-toolbar{display:flex;flex-wrap:wrap;gap:7px;margin-top:10px}
+.inventory-action-status{margin:10px 0 0;font-size:12px}
+.inventory-action-status:empty{margin:0}
+.inventory-action-status[data-outcome=success]{color:var(--green)}
+.inventory-action-status[data-outcome=error]{color:var(--amber)}
 #audit-dialog{max-width:min(1140px,calc(100vw - 24px));height:91dvh;max-height:91dvh;overflow:hidden;background:#1b1b18}
 #audit-dialog .dialog-body{display:flex;flex-direction:column;height:100%;padding:0}
 .audit-chrome{flex:none;max-height:65%;overflow:auto;background:#24231f;border-bottom:1px solid var(--line);padding:16px 22px 11px}
