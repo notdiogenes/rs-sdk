@@ -217,8 +217,25 @@ export async function journalText({ bot, sdk }: QuestContext, component: number,
 
 export const itemNamed = (name: string) => new RegExp('^' + name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '$', 'i');
 
-export async function talkAt(ctx: QuestContext, x: number, z: number, name: RegExp, choices: RegExp[] = []) {
+export async function talkAt(ctx: QuestContext, x: number, z: number, name: RegExp, choices: RegExp[] = [], targetTimeoutMs?: number) {
     await walk(ctx, x, z);
+    if (targetTimeoutMs !== undefined) {
+        const { sdk } = ctx;
+        try {
+            await sdk.waitForCondition(state => state.nearbyNpcs.some(npc => name.test(npc.name)), targetTimeoutMs);
+        } catch (error) {
+            if (!(error instanceof Error) || error.message !== 'waitForCondition timed out') throw error;
+            if (auditEnabled) {
+                const state = sdk.getState();
+                auditEvent('check', 'quest-dialogue-target', {
+                    outcome: 'failed', npc: name.source, target: null, timeoutMs: targetTimeoutMs,
+                    before: auditFrame(state),
+                    nearbyNpcNames: state?.nearbyNpcs.map(npc => npc.name) ?? [],
+                });
+            }
+            throw new Error(`Could not find ${name}`);
+        }
+    }
     await talk(ctx, name, choices);
 }
 

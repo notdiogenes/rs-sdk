@@ -36,7 +36,7 @@ const result = await runScript(async ctx => {
     };
     const sirAmik = async () => {
         await climb('up', 2954, 3338); await climb('up', 2960, 3338);
-        await talkAt(ctx, 2960, 3336, /^sir amik varze$/i, questChoice);
+        await talkAt(ctx, 2960, 3336, /^sir amik varze$/i, questChoice, 3_000);
         await castleExit();
     };
     const player = sdk.getState()?.player;

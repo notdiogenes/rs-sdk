@@ -1,6 +1,5 @@
-import { auditEnabled, auditEvent, auditFrame } from '../../../sdk/audit-trace';
 import { runScript } from '../../../sdk/runner';
-import { bankForQuest, changeFloor, equipQuestSword, itemNamed, journalText, lootFromNpc, questLoc, questLog, questPhase, waitForQuestJournal, readQuest, talk, talkAt, walk } from './shared';
+import { bankForQuest, changeFloor, equipQuestSword, itemNamed, journalText, lootFromNpc, questLoc, questLog, questPhase, waitForQuestJournal, readQuest, talkAt, walk } from './shared';
 
 const quest = 'Druidic Ritual';
 const journal = 7355;
@@ -30,24 +29,7 @@ const result = await runScript(async ctx => {
     const sanfew = async () => {
         await walk(ctx, 2898, 3428, 2);
         await changeFloor(ctx, 'up', 2898, 3428);
-        await walk(ctx, 2897, 3426);
-        const name = /^Sanfew$/i;
-        const timeoutMs = 3_000;
-        try {
-            await sdk.waitForCondition(state => state.nearbyNpcs.some(npc => name.test(npc.name)), timeoutMs);
-        } catch (error) {
-            if (!(error instanceof Error) || error.message !== 'waitForCondition timed out') throw error;
-            if (auditEnabled) {
-                const state = sdk.getState();
-                auditEvent('check', 'quest-dialogue-target', {
-                    outcome: 'failed', npc: name.source, target: null, timeoutMs,
-                    before: auditFrame(state),
-                    nearbyNpcNames: state?.nearbyNpcs.map(npc => npc.name) ?? [],
-                });
-            }
-            throw new Error(`Could not find ${name}`);
-        }
-        await talk(ctx, name, [/sent to help purify/i, /i.ll do that then/i, /i.ll get on with it/i]);
+        await talkAt(ctx, 2897, 3426, /^Sanfew$/i, [/sent to help purify/i, /i.ll do that then/i, /i.ll get on with it/i], 3_000);
         await townExit();
     };
     await dungeonExit();
