@@ -1,8 +1,9 @@
 import { auditEvent, auditOperation } from '../../../sdk/audit-trace';
 import { runScript } from '../../../sdk/runner';
 import { Spells } from '../../../sdk/spells';
+import { makeShipNails } from './dragon-slayer-smithing';
 import {
-    canMeleeQuest, fightQuestNpc, planQuestFight, questFoodSupplies, questSkill, questSpellSupplies, withQuestProtection,
+    canMeleeQuest, fightQuestNpc, planQuestFight, questFood, questFoodSupplies, questSkill, questSpellSupplies, withQuestProtection,
 } from './quest-combat';
 import {
     buyQuestSupply, changeFloor, continueDialog, groundItem, journalText, prepareQuestStep, questLog, questPhase,
@@ -20,8 +21,16 @@ const shipBought = /I bought a ship in Port Sarim/i;
 const nedHired = /Ned from Draynor Village has agreed/i;
 const coins = /^coins$/i;
 const magicDoorSupplies = ['Wizard\'s mind bomb', 'Silk', 'Lobster pot', 'Unfired bowl'];
-const swordTiers = ['Rune', 'Adamant', 'Mithril', 'Black', 'Steel', 'Iron', 'Bronze'] as const;
-const swordLevels = [40, 30, 20, 10, 5, 1, 1] as const;
+const meleeRequirements: Record<string, number> = {
+    dragon: 60, rune: 40, adamant: 30, mithril: 20, black: 10, steel: 5, iron: 1, bronze: 1,
+};
+const styles = ['dagger', 'sword', 'mace', 'axe', 'longsword', 'scimitar', 'battleaxe'];
+const bankLocation = [3092, 3243] as const;
+const mapPieces = [
+    { name: 'Melzar’s Maze map piece', id: 1535, count: 1 },
+    { name: 'Wormbrain’s map piece', id: 1536, count: 1 },
+    { name: 'Oracle’s map piece', id: 1537, count: 1 },
+] as const;
 
 const position = ({ sdk }: QuestContext) => {
     const player = sdk.getState()?.player;
@@ -175,37 +184,95 @@ function shieldEquipped(ctx: QuestContext) {
 }
 
 async function getShield(ctx: QuestContext) {
-    if (shieldEquipped(ctx) || has(ctx, 1540)) return;
+    const { sdk } = ctx;
+    const hasShield = () => shieldEquipped(ctx) || has(ctx, 1540);
+    const aboveCastle = () => area(ctx, 3212, 3218, 16) && position(ctx).level > 0;
+    if (hasShield() && !aboveCastle()) return;
     questPhase('dragon-slayer-get-shield');
-    await prepareQuestStep(ctx, { slots: 3, withdraw: [{ name: 'Dragonfire shield', count: 1 }] });
-    if (has(ctx, 1540)) return;
-    await walk(ctx, 3204, 3229, 2);
-    await changeFloor(ctx, 'up', 3204, 3229, 1);
-    await talkAt(ctx, 3212, 3220, /^duke horacio$/i, [/shield that will protect me/i], 8000);
-    await ctx.sdk.waitForCondition(() => has(ctx, 1540), 6000);
-    await walk(ctx, 3204, 3229, 2);
-    await changeFloor(ctx, 'down', 3204, 3229, 1);
+    if (!hasShield() && !aboveCastle()) {
+        await prepareQuestStep(ctx, { slots: 3, withdraw: [{ name: 'Dragonfire shield', count: 1 }] });
+        if (hasShield()) return;
+    }
+    if (aboveCastle() && position(ctx).level === 2) {
+        await walk(ctx, 3205, 3227, 1);
+        await changeFloor(ctx, 'down', 3205, 3229, 0);
+    }
+    if (position(ctx).level === 0) {
+        await walk(ctx, 3205, 3228, 0);
+        await changeFloor(ctx, 'up', 3204, 3229, 0, { requireReachable: true });
+    }
+    if (!hasShield()) {
+        await walk(ctx, 3211, 3219, 0);
+        await talk(ctx, /^duke horacio$/i, [/shield that will protect me/i]);
+        await sdk.waitForCondition(hasShield, 6000);
+    }
+    await walk(ctx, 3205, 3228, 0);
+    await changeFloor(ctx, 'down', 3204, 3229, 0, { requireReachable: true });
 }
 
-async function prepareCombat(ctx: QuestContext, hitpoints: number, magicOnly = false) {
-    const swords = swordTiers.flatMap((metal, i) => questSkill(ctx, 'Attack') >= swordLevels[i]!
-        ? [{ name: `${metal} longsword`, count: 1 }, { name: `${metal} sword`, count: 1 }] : []);
-    const wantMelee = !magicOnly && canMeleeQuest(ctx, elvarg);
-    const weapon = ctx.sdk.getEquipment().some(item => /longsword|scimitar|\bsword$/i.test(item.name) && !/2h/i.test(item.name));
-    await prepareQuestStep(ctx, { slots: 12, withdraw: [
-        ...wantMelee && !weapon ? swords.slice(0, 4) : [],
-        ...wantMelee ? [] : questSpellSupplies(ctx, hitpoints),
-        ...questFoodSupplies,
-    ] });
-    if (wantMelee && !weapon) {
-        const owned = swords.find(item => ctx.sdk.countInventoryItems(new RegExp(`^${item.name}$`, 'i')) > 0);
-        if (owned) {
-            const result = await ctx.bot.equipItem(new RegExp(`^${owned.name}$`, 'i'));
-            if (!result.success) throw new Error(result.message);
-        } else {
-            throw new Error('Prepare a one-handed weapon for melee, or use a character with suitable combat runes');
+function meleeWeaponScore(ctx: QuestContext, name: string) {
+    const match = /^(dragon|rune|adamant|mithril|black|steel|iron|bronze) (dagger|sword|mace|axe|longsword|scimitar|battleaxe)(?:\(p[+]*\))?$/i.exec(name);
+    if (!match) return -1;
+    const level = meleeRequirements[match[1]!.toLowerCase()]!;
+    if (questSkill(ctx, 'Attack') < level) return -1;
+    return level * 10 + styles.indexOf(match[2]!.toLowerCase());
+}
+
+const hasMeleeWeapon = (ctx: QuestContext) => ctx.sdk.getEquipment().some(item => meleeWeaponScore(ctx, item.name) >= 0);
+
+async function prepareCombat(ctx: QuestContext, hitpoints: number) {
+    const { sdk, bot } = ctx;
+    const wantMelee = canMeleeQuest(ctx, elvarg);
+    const best = <T extends { name: string }>(items: T[]) => items
+        .filter(item => meleeWeaponScore(ctx, item.name) >= 0)
+        .sort((a, b) => meleeWeaponScore(ctx, b.name) - meleeWeaponScore(ctx, a.name))[0];
+    if (wantMelee && !hasMeleeWeapon(ctx)) {
+        await prepareQuestStep(ctx, { bank: bankLocation, slots: 3, keep: /map part|crandor map|maze key|dragonfire shield/i });
+        let weapon = best(sdk.getInventory());
+        if (!weapon) {
+            await walk(ctx, bankLocation[0], bankLocation[1], 4);
+            const opened = await bot.openBank();
+            if (!opened.success) throw new Error(opened.message);
+            try {
+                const option = best(sdk.getBankItems());
+                if (option) {
+                    const taken = await bot.withdrawItem(option, 1);
+                    if (!taken.success) throw new Error(taken.message);
+                    weapon = best(sdk.getInventory());
+                }
+            } finally {
+                await bot.closeBank();
+            }
+        }
+        if (weapon) {
+            const equipped = await bot.equipItem(weapon);
+            if (!equipped.success) throw new Error(equipped.message);
         }
     }
+    const useMelee = wantMelee && hasMeleeWeapon(ctx);
+    await prepareQuestStep(ctx, { slots: 10, withdraw: useMelee ? [] : questSpellSupplies(ctx, hitpoints),
+        keep: /map part|crandor map|maze key|dragonfire shield/i });
+    const targetFood = questSkill(ctx, 'Defence') >= 60 ? 9 : 14;
+    if (sdk.countInventoryItems(questFood) >= targetFood) return;
+    await walk(ctx, bankLocation[0], bankLocation[1], 4);
+    const opened = await bot.openBank();
+    if (!opened.success) throw new Error(opened.message);
+    try {
+        for (const { name } of questFoodSupplies) {
+            const remaining = Math.min(targetFood - sdk.countInventoryItems(questFood), 25 - sdk.getInventory().length);
+            if (remaining <= 0) break;
+            const item = sdk.findBankItem(new RegExp(`^${name}$`, 'i'));
+            if (!item) continue;
+            const taken = await bot.withdrawItem(item, Math.min(remaining, item.count));
+            if (!taken.success) throw new Error(taken.message);
+        }
+    } finally {
+        await bot.closeBank();
+    }
+    auditEvent('check', 'dragon-slayer-combat-supplies', {
+        mode: useMelee ? 'melee' : 'magic', food: sdk.countInventoryItems(questFood), targetFood,
+        weapon: best(sdk.getEquipment())?.name,
+    });
 }
 
 async function pickUp(ctx: QuestContext, id: number, radius: number) {
@@ -232,7 +299,7 @@ async function mazeRoom(ctx: QuestContext, room: typeof mazeRooms[number], cross
     if (!has(ctx, room.key)) {
         await walk(ctx, room.nx, room.nz, 2);
         const fight = { name: room.name, hitpoints: room.hp, incomingHit: room.hit, meleeLevel: Math.min(40, room.hp), minimumFood: 0 };
-        const plan = planQuestFight(ctx, fight);
+        const plan = planQuestFight(ctx, fight, { magicOnly: !hasMeleeWeapon(ctx) });
         for (let attempt = 0; attempt < 5 && !has(ctx, room.key); attempt++) {
             if (await pickUp(ctx, room.key, 8)) break;
             const seen = await sdk.waitForCondition(s => s.nearbyNpcs.some(n => n.id === room.npc && !n.inCombat), 15000);
@@ -248,18 +315,45 @@ async function mazeRoom(ctx: QuestContext, room: typeof mazeRooms[number], cross
     }
     if (!has(ctx, room.key)) throw new Error(`No ${room.name} key was recovered`);
     await activate(ctx, [room.door], room.x, room.z, 'Unlock the door for the next maze room', { item: room.key });
-    await walk(ctx, room.x + room.dx, room.z + room.dz, 0);
+    if (!crossed()) await walk(ctx, room.x + room.dx, room.z + room.dz, 0);
     if (!crossed()) throw new Error(`The ${room.name} door did not lead into the expected room`);
     auditEvent('milestone', 'dragon-slayer-maze-door-passed', { door: room.door, target: room.name });
+}
+
+const inMazeBasement = (ctx: QuestContext) => area(ctx, 2934, 9650, 14);
+const inDwarvenMine = (ctx: QuestContext) => area(ctx, 3040, 9846, 42);
+const inShipHold = (ctx: QuestContext) => area(ctx, 3047, 9640, 5);
+const onShipDeck = (ctx: QuestContext) => area(ctx, 3047, 3208, 1);
+
+async function leaveMazeWithMap(ctx: QuestContext) {
+    if (inMazeBasement(ctx)) {
+        await walk(ctx, 2939, 9657, 2);
+        await changeFloor(ctx, 'up', 2939, 9657, 0);
+    }
+    const p = position(ctx);
+    if (p.level === 0 && p.worldX >= 2938 && p.worldX <= 2940 && p.worldZ >= 3251 && p.worldZ <= 3258) {
+        await activate(ctx, [2602], 2938, 3252, 'Exit Melzar’s Maze');
+        await walk(ctx, 2941, 3252, 1);
+    }
+}
+
+async function leaveDwarvenMine(ctx: QuestContext) {
+    if (!inDwarvenMine(ctx)) return;
+    if (position(ctx).worldX >= 3051) await activate(ctx, [2586], 3051, 9840, 'Exit the Dwarven Mine map room');
+    await walk(ctx, 3019, 9850, 2);
+    await changeFloor(ctx, 'up', 3019, 9850, 2);
 }
 
 async function melzarsMaze(ctx: QuestContext) {
     const p = () => position(ctx);
     const inside = () => (p().level > 0 && area(ctx, 2930, 3249, 14)) ||
         (p().worldX >= 2921 && p().worldX <= 2940 && p().worldZ >= 3239 && p().worldZ <= 3258) ||
-        area(ctx, 2934, 9650, 14);
+        inMazeBasement(ctx);
     if (!inside()) {
-        await prepareCombat(ctx, 160);
+        const mazeHealth = mazeRooms.reduce((sum, room) => sum + room.hp, 0);
+        await prepareCombat(ctx, mazeHealth);
+        planQuestFight(ctx, { name: 'Melzar’s Maze', hitpoints: mazeHealth, incomingHit: 8, meleeLevel: 40, minimumFood: 2 },
+            { magicOnly: !hasMeleeWeapon(ctx) });
         await activate(ctx, [2595], 2941, 3248, 'Unlock the entrance to Melzar’s Maze', { item: 1542 });
         await walk(ctx, 2940, 3248, 0);
     }
@@ -296,12 +390,7 @@ async function melzarsMaze(ctx: QuestContext) {
     if (!has(ctx, 1535)) await activate(ctx, [2604], 2935, 9657, 'Take the Melzar’s Maze map piece');
     await ctx.sdk.waitForCondition(() => has(ctx, 1535), 8000);
     await continueDialog(ctx);
-    await walk(ctx, 2939, 9657, 2);
-    await changeFloor(ctx, 'up', 2939, 9657, 0);
-    if (inside()) {
-        await activate(ctx, [2602], 2938, 3252, 'Exit Melzar’s Maze');
-        await walk(ctx, 2941, 3252, 1);
-    }
+    await leaveMazeWithMap(ctx);
 }
 
 async function makeUnfiredBowl(ctx: QuestContext) {
@@ -349,7 +438,7 @@ async function makeUnfiredBowl(ctx: QuestContext) {
 
 async function oracleMap(ctx: QuestContext) {
     const { sdk } = ctx;
-    const inMine = () => area(ctx, 3040, 9846, 40);
+    const inMine = () => inDwarvenMine(ctx);
     questPhase('dragon-slayer-oracle-map');
     if (!inMine()) {
         await prepareQuestStep(ctx, { slots: 8, withdraw: [
@@ -382,9 +471,7 @@ async function oracleMap(ctx: QuestContext) {
     if (!has(ctx, 1537)) await activate(ctx, [2588], 3057, 9841, 'Take the Dwarven Mine map piece');
     await sdk.waitForCondition(() => has(ctx, 1537), 8000);
     await continueDialog(ctx);
-    await activate(ctx, [2586], 3051, 9840, 'Exit the Dwarven Mine map room');
-    await walk(ctx, 3019, 9850, 2);
-    await changeFloor(ctx, 'up', 3019, 9850, 2);
+    await leaveDwarvenMine(ctx);
 }
 
 async function wormbrainMap(ctx: QuestContext) {
@@ -428,20 +515,12 @@ async function wormbrainMap(ctx: QuestContext) {
 }
 
 async function shipMaterials(ctx: QuestContext) {
-    const { bot } = ctx;
     await prepareQuestStep(ctx, { slots: 9, withdraw: [
         { name: 'Coins', count: 2000 }, { name: 'Plank', count: 3 }, { name: 'Nails', count: 12 },
         { name: 'Hammer', count: 1 }, { name: 'Steel bar', count: 6 },
     ] });
     if (!has(ctx, 2347)) await groundItem(ctx, /^hammer$/i, 2934, 3286);
-    if (held(ctx, 1539) < 12 && questSkill(ctx, 'Smithing') >= 34 && held(ctx, 2353) >= Math.ceil((12 - held(ctx, 1539)) / 2)) {
-        await walk(ctx, 3187, 3424);
-        for (let attempt = 0; held(ctx, 1539) < 12 && attempt < 6; attempt++) {
-            const made = await bot.smithAtAnvil('steel nails', { barPattern: /^steel bar$/i });
-            if (!made.success) throw new Error(made.message);
-        }
-    }
-    if (held(ctx, 1539) < 12) throw new Error('Ship repair needs 12 steel nails or level 34 Smithing with enough steel bars');
+    if (held(ctx, 1539) < 12) await makeShipNails(ctx);
     if (held(ctx, 960) < 3) await groundItem(ctx, /^plank$/i, 2553, 3575, 3);
 }
 
@@ -455,6 +534,18 @@ async function shipHold(ctx: QuestContext) {
     }
     await activate(ctx, [2590], 3049, 3208, 'Descend to the hold of the Lady Lumbridge');
     await sdk.waitForCondition(() => area(ctx, 3047, 9640, 5), 10000);
+}
+
+async function leaveShip(ctx: QuestContext) {
+    const { sdk } = ctx;
+    if (inShipHold(ctx)) {
+        await activate(ctx, [2592], 3048, 9640, 'Climb from the hold to the deck');
+        await sdk.waitForCondition(() => position(ctx).worldZ < 4000, 8000);
+    }
+    if (onShipDeck(ctx)) {
+        await activate(ctx, [2594], 3047, 3206, 'Return to Port Sarim dock to find a captain', { walkFirst: false });
+        await sdk.waitForCondition(() => !onShipDeck(ctx), 8000);
+    }
 }
 
 async function prepareShip(ctx: QuestContext, page: string) {
@@ -477,10 +568,7 @@ async function prepareShip(ctx: QuestContext, page: string) {
         await continueDialog(ctx);
     }
     if (!shipRepaired.test(await journalText(ctx, journal, title))) throw new Error('The journal did not confirm the ship repair');
-    await activate(ctx, [2592], 3048, 9640, 'Climb from the repaired hold to the deck');
-    await sdk.waitForCondition(() => position(ctx).worldZ < 4000, 8000);
-    await activate(ctx, [2594], 3047, 3206, 'Return to Port Sarim dock to find a captain', { walkFirst: false });
-    await sdk.waitForCondition(() => !area(ctx, 3047, 3208, 1), 8000);
+    await leaveShip(ctx);
 }
 
 async function fightElvarg(ctx: QuestContext, page: string) {
@@ -496,7 +584,7 @@ async function fightElvarg(ctx: QuestContext, page: string) {
             const result = await bot.equipItem(shield);
             if (!result.success || !shieldEquipped(ctx)) throw new Error(`Could not equip the anti-dragonbreath shield: ${result.message}`);
         }
-        planQuestFight(ctx, elvarg);
+        planQuestFight(ctx, elvarg, { magicOnly: !hasMeleeWeapon(ctx) });
         questPhase('dragon-slayer-sail-crandor');
         if (!nedHired.test(page) && !finishedSailing.test(page)) {
             await talkAt(ctx, 3100, 3258, /^ned$/i, [
@@ -519,7 +607,7 @@ async function fightElvarg(ctx: QuestContext, page: string) {
         await sdk.waitForCondition(() => onCrandor(), 30000);
         await continueDialog(ctx);
     }
-    const plan = planQuestFight(ctx, elvarg);
+    const plan = planQuestFight(ctx, elvarg, { magicOnly: !hasMeleeWeapon(ctx) });
     if (!shieldEquipped(ctx)) throw new Error('Elvarg requires an equipped anti-dragonbreath shield');
     if (onCrandor()) {
         await activate(ctx, [2609], 2833, 3255, 'Descend from Crandor to the dungeon');
@@ -552,15 +640,17 @@ const result = await runScript(async ctx => {
     await getBriefing(ctx);
     let page = await journalText(ctx, journal, title);
     if (!nedHired.test(page) && !finishedSailing.test(page)) {
-        if (!area(ctx, 2934, 9650, 14) && !area(ctx, 2930, 3248, 14) && !area(ctx, 3040, 9846, 40)
-            && !area(ctx, 3047, 9640, 5)) {
+        if (has(ctx, 1535) || has(ctx, 1538)) await leaveMazeWithMap(ctx);
+        if (has(ctx, 1537) || has(ctx, 1538)) await leaveDwarvenMine(ctx);
+        if (shipRepaired.test(page)) await leaveShip(ctx);
+        if (!inMazeBasement(ctx) && !area(ctx, 2930, 3248, 14) && !inDwarvenMine(ctx) && !inShipHold(ctx)) {
             await prepareQuestStep(ctx, { slots: 13, withdraw: [
-                { name: 'Maze key', count: 1 }, { name: 'Map part', count: 3 }, { name: 'Crandor map', count: 1 },
+                { name: 'Maze key', count: 1 }, ...mapPieces, { name: 'Crandor map', count: 1 },
             ] });
             await getShield(ctx);
         }
         if (!has(ctx, 1538)) {
-            if (area(ctx, 3040, 9846, 40) && !has(ctx, 1537)) await oracleMap(ctx);
+            if (inDwarvenMine(ctx) && !has(ctx, 1537)) await oracleMap(ctx);
             if (!has(ctx, 1535)) await melzarsMaze(ctx);
             if (!has(ctx, 1537)) await oracleMap(ctx);
             if (!has(ctx, 1536)) await wormbrainMap(ctx);

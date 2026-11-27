@@ -52,7 +52,7 @@ export function planQuestFight(ctx: QuestContext, fight: Fight, options: { magic
     const magic = questSkill(ctx, 'Magic');
     const defence = questSkill(ctx, 'Defence');
     const food = sdk.countInventoryItems(questFood);
-    const minimumFood = fight.minimumFood + (defence < 35 ? 4 : defence < 60 ? 2 : 0);
+    const minimumFood = fight.minimumFood + (fight.incomingHit === 0 ? 0 : defence < 35 ? 4 : defence < 60 ? 2 : 0);
     const reserve = fight.incomingHit * 2 + 2;
     const spells = combatSpells.filter(entry => entry.magic <= magic).map(spell => ({
         spell, available: availableCasts(ctx, spell), required: minimumCasts(fight.hitpoints, spell),
