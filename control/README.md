@@ -284,15 +284,45 @@ game state. It reports offline or stale state when a current snapshot is
 unavailable. Use `GET /bots/activity?view=inventory&bot=NAME` with a dashboard
 session, or use `/bots/activity?bot=NAME` for bot-specific task controls.
 `GET /bots/activity?view=diagnostics&bot=NAME` accepts the dashboard session
-or control Bearer credential and reads the selected bot's diagnostics. Fleet desk uses a separate client
-and task process per bot. It can take over from an idle primary controller
-client when starting a plan.
+or control Bearer credential and reads the selected bot's diagnostics.
+Fleet Desk can take over from an idle primary controller client when starting a plan.
+
+### Runtime groups
+
+Use **Runtime group** on a bot's card to choose how Fleet Desk runs its Lite
+client and SDK task. Existing bots start in **Dedicated**. Each bot keeps its
+own game login, task, inventory commands and activity plan in every mode.
+
+| Assignment | Lite clients | SDK tasks |
+| --- | --- | --- |
+| Dedicated | One process per bot | One process per running task |
+| Named group sharing clients | One process for the group's online clients | One process per running task |
+| Named group sharing clients and tasks | One process for the group's online clients | One process for the group's running tasks |
+
+A group hosts only its assigned bots. For example, use separate groups for
+pickpocketers and questers, then leave an experimental boss bot dedicated.
+An individual stop applies to the selected bot. If a pool process exits,
+every session or task hosted in that process stops.
+
+Group assignments are saved. A change made during an activity takes effect
+at the next task launch. For manual play, take the bot offline before logging
+in from your PC. Sign out on the PC before starting its Fleet Desk client again.
+
+Use `GET /bots/activity?view=runtime-groups&bot=NAME` with a dashboard
+session or control Bearer credential to read the named groups and the bot's
+assignment. To create a group, POST `{"action":"create","name":"Questing","mode":"client"}`
+as JSON to the same URL. Use `client-and-task` to pool SDK tasks too. Assign
+the returned `created.id` with `{"action":"assign","groupId":"<id>"}`, or
+set `groupId` to `null` for Dedicated. The response includes the selected
+`groupId`, the running client's `activeGroupId`, and `pending`. To pause and
+take only this account offline, POST `{"action":"offline"}`.
 
 ### VPS resource monitor
 
 Open **Monitor** beside **New bot** to see CPU, resident memory, VPS PIDs,
-and start times for Fleet Desk's managed Lite clients and SDK tasks. The
-shared pathfinder appears once. The worker samples every 500 ms and keeps up
+and start times for Fleet Desk's managed Lite clients and SDK tasks. A pool
+PID reports usage for its members together and appears once in the fleet
+total. The shared pathfinder appears once. The worker samples every 500 ms and keeps up
 to one hour of readings in memory.
 
 Use `GET /bots/activity?view=monitor&window=30` with a dashboard session or
@@ -338,7 +368,8 @@ The installer uses `sudo` to install root-owned systemd units for the private
 socket and restart service.
 Enabling the socket leaves the current worker running. Open **Updates** and
 use **Restart Fleet Desk worker** during a maintenance window to activate the
-checkpoint-capable worker. The control restarts `rs-sdk-fleet-workers.service`.
+new worker. Runtime groups become available after this first controlled
+restart. The control restarts `rs-sdk-fleet-workers.service`.
 Fleet Desk restores saved running plans after the restart. Subsequent
 changes to the process supervisor, game client, or shared pathfinder still
 use a worker restart.

@@ -147,6 +147,7 @@ function card(bot: Bot, category: Group, reason: string, managed: ControlActivit
         ${cardAction('Current inventory', 'inventory', `data-inventory="${name}"`)}
         ${cardAction('View skill stats', 'skills', `data-skill-stats="${name}" aria-haspopup="dialog"`)}
         ${cardAction('Diagnostics', 'diagnostics', `data-diagnostics="${name}"`)}
+        ${cardAction('Runtime group', 'runtime', `data-runtime-bot="${name}" aria-haspopup="dialog" aria-controls="runtime-dialog"`)}
         ${cardAction('Audit history', 'audit', `data-audit-bot="${name}"`)}
         ${cardAction('Bank', 'bank', `data-bank="${name}"`)}
         ${planButton}
@@ -228,6 +229,29 @@ export function fleetPage({ nonce, revision = '', data, taskActivity, questCatal
   <div id="stats-panel" role="tabpanel" aria-labelledby="stats-tab" hidden></div>
   <div id="quests-panel" role="tabpanel" aria-labelledby="quests-tab" hidden></div>
 </main>
+<dialog id="runtime-dialog" aria-labelledby="runtime-title"><div class="dialog-body">
+  <div class="dialog-header"><h2 id="runtime-title">Runtime group</h2><button type="button" id="runtime-close" autofocus>Close</button></div>
+  <form id="runtime-assignment">
+    <label for="runtime-group">Group</label>
+    <select id="runtime-group" aria-describedby="runtime-sharing" disabled><option value="">Dedicated</option></select>
+    <p id="runtime-sharing" class="muted"></p>
+    <p id="runtime-pending" hidden></p>
+    <div class="runtime-actions">
+      <button type="button" id="runtime-new" aria-controls="runtime-creation" aria-expanded="false" disabled>New group</button>
+      <button type="submit" id="runtime-save" disabled>Save assignment</button>
+    </div>
+  </form>
+  <form id="runtime-creation" hidden>
+    <label>Group name<input id="runtime-name" required maxlength="40" autocomplete="off"></label>
+    <label>Sharing mode<select id="runtime-mode">
+      <option value="client">Share Lite clients</option>
+      <option value="client-and-task">Share Lite clients and SDK tasks</option>
+    </select></label>
+    <div class="runtime-actions"><button type="button" id="runtime-cancel">Cancel</button><button type="submit" id="runtime-create">Create group</button></div>
+  </form>
+  <p id="runtime-status" role="status" aria-atomic="true"></p>
+  <div id="runtime-handoff" hidden><button type="button" id="runtime-offline">Take offline</button></div>
+</div></dialog>
 <dialog id="updates-dialog" aria-labelledby="updates-title"><div class="dialog-body">
   <div class="dialog-header">
     <h2 id="updates-title">Activity updates</h2>

@@ -49,6 +49,8 @@ export interface ConnectOptions {
     rsaExponent?: string;
     /** Reconnect after a dropped socket (opcode 18 instead of 16). */
     reconnect?: boolean;
+    /** Cancel a pending login without affecting other channels in the process. */
+    signal?: AbortSignal;
 }
 
 export class LoginError extends Error {
@@ -78,6 +80,24 @@ export class OutdatedClientError extends LoginError {
         );
         this.name = 'OutdatedClientError';
     }
+}
+
+function openLoginSocket({ host, secured, signal }: ConnectOptions): Promise<WebSocket> {
+    signal?.throwIfAborted();
+    if (!signal) return ClientStream.openSocket(host, secured);
+    return new Promise((resolve, reject) => {
+        const onAbort = () => reject(signal.reason);
+        signal.addEventListener('abort', onAbort, { once: true });
+        void ClientStream.openSocket(host, secured).then(socket => {
+            signal.removeEventListener('abort', onAbort);
+            // A late WebSocket open must never send credentials after a stop.
+            if (signal.aborted) socket.close();
+            else resolve(socket);
+        }, error => {
+            signal.removeEventListener('abort', onAbort);
+            reject(error);
+        });
+    });
 }
 
 /**
@@ -113,9 +133,12 @@ export class GameConnection {
             throw new LoginError(-1, 'Password must be 1-20 characters');
         }
 
-        const stream = new ClientStream(await ClientStream.openSocket(opts.host, opts.secured));
+        const stream = new ClientStream(await openLoginSocket(opts));
+        const cancel = () => stream.close();
+        opts.signal?.addEventListener('abort', cancel, { once: true });
 
         try {
+            opts.signal?.throwIfAborted();
             const out = Packet.alloc(1);
             const loginout = Packet.alloc(1);
 
@@ -199,7 +222,10 @@ export class GameConnection {
             return game;
         } catch (err) {
             stream.close();
+            opts.signal?.throwIfAborted();
             throw err;
+        } finally {
+            opts.signal?.removeEventListener('abort', cancel);
         }
     }
 

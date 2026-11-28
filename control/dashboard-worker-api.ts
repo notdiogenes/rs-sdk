@@ -2,6 +2,7 @@ import { checkStepCompatibility, parseSteps, type Step } from './dashboard-plan'
 import { handleActivityUpdates, type ActivityUpdateSource, type StandaloneUpdates } from './dashboard-activity-updates';
 import { planCatalog, trainingSkills } from './dashboard-task-catalog';
 import type { dashboardDemo } from './dashboard-demo';
+import type { dashboardRuntimeGroups } from './dashboard-runtime-groups';
 import type { dashboardDiagnostics } from './dashboard-diagnostics';
 import type { dashboardFleetStats } from './dashboard-fleet-stats';
 import type { createDashboardMonitor } from './dashboard-monitor';
@@ -21,6 +22,11 @@ export type DashboardWorkerApiRuntime = {
         'activeUpdate' | 'requestUpdate' | 'cancelUpdate'> & { supportsCompletedRemoval?: true };
     updateSource?: ActivityUpdateSource;
     standaloneUpdates?: StandaloneUpdates;
+    runtimeGroups?: {
+        store: Pick<ReturnType<typeof dashboardRuntimeGroups>, 'list' | 'create' | 'assignment' | 'assign'>;
+        state(profile: ManagedProfile): Promise<{ online: boolean; activeGroupId: string | null }>;
+        offline(profile: ManagedProfile): Promise<void>;
+    };
     invalidateSnapshot(): void;
     isPlanEditConflict(error: unknown): boolean;
     demo: Pick<BotWorker, 'allowed' | 'cancelStart' | 'handle' | 'profile'>;
@@ -38,6 +44,47 @@ export type DashboardWorkerApiRuntime = {
     handlePrimaryActivity(request: Request, session?: string): Promise<Response>;
     handleBotActivity(request: Request, name: string, session?: string): Promise<Response>;
 };
+
+async function handleRuntimeGroups(request: Request, bot: string | null, session: string | undefined,
+    { demo, botProfile, runtimeGroups, invalidateSnapshot }: DashboardWorkerApiRuntime) {
+    const headers = { 'Cache-Control': 'no-store', ...(session ? { 'Set-Cookie': session } : {}) };
+    const reply = (value: object, status = 200) => Response.json(value, { status, headers });
+    if (!session && !await demo.allowed(request)) return reply({ error: 'Sign in to manage runtime groups.' }, 401);
+    if (!runtimeGroups) return reply({ error: 'Restart the Fleet Desk worker from Updates to enable runtime groups.' }, 503);
+    if (request.method !== 'GET' && request.method !== 'POST') {
+        return new Response(null, { status: 405, headers: { ...headers, Allow: 'GET, POST' } });
+    }
+    const profile = bot && await botProfile(bot);
+    if (!profile) return reply({ error: 'Bot profile not found.' }, 404);
+    const { store } = runtimeGroups;
+    let state = await runtimeGroups.state(profile);
+    let created;
+    if (request.method === 'POST') {
+        if (request.headers.get('Content-Type')?.split(';')[0]?.trim().toLowerCase() !== 'application/json') {
+            return reply({ error: 'Send the runtime group command as JSON.' }, 415);
+        }
+        const body = await request.json().catch(() => null);
+        if (body?.action === 'offline') {
+            try {
+                await runtimeGroups.offline(profile);
+                state = { online: false, activeGroupId: null };
+            }
+            catch (error) { return reply({ error: error instanceof Error ? error.message : 'Could not take this bot offline.' }, 409); }
+        } else {
+            try {
+                if (body?.action === 'create') created = store.create(body.name, body.mode);
+                else if (body?.action === 'assign') store.assign(profile.name, body.groupId);
+                else return reply({ error: 'Unknown runtime group command.' }, 400);
+            } catch (error) {
+                return reply({ error: error instanceof Error ? error.message : 'Invalid runtime group.' }, 400);
+            }
+        }
+        invalidateSnapshot();
+    }
+    const groupId = store.assignment(profile.name)?.id ?? null;
+    return reply({ groups: store.list(), groupId, ...state, pending: state.online && state.activeGroupId !== groupId, created },
+        created ? 201 : 200);
+}
 
 async function handlePlan(request: Request, name: string | null, session: string | undefined,
     { demo, botProfile, botRoster, plans, invalidateSnapshot, isPlanEditConflict, updateSource }: DashboardWorkerApiRuntime) {
@@ -190,6 +237,11 @@ export async function handleWorkerRequest(request: Request, runtime: DashboardWo
         const session = await sessions.authenticate(request).catch(() => undefined);
         const view = searchParams.get('view');
         const bot = searchParams.get('bot');
+        if (view === 'runtime-groups') {
+            try { return await handleRuntimeGroups(request, bot, session, runtime); }
+            catch { return Response.json({ error: 'Runtime groups are temporarily unavailable.' },
+                { status: 503, headers: { 'Cache-Control': 'no-store' } }); }
+        }
         if (view === 'updates') {
             if (!session && !await demo.allowed(request)) {
                 return Response.json({ error: 'Sign in to manage activity updates.' }, { status: 401, headers: { 'Cache-Control': 'no-store' } });

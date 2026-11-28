@@ -17,6 +17,8 @@ import { taskUpdateChannel } from './dashboard-task-update';
 import { isSafeTaskUpdateState } from './task-update-safety';
 import type { BotWorldState } from '../sdk/types';
 import type { Step } from './dashboard-plan';
+import type { RuntimeGroup } from './dashboard-runtime-groups';
+import type { DashboardRuntimePools, RuntimeProcess, RuntimeTaskProcess } from './dashboard-runtime-pools';
 
 const taskName = 'pickpocket-men';
 export const isBundledTask = isActivity;
@@ -35,7 +37,12 @@ const targetLabels: Record<string, string> = {
 const digest = (value: string) => createHash('sha256').update(value).digest();
 const json = (body: unknown, status = 200) => Response.json(body, { status, headers: { 'Cache-Control': 'no-store' } });
 
-type Process = { bot: string; process: Bun.Subprocess; startedAt: string; stopping?: boolean };
+type Process = { bot: string; process: RuntimeProcess; startedAt: string; stopping?: boolean };
+type ManagedClient = Process & {
+    inventory: ReturnType<typeof inventoryControls>;
+    feed: ReturnType<typeof dashboardClientFeed>;
+    settled?: Promise<void>;
+};
 type Event = { id: number; at: string; stage: string; [key: string]: unknown };
 type Exit = { at: string; exitCode: number };
 type Task = Process & {
@@ -55,14 +62,25 @@ type Task = Process & {
 
 async function stopProcess(handle: Process | undefined, signal: 'SIGINT' | 'SIGTERM') {
     if (!handle || handle.process.exitCode !== null) return;
-    if (handle.stopping) {
-        await handle.process.exited;
-        return;
+    let escalation: ReturnType<typeof setTimeout> | undefined;
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    if (!handle.stopping || handle.process.groupId) {
+        handle.stopping = true;
+        handle.process.kill(signal);
+        escalation = setTimeout(() => handle.process.kill('SIGKILL'), 4000);
     }
-    handle.stopping = true;
-    handle.process.kill(signal);
-    const deadline = setTimeout(() => handle.process.kill('SIGKILL'), 4000);
-    try { await handle.process.exited; } finally { clearTimeout(deadline); }
+    try {
+        if (handle.process.groupId) {
+            await Promise.race([handle.process.exited, new Promise<never>((_resolve, reject) => {
+                timeout = setTimeout(() => reject(new Error('The runtime group did not confirm this bot stopped.')), 8000);
+            })]);
+        } else {
+            await handle.process.exited;
+        }
+    } finally {
+        clearTimeout(escalation);
+        clearTimeout(timeout);
+    }
 }
 
 export type DashboardPathfinding = {
@@ -71,9 +89,14 @@ export type DashboardPathfinding = {
     monitoredProcess?(): MonitorProcess | null;
 };
 
+export type DashboardRuntimePlacement = {
+    pools: DashboardRuntimePools;
+    assignment(bot: string): RuntimeGroup | null;
+};
+
 export function dashboardDemo(runtimeDir: string, botsDir: string, configDir: string, token: string,
     recordBank: ReturnType<typeof dashboardFleetStats>['recordBank'], roster?: BotProfile, audit?: DashboardAudit, revision?: string,
-    pathfinding?: DashboardPathfinding, updates?: DashboardWorkerUpdates) {
+    pathfinding?: DashboardPathfinding, updates?: DashboardWorkerUpdates, runtime?: DashboardRuntimePlacement) {
     const writableDir = roster ? join(runtimeDir, 'managed-bots', roster.name) : join(runtimeDir, 'pickpocket-demo');
     const workingDir = roster?.directory ?? writableDir;
     const envFile = join(workingDir, 'bot.env');
@@ -84,7 +107,7 @@ export function dashboardDemo(runtimeDir: string, botsDir: string, configDir: st
     const events: Event[] = [];
     const monitorEvents: Array<{ at: number; bot: string; label: string }> = [];
     let nextEventId = 1;
-    let client: (Process & { inventory: ReturnType<typeof inventoryControls>; feed: ReturnType<typeof dashboardClientFeed> }) | undefined;
+    let client: ManagedClient | undefined;
     let task: Task | undefined;
     let clientExit: Exit | null = null;
     let taskExit: (Exit & { name: DemoTaskName; completion?: Task['completion']; updateId?: string }) | null = null;
@@ -92,6 +115,8 @@ export function dashboardDemo(runtimeDir: string, botsDir: string, configDir: st
     let taskStopped = false;
     let startingPlanTask = false;
     let standaloneUpdate: { runId: string; switching: boolean; cancelled: boolean } | undefined;
+    let clientEpoch = 0;
+    let offlining: Promise<void> | undefined;
 
     function event(stage: string, data: Record<string, unknown> = {}) {
         events.push({ ...data, stage, id: nextEventId++, at: new Date().toISOString() });
@@ -216,37 +241,96 @@ export function dashboardDemo(runtimeDir: string, botsDir: string, configDir: st
         await stopping.settled;
     }
 
-    function startClient(bot: string) {
+    function startClient(bot: string, group = runtime?.assignment(bot) ?? null) {
         const inventory = inventoryControls();
         const feed = dashboardClientFeed((items, at) => recordBank(bot, items, at));
-        const child = Bun.spawn([process.execPath, '--no-env-file', join(webclient, 'src/lite/runner.ts'), bot], {
+        const receive = (message: unknown) => {
+            inventory.receive(message);
+            feed.receive(message);
+        };
+        const cacheDir = join(writableDir, 'cache');
+        const child = group && runtime ? runtime.pools.startLite(group, { bot, envFile, cacheDir, receive })
+            : Bun.spawn([process.execPath, '--no-env-file', join(webclient, 'src/lite/runner.ts'), bot], {
             cwd: webclient,
             stdin: 'ignore', stdout: 'inherit', stderr: 'inherit',
-            ipc(message) {
-                inventory.receive(message);
-                feed.receive(message);
-            },
+            ipc: receive,
             env: {
                 ...process.env, GATEWAY_DIRECT: 'false', NODE_PATH: dependencies, RS_LITE_BOT_ENV: envFile,
-                RS_LITE_CACHE_DIR: join(writableDir, 'cache'),
+                RS_LITE_CACHE_DIR: cacheDir,
             },
         });
-        const running = { bot, process: child, startedAt: new Date().toISOString(), inventory, feed };
+        const running: ManagedClient = { bot, process: child, startedAt: new Date().toISOString(), inventory, feed };
         client = running;
         clientExit = null;
         event('client-started', { bot, pid: child.pid });
-        void child.exited.then(async exitCode => {
+        running.settled = child.exited.then(async exitCode => {
             inventory.disconnect();
             clientExit = { exitCode, at: new Date().toISOString() };
             event('client-exited', { exitCode });
-            try { await stopTask(); }
+            try { if (client === running) await stopTask(); }
             finally { if (client === running) client = undefined; }
         }).catch(() => { event('client-observer-failed'); });
+        return running;
+    }
+
+    function takeOffline() {
+        if (offlining) return offlining;
+        clientEpoch++;
+        if (standaloneUpdate) {
+            standaloneUpdate.cancelled = true;
+            task?.update.cancel();
+        }
+        if (task) taskStopped = true;
+        // Publish the barrier before waiting for the asynchronous start job.
+        // Its launch checks can then abort without waiting for this operation.
+        offlining = Promise.resolve().then(async () => {
+            await actions.cancelStart();
+            const stopping = client;
+            try { await stopTask(); }
+            finally {
+                await stopProcess(stopping, 'SIGINT');
+                await stopping?.settled;
+            }
+        }).finally(() => { offlining = undefined; });
+        return offlining;
+    }
+
+    function requireCurrentClient(active: ManagedClient | undefined, epoch: number): asserts active is ManagedClient {
+        if (!active || client !== active || active.stopping || active.process.exitCode !== null || offlining || epoch !== clientEpoch) {
+            throw new Error('The managed client stopped before the activity could start.');
+        }
+    }
+
+    async function clientForTask(bot: string, active: ManagedClient, group: RuntimeGroup | null, epoch: number) {
+        requireCurrentClient(active, epoch);
+        if ((active.process.groupId ?? null) === (group?.id ?? null)) return active;
+        if (task) throw new Error('The current activity has not stopped yet.');
+        await stopProcess(active, 'SIGINT');
+        await active.settled;
+        if (offlining || epoch !== clientEpoch || client || task) {
+            throw new Error('The managed client changed while moving to its runtime group.');
+        }
+        const replacement = startClient(bot, group);
+        const deadline = Date.now() + 75_000;
+        let tick: number | undefined;
+        while (Date.now() < deadline) {
+            requireCurrentClient(replacement, epoch);
+            const frame = replacement.feed.state();
+            if (frame?.state.inGame && frame.state.player && isFreshBotState(Date.now() - frame.at)) {
+                if (tick !== undefined && frame.state.tick !== tick) return replacement;
+                tick = frame.state.tick;
+            }
+            await Bun.sleep(250);
+        }
+        await stopProcess(replacement, 'SIGINT');
+        await replacement.settled;
+        throw new Error('The new runtime group did not publish a live game session.');
     }
 
     async function startTask(bot: string, name: DemoTaskName, planned = false, skill?: string, bankTarget?: number,
         options?: ActivityOptions, release?: WorkerRelease) {
         const activeClient = client;
+        const epoch = clientEpoch;
         await pathfinding?.ensureReady();
         const credentials = await botCredentials(bot, workingDir);
         const selected = release ?? await updates?.load();
@@ -254,27 +338,31 @@ export function dashboardDemo(runtimeDir: string, botsDir: string, configDir: st
         const pinned = await updates?.pinTask(selected?.revision, definition.script);
         const script = pinned?.path ?? join(import.meta.dir, 'tasks', definition.script);
         let auditId: string | undefined;
-        let child: Bun.Subprocess<'ignore', 'pipe', 'pipe'>;
+        let child: RuntimeTaskProcess;
         const launchRevision = pinned?.revision ?? selected?.revision ?? revision;
         const update = taskUpdateChannel(command => child.send(command));
         try {
             const scriptSha = pinned?.sha ?? (audit ? await Bun.file(script).arrayBuffer()
                 .then(bytes => createHash('sha256').update(new Uint8Array(bytes)).digest('hex')).catch(() => null) : null);
-            if (!activeClient || client !== activeClient || activeClient.stopping || activeClient.process.exitCode !== null) {
-                throw new Error('The managed client stopped before the activity could start.');
-            }
+            const group = runtime?.assignment(bot) ?? null;
+            requireCurrentClient(activeClient, epoch);
+            const placedClient = await clientForTask(bot, activeClient, group, epoch);
+            requireCurrentClient(placedClient, epoch);
             auditId = audit?.begin(bot, name, launchRevision ?? null, scriptSha, [credentials.password, token]);
             const activityEnv = (selected?.value.taskEnvironment ?? taskEnvironment)(skill, bankTarget, options);
-            child = Bun.spawn([process.execPath, '--no-env-file', script], {
+            const env = {
+                ...process.env, ...activityEnv, BOT_USERNAME: credentials.username, PASSWORD: credentials.password,
+                SERVER: 'rs-sdk.maxbittker.com', SHOW_CHAT: 'false', GATEWAY_DIRECT: 'false',
+                ...(pathfinding && { RS_PATHFINDING_SOCKET: pathfinding.socket }),
+                RS_ACTIVITY: name, RS_ACTIVITY_AUDIT: auditId ? '1' : '0', RS_PLANNED: planned ? '1' : '0',
+            };
+            child = group?.mode === 'client-and-task' && runtime
+                ? runtime.pools.startSdk(group, { bot, script, cwd: writableDir, env, receive: update.receive })
+                : Bun.spawn([process.execPath, '--no-env-file', script], {
                 cwd: writableDir,
                 stdin: 'ignore', stdout: 'pipe', stderr: 'pipe',
                 ipc: update.receive,
-                env: {
-                    ...process.env, ...activityEnv, BOT_USERNAME: credentials.username, PASSWORD: credentials.password,
-                    SERVER: 'rs-sdk.maxbittker.com', SHOW_CHAT: 'false', GATEWAY_DIRECT: 'false',
-                    ...(pathfinding && { RS_PATHFINDING_SOCKET: pathfinding.socket }),
-                    RS_ACTIVITY: name, RS_ACTIVITY_AUDIT: auditId ? '1' : '0', RS_PLANNED: planned ? '1' : '0',
-                },
+                env,
             });
         } catch (error) {
             await pinned?.release().catch(() => { event('task-release-cleanup-failed'); });
@@ -385,13 +473,15 @@ export function dashboardDemo(runtimeDir: string, botsDir: string, configDir: st
         busy = true;
         try {
             if (route === 'client/start') {
-                if (client || task) return json({ error: 'The demo client or task is already running' }, 409);
+                if (client || task || offlining) return json({ error: 'The demo client or task is already running' }, 409);
+                const epoch = clientEpoch;
                 const bot = await provisionBot();
                 await botCredentials(bot, workingDir);
                 if (roster && (await state(bot, roster.created)).availability === 'live') {
                     return json({ error: 'This bot already has a live game client outside Fleet desk.' }, 409);
                 }
                 await mkdir(writableDir, { recursive: true, mode: 0o700 });
+                if (offlining || epoch !== clientEpoch) return json({ error: 'The bot is being taken offline.' }, 409);
                 startClient(bot);
                 return json({ bot, phase: 'starting' }, 202);
             }
@@ -411,13 +501,16 @@ export function dashboardDemo(runtimeDir: string, botsDir: string, configDir: st
                 await startTask(bot, name, false, undefined, undefined, undefined, release);
                 return json({ bot, task: name, phase: 'starting' }, 202);
             }
+            if (route === 'client/stop') {
+                await takeOffline();
+                return json({ ok: true });
+            }
             if (standaloneUpdate) {
                 standaloneUpdate.cancelled = true;
                 task?.update.cancel();
             }
             if (task) taskStopped = true;
             await stopTask();
-            if (route === 'client/stop') await stopProcess(client, 'SIGINT');
             return json({ ok: true });
         } catch {
             event('command-failed', { route });
@@ -600,6 +693,7 @@ export function dashboardDemo(runtimeDir: string, botsDir: string, configDir: st
     function monitoredProcesses(): MonitorProcess[] {
         const handles = [['client', client], ['task', task]] as const;
         return handles.flatMap(([kind, handle]) => handle?.process.exitCode === null
+            && !handle.process.groupId
             ? [{ kind, bot: handle.bot, pid: handle.process.pid, startedAt: handle.startedAt }]
             : []);
     }
@@ -610,6 +704,8 @@ export function dashboardDemo(runtimeDir: string, botsDir: string, configDir: st
 
     return {
         handle, profile, status, allowed, recentEvents, planBackend, inventoryClient, fleetState,
+        activeGroupId: () => client?.process.exitCode === null ? client.process.groupId ?? null : null,
+        takeOffline,
         monitoredProcesses, monitorTimeline, standaloneActivity, requestStandaloneUpdate, cancelStandaloneUpdate, ...actions,
     };
 }

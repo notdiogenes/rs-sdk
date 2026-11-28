@@ -22,6 +22,8 @@ test('keeps endpoints and individual process peaks in a bounded history', () => 
         processes: [
             { ...common, bot: 'Atlas', pid: 10, rssBytes: index === 1511 ? 500 : 10, cpuPercent: index === 2541 ? 85 : 3 },
             { ...common, bot: 'Scout', pid: 11, rssBytes: index === 4962 ? 200 : 20, cpuPercent: index === 6891 ? 45 : 2 },
+            { ...common, bot: null, groupName: 'A', bots: ['Birch'], pid: 12, rssBytes: index === 3021 ? 550 : 30, cpuPercent: index === 5131 ? 75 : 4 },
+            { ...common, bot: null, groupName: 'B', bots: ['Fir'], pid: 13, rssBytes: index === 3022 ? 450 : 40, cpuPercent: index === 5132 ? 65 : 5 },
         ],
     }));
     const sampled = downsampleMonitorHistory(points);
@@ -30,17 +32,19 @@ test('keeps endpoints and individual process peaks in a bounded history', () => 
     expect(indexes).toEqual([...indexes].sort((a, b) => a - b));
     expect(indexes[0]).toBe(0);
     expect(indexes.at(-1)).toBe(7199);
-    for (const index of [1511, 2541, 4962, 6891]) expect(indexes).toContain(index);
+    for (const index of [1511, 2541, 4962, 6891, 3021, 3022, 5131, 5132]) expect(indexes).toContain(index);
 });
 
-test.skipIf(process.platform !== 'linux')('samples a live subprocess and ignores missing or reused descriptors', async () => {
+test.skipIf(process.platform !== 'linux')('samples each PID once and ignores missing or reused descriptors', async () => {
     const child = Bun.spawn([process.execPath, '-e', 'setInterval(() => {}, 60_000)'], {
         stdin: 'ignore', stdout: 'ignore', stderr: 'ignore',
     });
     const live = { kind: 'task', bot: 'Atlas', pid: child.pid, startedAt: new Date().toISOString() } satisfies MonitorProcess;
     const reused = { ...live, bot: 'Scout', startedAt: new Date(Date.now() - 60_000).toISOString() };
     const missing = { ...live, kind: 'client' as const, pid: 2 ** 31 - 1 };
-    const monitor = createDashboardMonitor(() => [live, reused, missing]);
+    const group = { ...live, bot: null, groupName: 'Gathering', bots: ['Atlas', 'Scout'] };
+    let descriptors: MonitorProcess[] = [live, reused, missing, group];
+    const monitor = createDashboardMonitor(() => descriptors);
 
     async function waitFor(condition: (snapshot: MonitorSnapshot) => boolean) {
         for (let attempt = 0; attempt < 300; attempt++) {
@@ -55,17 +59,23 @@ test.skipIf(process.platform !== 'linux')('samples a live subprocess and ignores
         expect(monitor.read()).toMatchObject({ sampledAt: null, processes: [], history: [] });
         monitor.start();
         const first = await waitFor(value => value.sampledAt !== null);
+        expect(first.processes).toHaveLength(2);
         expect(first.processes[0]?.cpuPercent).toBeNull();
         expect(first.processes[0]!.rssBytes).toBeGreaterThan(0);
+        expect(first.processes[0]).toMatchObject(group);
         expect(first.processes[1]).toMatchObject({ rssBytes: null, cpuPercent: null });
-        expect(first.processes[2]).toMatchObject({ rssBytes: null, cpuPercent: null });
-        const second = await waitFor(value => value.processes[0]?.cpuPercent != null);
+        descriptors = [{ ...group, bots: ['Scout'] }, missing];
+        const second = await waitFor(value => value.processes[0]?.bots?.length === 1);
         expect(second.processes[0]!.cpuPercent).toBeGreaterThanOrEqual(0);
         expect(second.history.length).toBeGreaterThanOrEqual(2);
         expect(monitor.read(0).history).toEqual([]);
+        descriptors = [reused, missing];
+        const stale = await waitFor(value => value.processes[0]?.bot === reused.bot);
+        expect(stale.processes[0]).toMatchObject({ rssBytes: null, cpuPercent: null });
         child.kill();
         await child.exited;
-        const third = await waitFor(value => value.processes[0]?.rssBytes === null);
+        descriptors = [group, missing];
+        const third = await waitFor(value => value.processes[0]?.groupName === group.groupName);
         expect(third.processes[0]).toMatchObject({ rssBytes: null, cpuPercent: null });
     } finally {
         monitor.stop();

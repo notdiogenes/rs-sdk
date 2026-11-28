@@ -54,6 +54,8 @@ test('the first live-update deployment leaves an unstamped or legacy worker runn
         expect(worker('changed')).toBe(1);
         legacyWorker('Fleet Desk worker restart inputs v4');
         expect(worker('changed')).toBe(1);
+        legacyWorker('Fleet Desk worker restart inputs v5');
+        expect(worker('changed')).toBe(1);
         expect(worker('record')).toBe(0);
         expect(worker('changed')).toBe(1);
     });
@@ -81,5 +83,10 @@ test('only process-owner changes match the worker restart condition after activa
 
         update('dashboard-plan-runner.ts');
         expect(worker('changed')).toBe(0);
+        for (const path of ['dashboard-runtime-pools.ts', 'runtime-task-host.ts', 'runtime-task-worker.ts']) {
+            expect(worker('record')).toBe(0);
+            update(path);
+            expect(worker('changed')).toBe(0);
+        }
     });
 });

@@ -18,6 +18,8 @@ import { activity } from './dashboard-task-catalog';
 import { handleWorkerRequest, type DashboardWorkerApiRuntime } from './dashboard-worker-api';
 import type { DashboardWorkerUpdates } from './dashboard-worker-policy';
 import { createPlanManager, PlanEditConflict, type Plan } from './dashboard-plan-runner';
+import { dashboardRuntimeGroups } from './dashboard-runtime-groups';
+import { createDashboardRuntimePools } from './dashboard-runtime-pools';
 import { dashboardRoster, type BotProfile } from './dashboard-roster';
 
 export type Bot = {
@@ -55,11 +57,27 @@ export async function createDashboardSupervisor(botsDir: string, configDir: stri
     const git = Bun.spawnSync(['git', 'rev-parse', 'HEAD'], { cwd: import.meta.dir, stderr: 'ignore' });
     const revision = git.success ? git.stdout.toString().trim() : undefined;
     const recordStats = dashboardFleetStats(runtimeDir);
-    const demo = dashboardDemo(runtimeDir, botsDir, configDir, token, recordStats.recordBank, undefined, audit, revision, pathfinding, updates);
+    const groupStore = dashboardRuntimeGroups(runtimeDir);
+    const pools = createDashboardRuntimePools({ dependencies: join(dirname(botsDir), 'server/webclient/node_modules') });
+    const runtime = { pools, assignment: groupStore.assignment };
+    const takingOffline = new Set<string>();
+    const botCommands = new Map<string, Promise<void>>();
+
+    async function sequenceCommand<T>(name: string, run: () => Promise<T>) {
+        const key = name.toLowerCase();
+        const result = (botCommands.get(key) ?? Promise.resolve()).then(run);
+        const settled = result.then(() => {}, () => {});
+        botCommands.set(key, settled);
+        try { return await result; }
+        finally { if (botCommands.get(key) === settled) botCommands.delete(key); }
+    }
+
+    const demo = dashboardDemo(runtimeDir, botsDir, configDir, token, recordStats.recordBank, undefined, audit, revision, pathfinding, updates, runtime);
     const rosterControllers = new Map<string, ReturnType<typeof dashboardDemo>>();
     const managedWorkers = () => [demo, ...rosterControllers.values()];
     const monitor = createDashboardMonitor(() => {
         const processes = managedWorkers().flatMap(worker => worker.monitoredProcesses());
+        processes.push(...pools.monitoredProcesses());
         const shared = pathfinding?.monitoredProcess?.();
         if (shared) processes.push(shared);
         return processes;
@@ -134,16 +152,13 @@ export async function createDashboardSupervisor(botsDir: string, configDir: stri
         const key = profile.name.toLowerCase();
         let worker = rosterControllers.get(key);
         if (!worker) {
-            worker = dashboardDemo(runtimeDir, botsDir, configDir, token, recordStats.recordBank, profile, audit, revision, pathfinding, updates);
+            worker = dashboardDemo(runtimeDir, botsDir, configDir, token, recordStats.recordBank, profile, audit, revision, pathfinding, updates, runtime);
             rosterControllers.set(key, worker);
         }
         return worker;
     }
 
-    async function planBackend(name: string, signal: AbortSignal) {
-        const profile = await botProfile(name);
-        if (!profile) throw new Error('Bot profile not found.');
-        const primary = await primaryStatus().catch(() => null);
+    async function releaseIdlePrimary(profile: BotProfile, primary: ControllerStatus | null, signal: AbortSignal) {
         signal.throwIfAborted();
         if (primary?.bot?.toLowerCase() === profile.name.toLowerCase()) {
             const primaryActivity = dashboardActivity(primary);
@@ -162,6 +177,13 @@ export async function createDashboardSupervisor(botsDir: string, configDir: stri
                 }
             }
         }
+    }
+
+    async function planBackend(name: string, signal: AbortSignal) {
+        const profile = await botProfile(name);
+        if (!profile) throw new Error('Bot profile not found.');
+        if (takingOffline.has(profile.name)) throw new Error('This bot is being taken offline.');
+        await releaseIdlePrimary(profile, await primaryStatus().catch(() => null), signal);
         signal.throwIfAborted();
         const worker = profile.worker ?? getWorker(profile);
         if (workerStatus(profile.name, worker)?.starting) throw new Error('Wait for the existing activity to finish starting.');
@@ -178,7 +200,7 @@ export async function createDashboardSupervisor(botsDir: string, configDir: stri
         return !!primary.client || !!dashboardActivity(primary).starting || (!secondary?.client && !secondary?.starting);
     }
 
-    async function handleBotActivity(request: Request, name: string, session?: string) {
+    async function botActivityRequest(request: Request, name: string, session?: string) {
         const reply = (body: object, status: number) => Response.json(body, { status, headers: { 'Cache-Control': 'no-store' } });
         if (!session && !await demo.allowed(request)) return reply({ error: 'Unauthorized' }, 401);
         try {
@@ -196,12 +218,19 @@ export async function createDashboardSupervisor(botsDir: string, configDir: stri
                 }
                 return reply({ error: 'Pause the running plan before starting another activity.' }, 409);
             }
-            const bundled = body?.action === 'start' && (updates?.current().isActivity ?? isBundledTask)(body.task) &&
-                !primary.tasks.includes(body.task);
-            if (primaryActive && bundled) {
+            const starting = body?.action === 'start';
+            const catalogTask = starting && (updates?.current().isActivity ?? isBundledTask)(body.task);
+            const bundled = catalogTask && !primary.tasks.includes(body.task);
+            // A custom primary-controller script has its own allowlist and launch directory.
+            const primaryOnly = starting && isPrimary && !catalogTask && primary.tasks.includes(body.task);
+            const grouped = !primaryOnly && !!groupStore.assignment(profile.name);
+            if (grouped && body?.action === 'start' && primaryActive) {
+                try { await releaseIdlePrimary(profile, primary, request.signal); }
+                catch (error) { return reply({ error: error instanceof Error ? error.message : 'The primary client is busy.' }, 409); }
+            } else if (primaryActive && bundled) {
                 return reply({ error: 'Stop the primary game client before starting this bundled activity.' }, 409);
             }
-            if (isPrimary && !bundled && usesPrimary(profile.name, primary, profile.worker)) {
+            if (isPrimary && !bundled && (!grouped || (primaryActive && body?.action !== 'start')) && usesPrimary(profile.name, primary, profile.worker)) {
                 const response = await handleActivity(request, token, session, primary.bot ?? undefined);
                 if (!primaryActive && request.method === 'GET' && response.ok) {
                     const status = await response.json();
@@ -215,6 +244,49 @@ export async function createDashboardSupervisor(botsDir: string, configDir: stri
         } catch {
             return reply({ error: 'The bot controller is temporarily unavailable.' }, 503);
         }
+    }
+
+    function handleBotActivity(request: Request, name: string, session?: string) {
+        const run = () => botActivityRequest(request, name, session);
+        return request.method === 'POST' ? sequenceCommand(name, run) : run();
+    }
+
+    async function runtimeState(profile: ManagedProfile) {
+        const worker = profile.worker ?? rosterControllers.get(profile.name.toLowerCase());
+        if (worker?.status(profile.name).client || workerStatus(profile.name, worker)?.starting) {
+            return { online: true, activeGroupId: worker?.activeGroupId() ?? null };
+        }
+        const primary = await primaryStatus();
+        const online = primary?.bot?.toLowerCase() === profile.name.toLowerCase() &&
+            !!(primary?.client || (primary && dashboardActivity(primary).starting));
+        return { online, activeGroupId: null };
+    }
+
+    async function takeOffline(profile: ManagedProfile) {
+        takingOffline.add(profile.name);
+        try {
+            const worker = profile.worker ?? rosterControllers.get(profile.name.toLowerCase());
+            const hadManagedClient = !!worker?.status(profile.name).client || !!workerStatus(profile.name, worker)?.starting;
+            // Fence an in-flight group migration while pause waits for the plan runner to settle.
+            const stopped = await Promise.allSettled([
+                worker?.takeOffline(),
+                plans.active(profile.name) ? plans.pause(profile.name) : undefined,
+            ]);
+            for (const result of stopped) if (result.status === 'rejected') throw result.reason;
+            if (hadManagedClient) return;
+            const primary = await primaryStatus();
+            if (primary?.bot?.toLowerCase() === profile.name.toLowerCase() &&
+                (primary.client || dashboardActivity(primary).starting)) {
+                const stop = new Request('http://fleet-supervisor/bots/activity', {
+                    method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ bot: primary.bot, action: 'stop' }),
+                });
+                if (!(await handleActivity(stop, token, undefined, primary.bot)).ok ||
+                    !(await controllerRequest('/v1/client/stop', `Bearer ${token}`, {})).ok) {
+                    throw new Error('Could not release the primary game client.');
+                }
+            }
+        } finally { takingOffline.delete(profile.name); }
     }
 
     async function inventoryController(profile: ManagedProfile, status?: ControllerStatus | null) {
@@ -370,6 +442,11 @@ export async function createDashboardSupervisor(botsDir: string, configDir: stri
     }, 15 * 60_000).unref();
 
     const apiRuntime: DashboardWorkerApiRuntime = {
+        runtimeGroups: {
+            store: groupStore,
+            state: runtimeState,
+            offline: profile => sequenceCommand(profile.name, () => takeOffline(profile)),
+        },
         botProfile, botRoster, plans, demo, sessions, monitor, managedWorkers, inventory, inventoryController,
         parseInventoryCommand, recordStats, botDiagnostics, diagnostics, dashboardQuestPoints, handleBotActivity, updateSource: updates,
         standaloneUpdates: {
