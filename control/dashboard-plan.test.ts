@@ -92,11 +92,17 @@ test('rejects invalid plans and respects the game finish condition of one-time q
     expect(nextWork(parseSteps([cook])[0]!, world(1, 10, true))).toBeNull();
 });
 
-test('accepts bank totals only for mining tasks in banking mode', () => {
+test('accepts bank totals for mining in banking mode and requires a bar target for mithril smelting', () => {
     const finish = { type: 'bank-stock', quantity: 6000 } as const;
     expect(parseSteps([{ task: 'mine-coal-bank', finish }])[0]?.finish).toEqual(finish);
     expect(() => parseSteps([{ task: 'mine-coal-power', finish }])).toThrow('valid finish condition');
     expect(() => parseSteps([{ task: 'mine-iron-bank', finish: { ...finish, quantity: 0 } }])).toThrow('valid finish condition');
+    const task = 'smelt-mithril-falador';
+    expect(planCatalog.find(entry => entry.id === task)?.stockTargetItem).toBe('mithril bars');
+    const [step] = parseSteps([{ task, finish }]);
+    expect(nextWork(step!, world(1, 10))).toMatchObject({ task, finish, inserted: false });
+    expect(() => parseSteps([{ task, finish: { type: 'forever' } }])).toThrow('target of 1–100,000 mithril bars');
+    expect(() => parseSteps([{ task, finish: { ...finish, quantity: 0 } }])).toThrow('target of 1–100,000 mithril bars');
 });
 
 test('accepts only declared activity options and carries pickpocket banking into eligible prerequisite work', () => {

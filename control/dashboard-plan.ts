@@ -60,11 +60,12 @@ export function parseSteps(value: unknown): Step[] {
         };
         if (meta.usage === 'once' && ending.type === 'complete') return { ...step, finish: { type: 'complete' } };
         if (meta.usage === 'repeatable') {
-            if (ending.type === 'bank-stock' && meta.category === 'Mining' && task.endsWith('-bank') &&
+            if (ending.type === 'bank-stock' && (meta.stockTargetItem || meta.category === 'Mining' && task.endsWith('-bank')) &&
                 typeof ending.quantity === 'number' && Number.isSafeInteger(ending.quantity) &&
                 ending.quantity >= 1 && ending.quantity <= 100_000) {
                 return { ...step, finish: { type: 'bank-stock', quantity: ending.quantity } };
             }
+            if (meta.stockTargetItem) throw new Error(`Choose a target of 1–100,000 ${meta.stockTargetItem} in the bank.`);
             if (task === 'craft-body-runes' && ending.type === 'essence-exhausted') {
                 return { ...step, finish: { type: 'essence-exhausted' } };
             }

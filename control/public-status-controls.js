@@ -2486,10 +2486,10 @@
     const questChoices = () => planCatalog.filter(entry => entry.category === 'Quests');
     const draftCurrentIndex = () => planEditBase.index - removedCompletedIndexes.length;
     const canEditCompletePlan = () => planCanRemoveCompleted && planState?.status === 'complete' && planState.steps.length > 0;
-    const finishLabel = finish => finish.type === 'level' ? `Until ${finish.skill} ${finish.level}`
+    const finishLabel = (finish, stockItem) => finish.type === 'level' ? `Until ${finish.skill} ${finish.level}`
         : finish.type === 'minutes' ? `${finish.minutes} min`
         : finish.type === 'essence-exhausted' ? 'Until rune essence runs out'
-        : finish.type === 'bank-stock' ? `Until ${finish.quantity.toLocaleString('en-US')} in bank`
+        : finish.type === 'bank-stock' ? `Until ${finish.quantity.toLocaleString('en-US')} ${stockItem ? stockItem + ' ' : ''}in bank`
         : finish.type === 'forever' ? 'Indefinite grind' : 'Until complete';
     const requirementLabel = req => req.type === 'quest' ? labelFor(req.task) : `${req.skill} ${req.level}`;
 
@@ -2535,7 +2535,9 @@
     }
 
     function defaultStep(task = planCatalog[0]?.id) {
-        return { task, requirements: [], finish: metaFor(task)?.usage === 'once'
+        const meta = metaFor(task);
+        if (meta?.stockTargetItem) return { task, requirements: [], finish: { type: 'bank-stock', quantity: 100 } };
+        return { task, requirements: [], finish: meta?.usage === 'once'
             ? { type: 'complete' } : { type: 'minutes', minutes: 30 } };
     }
 
@@ -2613,7 +2615,8 @@
         row.append(node('small', meta?.usage === 'once' ? 'One-time quest' : 'Repeatable activity', 'plan-kind'));
         if (meta?.usage === 'repeatable') {
             const stopRow = node('div', '', 'plan-end');
-            const modes = [['minutes', 'Time spent'], ...(meta.trains?.length ? [['level', 'Skill level']] : []),
+            const modes = meta.stockTargetItem ? [['bank-stock', 'Bank stock']]
+                : [['minutes', 'Time spent'], ...(meta.trains?.length ? [['level', 'Skill level']] : []),
                 ...(step.task === 'craft-body-runes' ? [['essence-exhausted', 'Rune essence runs out']] : []),
                 ...(meta.category === 'Mining' && step.task.endsWith('-bank') ? [['bank-stock', 'Bank stock']] : []),
                 ['forever', 'Indefinite grind']];
@@ -2631,7 +2634,9 @@
                 stopRow.append(planField('Skill', planSelect(meta.trains.map(skill => [skill, skill]), step.finish.skill, skill => { step.finish.skill = skill; })),
                     planField('Target level', planNumber(step.finish.level, 1, 99, value => { step.finish.level = value; })));
             } else if (step.finish.type === 'bank-stock') {
-                stopRow.append(planField('Quantity in bank',
+                const item = meta.stockTargetItem;
+                const label = item ? `${item[0].toUpperCase()}${item.slice(1)} in bank` : 'Quantity in bank';
+                stopRow.append(planField(label,
                     planNumber(step.finish.quantity, 1, 100000, value => { step.finish.quantity = value; })));
             }
             row.append(stopRow);
@@ -2747,7 +2752,7 @@
                     title.append(heading, remove);
                     row.append(title);
                 } else row.append(heading);
-                row.append(node('small', finishLabel(step.finish)));
+                row.append(node('small', finishLabel(step.finish, metaFor(step.task)?.stockTargetItem)));
                 for (const option of checkboxOptionsFor(step.task)) {
                     if (step.options?.[option.id] === true) row.append(node('small', option.label));
                 }

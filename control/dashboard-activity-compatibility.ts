@@ -20,7 +20,8 @@ const taskDirectory = 'control/tasks/';
 const scripts = new Set(activityIds.map(task => activity(task).script));
 const usesAdventure = (script: string) => ['pickpocket.ts', 'train-hitpoints.ts', 'train-hp-pickpocket.ts'].includes(script);
 const checkpointScripts = new Set([
-    'fish-sharks.ts', 'mine-resources.ts', 'pickpocket.ts', 'train-cows.ts', 'train-hitpoints.ts', 'train-hp-pickpocket.ts',
+    'fish-sharks.ts', 'mine-resources.ts', 'pickpocket.ts', 'smelt-mithril-falador.ts',
+    'train-cows.ts', 'train-hitpoints.ts', 'train-hp-pickpocket.ts',
 ]);
 const questCombat = new Set(['quests/dragon-slayer.ts', 'quests/lost-city.ts']);
 
@@ -32,8 +33,9 @@ export function activityAffected(task: ActivityId, paths: readonly string[]): bo
         if (path.startsWith('sdk/') || path.startsWith('server/vendor/rsmod-pathfinder/')) return true;
         if (['package.json', 'bun.lock', 'bun.lockb'].includes(path)) return true;
         if (path === 'control/mining-routes.ts') return category === 'Mining';
-        if (path === 'control/bank-locations.ts') return category === 'Mining' || category === 'Fishing';
-        if (path === 'control/dashboard-task-activity.ts') return category === 'Mining' || category === 'Fishing';
+        if (path === 'control/bank-locations.ts' || path === 'control/dashboard-task-activity.ts') {
+            return category === 'Mining' || category === 'Fishing' || category === 'Smithing';
+        }
         if (path === 'control/task-update-safety.ts' || path === 'control/tasks/update-checkpoint.ts') return checkpointScripts.has(script);
         if (path === 'control/dashboard-worker-policy.ts') return true;
         if (path === 'control/dashboard-task-catalog.ts') return usesAdventure(script);
@@ -44,6 +46,7 @@ export function activityAffected(task: ActivityId, paths: readonly string[]): bo
         if (changed === script) return true;
         if (scripts.has(changed)) return false;
         if (changed === 'adventure.ts') return usesAdventure(script);
+        if (changed === 'mithril-smithing-training.ts') return script === 'smelt-mithril-falador.ts';
         if (changed === 'tutorial.ts') return script === 'pickpocket.ts' || script === 'skip-tutorial.ts';
         if (changed === 'quests/shared.ts') return script.startsWith('quests/');
         if (changed === 'quests/quest-combat.ts') return questCombat.has(script);

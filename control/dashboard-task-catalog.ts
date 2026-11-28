@@ -23,9 +23,11 @@ const pickpocketOptions = [
 
 type Activity = ActivitySettingsContract & {
     label: string;
-    category: 'Quests' | 'Combat' | 'Thieving' | 'Runecraft' | 'Mining' | 'Fishing' | 'Setup' | 'Legacy';
+    category: 'Quests' | 'Combat' | 'Thieving' | 'Runecraft' | 'Mining' | 'Fishing' | 'Smithing' | 'Setup' | 'Legacy';
     usage: 'once' | 'repeatable';
     script: string;
+    /** When set, plans require a bank-stock target for this item. */
+    stockTargetItem?: string;
     requirements?: Requirement[];
     trains?: readonly TrainingSkill[];
     journal?: number;
@@ -119,6 +121,10 @@ export const activityCatalog = {
         label: 'Craft Body runes', category: 'Runecraft', usage: 'repeatable', script: 'craft-body-runes.ts', trains: ['Runecraft'],
     },
     ...miningActivities,
+    'smelt-mithril-falador': {
+        label: 'Smelt mithril bars in Falador', category: 'Smithing', usage: 'repeatable',
+        script: 'smelt-mithril-falador.ts', stockTargetItem: 'mithril bars',
+    },
     'fish-sharks': {
         label: 'Fish sharks', category: 'Fishing', usage: 'repeatable', script: 'fish-sharks.ts', trains: ['Fishing'],
     },
