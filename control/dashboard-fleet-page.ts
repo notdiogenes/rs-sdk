@@ -86,9 +86,10 @@ function cardAction(label: string, icon: FleetActionIcon, attributes: string) {
 function card(bot: Bot, category: Group, reason: string, managed: ControlActivity | undefined, now: number,
     reportedActivity?: LastActivity) {
     const name = escape(bot.name);
-    const last = reportedActivity ?? bot.lastActivity;
+    const waiting = category === 'idle' && managed?.waiting === reason;
+    const last = waiting ? undefined : reportedActivity ?? bot.lastActivity;
     const timestamp = last ? `<time datetime="${escape(last.at)}">${activityClock.format(new Date(last.at))}</time>` : '';
-    const activityDetail = last?.reason.split(' · ').map(signal => {
+    const activityDetail = waiting ? reportedActivity?.reason ?? reason : last?.reason.split(' · ').map(signal => {
         if (signal !== 'Moved') return signal;
         return bot.location ? `Moved to ${bot.location}` : 'Position changed';
     }).join(' · ') ?? 'No activity observed';
@@ -99,7 +100,7 @@ function card(bot: Bot, category: Group, reason: string, managed: ControlActivit
     const activityButton = managed?.running
         ? cardAction(pausePlan ? 'Pause plan' : 'Stop activity', pausePlan ? 'pause' : 'stop', `data-bot="${name}" data-action="stop"`) : '';
     const planButton = cardAction(bot.plan ? 'View plan' : 'Plan activities', 'plan', `data-plan-bot="${name}"`);
-    const showReason = reason !== bot.activity && (category === 'attention' || managed?.waiting === reason);
+    const showReason = category === 'attention' && reason !== bot.activity;
     return `<article class="bot" data-bot-row data-name="${name}" data-status="${category}">
     <div class="bot-header">
       <div class="bot-identity"><h3>${name}</h3><span class="badge bot-status ${category}" title="${escape(reason)}">${groups[category]}</span></div>
@@ -109,7 +110,7 @@ function card(bot: Bot, category: Group, reason: string, managed: ControlActivit
       ${showReason ? `<p class="reason">${escape(reason)}</p>` : ''}
     </div>
     <div class="last-activity">
-      <span>Last activity</span>${timestamp}<strong>${escape(activityDetail)}</strong>
+      <span>${waiting ? 'Current activity' : 'Last activity'}</span>${timestamp}<strong>${escape(activityDetail)}</strong>
     </div>
     <dl class="facts">
       ${fact('Heartbeat', timeAgo(now, bot.heartbeat))}

@@ -7,6 +7,7 @@ import { dashboardAudit as recordDashboardAudit } from './dashboard-audit';
 import { auditDashboardLocation, readDashboardAudit } from './dashboard-audit-report';
 import { dashboardPresentation } from './dashboard-presentation';
 import { fleetPage } from './dashboard-fleet-page';
+import type { Bot } from './public-status';
 import { dashboardWebHandler } from './dashboard-web';
 import { dashboardSessions } from './dashboard-session';
 
@@ -88,10 +89,10 @@ test('renders named task activity with its own timestamp and ignores reports fro
     const recording = recordDashboardAudit(directory, () => now);
     const reports = new Database(join(directory, 'activity-audit.sqlite'), { readonly: true });
     const run = recording.begin('Scout', 'mine-coal-bank', null, null, ['test-secret']);
-    const bot = {
+    const bot: Bot = {
         name: 'Scout', status: 'Online', activity: 'Mine and bank coal', location: 'X 2635, Z 3381 · Plane 0',
         lastActivity: { at: new Date(now).toISOString(), reason: 'Moved' },
-        control: { running: true, startedAt: new Date(now).toISOString() },
+        control: { bot: 'Scout', running: true, startedAt: new Date(now).toISOString() },
     };
     const handle = dashboardWebHandler(
         async () => Response.json({ bots: [bot], checkedAt: new Date(now).toISOString() }),
@@ -102,6 +103,16 @@ test('renders named task activity with its own timestamp and ignores reports fro
     try {
         expect(await render()).toContain('Moved to X 2635, Z 3381');
         now += 120_000;
+        bot.control!.waiting = 'Recovering HP · resumes at 40 HP';
+        const recovering = await render();
+        expect(recovering).toContain('data-name="Scout" data-status="idle"');
+        expect(recovering).toContain('<span>Current activity</span><strong>Recovering HP · resumes at 40 HP</strong>');
+        expect(recovering).not.toContain('class="reason"');
+        expect(recovering).not.toContain('Moved to X 2635, Z 3381');
+        expect(recovering).toContain('<dt>Last Action</dt><dd class="">2m</dd>');
+        recording.append(run, { kind: 'task-event', name: 'fleet-activity', label: 'Restocking food' });
+        expect(await render()).toContain('<span>Current activity</span><strong>Restocking food</strong>');
+        delete bot.control!.waiting;
         recording.append(run, { kind: 'task-event', name: 'fleet-activity', label: 'Walking to Fishing Guild Bank' });
         const page = await render();
         expect(page).toContain('<span>Last activity</span><time datetime="2026-11-27T23:22:00.000Z">Nov 27, 2026, 6:22 PM EST</time><strong>Walking to Fishing Guild Bank</strong>');

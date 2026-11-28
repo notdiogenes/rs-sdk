@@ -161,7 +161,7 @@ export function dashboardWebHandler(worker: CallSupervisor, presentation: LoadPr
         if (request.method === 'GET') {
             for (const bot of data?.bots ?? []) {
                 const control = bot.control;
-                if (bot.status !== 'Online' || !control?.running || control.transitioning || control.waiting || !control.startedAt) continue;
+                if (bot.status !== 'Online' || !control?.running || control.transitioning || !control.startedAt) continue;
                 const startedAt = Date.parse(control.startedAt);
                 if (!Number.isFinite(startedAt)) continue;
                 try {

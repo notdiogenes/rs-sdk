@@ -151,10 +151,13 @@
         for (const selector of ['.bot-status', '.card-task', '[data-plan-bot]']) {
             replaceChanged(card.querySelector(selector), incoming.querySelector(selector));
         }
-        const action = card.querySelector('.last-activity strong');
-        setText(action, incoming.querySelector('.last-activity strong').textContent);
-        const time = card.querySelector('.last-activity time');
-        const nextTime = incoming.querySelector('.last-activity time');
+        const activity = card.querySelector('.last-activity');
+        const nextActivity = incoming.querySelector('.last-activity');
+        setText(activity.querySelector('span'), nextActivity.querySelector('span').textContent);
+        const action = activity.querySelector('strong');
+        setText(action, nextActivity.querySelector('strong').textContent);
+        const time = activity.querySelector('time');
+        const nextTime = nextActivity.querySelector('time');
         if (time && nextTime) {
             if (time.dateTime !== nextTime.dateTime) time.dateTime = nextTime.dateTime;
             setText(time, nextTime.textContent);
