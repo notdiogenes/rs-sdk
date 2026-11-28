@@ -11,7 +11,7 @@ import { auditPrefix } from '../sdk/audit-trace';
 import type { DashboardAudit } from './dashboard-audit';
 import type { MonitorProcess } from './dashboard-monitor';
 import { taskActivityLabel } from './dashboard-task-activity';
-import { activity, activityIds, isActivity, type ActivityId } from './dashboard-task-catalog';
+import { activity, activityIds, isActivity, type ActivityId, type ActivityOptions } from './dashboard-task-catalog';
 
 const taskName = 'pickpocket-men';
 export const isBundledTask = isActivity;
@@ -233,7 +233,7 @@ export function dashboardDemo(runtimeDir: string, botsDir: string, configDir: st
         }).catch(() => { event('client-observer-failed'); });
     }
 
-    async function startTask(bot: string, name: DemoTaskName, planned = false, skill?: string, bankTarget?: number) {
+    async function startTask(bot: string, name: DemoTaskName, planned = false, skill?: string, bankTarget?: number, options?: ActivityOptions) {
         await pathfinding?.ensureReady();
         const credentials = await botCredentials(bot, workingDir);
         const script = join(import.meta.dir, 'tasks', activity(name).script);
@@ -250,6 +250,7 @@ export function dashboardDemo(runtimeDir: string, botsDir: string, configDir: st
                 ...(pathfinding && { RS_PATHFINDING_SOCKET: pathfinding.socket }),
                 RS_ACTIVITY: name, RS_ACTIVITY_AUDIT: auditId ? '1' : '0', RS_PLANNED: planned ? '1' : '0', RS_ACTIVITY_SKILL: skill ?? '',
                 RS_ACTIVITY_BANK_TARGET: bankTarget === undefined ? '' : String(bankTarget),
+                RS_ACTIVITY_PICKPOCKET_BANKING: options?.banking ? '1' : '',
             },
         }); } catch (error) {
             if (auditId) {
@@ -264,7 +265,7 @@ export function dashboardDemo(runtimeDir: string, botsDir: string, configDir: st
         taskStopped = false;
         const launchDetails = { pid: child.pid, ...(pathfinding && { pathfinding: 'shared' }) };
         event('task-started', { task: name, ...launchDetails });
-        if (auditId) audit?.append(auditId, { kind: 'worker', name: 'task-started', ...launchDetails, planned, skill });
+        if (auditId) audit?.append(auditId, { kind: 'worker', name: 'task-started', ...launchDetails, planned, skill, options });
         const readEvents = consumeTaskEvents(child.stdout, running).catch(() => { event('task-event-reader-failed'); });
         const readErrors = child.stderr && consumeTaskErrors(child.stderr).catch(() => { event('task-error-reader-failed'); });
         running.settled = child.exited.then(async exitCode => {
@@ -417,10 +418,10 @@ export function dashboardDemo(runtimeDir: string, botsDir: string, configDir: st
                     sample.botStatus === 'dead' || sample.botStatus === 'stale' || !isFreshBotState(sample.stateAge)) return null;
                 return sample.state;
             },
-            async start(name: ActivityId, skill?: string, bankTarget?: number) {
+            async start(name: ActivityId, skill?: string, bankTarget?: number, options?: ActivityOptions) {
                 if (!client || task || busy || startingPlanTask) throw new Error('The managed client is busy.');
                 startingPlanTask = true;
-                try { await startTask(bot, name, true, skill, bankTarget); }
+                try { await startTask(bot, name, true, skill, bankTarget, options); }
                 finally { startingPlanTask = false; }
             },
             stop: () => planCommand(bot, 'task/stop', true),

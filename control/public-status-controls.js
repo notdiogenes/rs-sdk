@@ -2134,6 +2134,7 @@
     const planUrl = () => '/bots/activity?view=plan' + (planBot ? '&bot=' + encodeURIComponent(planBot) : '');
     const metaFor = id => planCatalog.find(entry => entry.id === id);
     const labelFor = id => metaFor(id)?.label || (id === 'skip-tutorial' ? 'Skip Tutorial Island' : id);
+    const checkboxOptionsFor = task => (metaFor(task)?.options ?? []).filter(option => option.type === 'checkbox');
     const questChoices = () => planCatalog.filter(entry => entry.category === 'Quests');
     const finishLabel = finish => finish.type === 'level' ? `Until ${finish.skill} ${finish.level}`
         : finish.type === 'minutes' ? `${finish.minutes} min`
@@ -2220,6 +2221,9 @@
         select.addEventListener('change', () => {
             const replacement = defaultStep(select.value);
             replacement.requirements = step.requirements.filter(req => req.type !== 'quest' || req.task !== replacement.task);
+            for (const option of checkboxOptionsFor(replacement.task)) {
+                if (step.options?.[option.id] === true) (replacement.options ??= {})[option.id] = true;
+            }
             draft[index] = replacement;
             renderPlan();
         });
@@ -2236,7 +2240,23 @@
         ordering.append(planButton('Remove', () => { draft.splice(index, 1); renderPlan(); }, 'Remove this activity'));
         const head = node('div', '', 'plan-step-head');
         head.append(planField('Activity', select), ordering);
-        row.append(head, node('small', meta?.usage === 'once' ? 'One-time quest' : 'Repeatable activity', 'plan-kind'));
+        row.append(head);
+        for (const option of checkboxOptionsFor(step.task)) {
+            const input = node('input');
+            input.type = 'checkbox';
+            input.checked = step.options?.[option.id] === true;
+            input.addEventListener('change', () => {
+                if (input.checked) (step.options ??= {})[option.id] = true;
+                else if (step.options) {
+                    delete step.options[option.id];
+                    if (!Object.keys(step.options).length) step.options = undefined;
+                }
+            });
+            const field = node('label', '', 'plan-option');
+            field.append(input, option.label);
+            row.append(field);
+        }
+        row.append(node('small', meta?.usage === 'once' ? 'One-time quest' : 'Repeatable activity', 'plan-kind'));
         if (meta?.usage === 'repeatable') {
             const stopRow = node('div', '', 'plan-end');
             const modes = [['minutes', 'Time spent'], ...(meta.trains?.length ? [['level', 'Skill level']] : []),
@@ -2295,6 +2315,9 @@
             bankTarget(oldStep.finish) !== bankTarget(nextStep.finish)) {
             return 'Saving this change may stop the current task and start a different activity.';
         }
+        if (checkboxOptionsFor(nextStep.task).some(({ id }) => (oldStep.options?.[id] === true) !== (nextStep.options?.[id] === true))) {
+            return 'Saving this change may restart the current activity with the new options.';
+        }
         if (JSON.stringify(oldStep.requirements) !== JSON.stringify(nextStep.requirements) || planEditBase.work?.inserted) {
             return 'The current activity may change after Fleet Desk checks the updated step and its prerequisites.';
         }
@@ -2329,7 +2352,12 @@
             const state = index < current ? 'done' : index === current ? 'current' : 'queued';
             const canEdit = editing && (editing !== 'update' || state !== 'done');
             const row = canEdit ? renderStep(step, index) : node('li', '', 'plan-step plan-readonly');
-            if (!canEdit) row.append(node('strong', labelFor(step.task)), node('small', finishLabel(step.finish)));
+            if (!canEdit) {
+                row.append(node('strong', labelFor(step.task)), node('small', finishLabel(step.finish)));
+                for (const option of checkboxOptionsFor(step.task)) {
+                    if (step.options?.[option.id] === true) row.append(node('small', option.label));
+                }
+            }
             if (editing !== 'new') {
                 row.dataset.stepState = state;
                 const marker = node('small', { done: 'Done', current: 'Current', queued: 'Queued' }[state], 'plan-kind plan-step-state');

@@ -330,6 +330,8 @@ dialog h3{margin-top:12px}
 .plan-step-head,.plan-end,.plan-requirement{display:flex;flex-wrap:wrap;align-items:end;gap:8px}
 .plan-step-head>label,.plan-end>label,.plan-requirement>label{flex:1 1 8rem;min-width:0}
 .plan-step-head select,.plan-end select,.plan-end input,.plan-requirement select,.plan-requirement input{width:100%;min-width:0}
+.plan-option{display:flex;align-items:center;gap:8px;width:fit-content;margin-top:8px;padding:4px 0;cursor:pointer}
+.plan-option input{flex:none;margin:0;accent-color:var(--green)}
 .plan-order,.plan-toolbar,.plan-toolbar-actions{display:flex;align-items:center;flex-wrap:wrap;gap:6px}
 .plan-toolbar{border-top:1px solid var(--line);background:#211f1b}
 .plan-toolbar-actions{margin-left:auto;justify-content:flex-end}

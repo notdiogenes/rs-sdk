@@ -6,6 +6,14 @@ export type Requirement =
     | { type: 'level'; skill: TrainingSkill; level: number }
     | { type: 'quest'; task: string };
 
+type ActivityOptionId = 'banking';
+type ActivityOption = { id: ActivityOptionId; type: 'checkbox'; label: string };
+export type ActivityOptions = Partial<Record<ActivityOptionId, true>>;
+
+const pickpocketOptions = [
+    { id: 'banking', type: 'checkbox', label: 'Bank loot and restock food' },
+] satisfies readonly ActivityOption[];
+
 type Activity = {
     label: string;
     category: 'Quests' | 'Combat' | 'Thieving' | 'Runecraft' | 'Mining' | 'Fishing' | 'Setup' | 'Legacy';
@@ -14,6 +22,7 @@ type Activity = {
     requirements?: Requirement[];
     trains?: readonly TrainingSkill[];
     journal?: number;
+    options?: readonly ActivityOption[];
 };
 
 const level = (skill: TrainingSkill, minimum: number): Requirement => ({ type: 'level', skill, level: minimum });
@@ -81,23 +90,23 @@ export const activityCatalog = {
         requirements: [level('Hitpoints', 15)], trains: ['Attack', 'Strength', 'Defence'],
     },
     'pickpocket-men': {
-        label: 'Pickpocket Men', category: 'Thieving', usage: 'repeatable', script: 'pickpocket.ts', trains: ['Thieving'],
+        label: 'Pickpocket Men', category: 'Thieving', usage: 'repeatable', script: 'pickpocket.ts', trains: ['Thieving'], options: pickpocketOptions,
     },
     'pickpocket-guards': {
         label: 'Pickpocket Guards', category: 'Thieving', usage: 'repeatable', script: 'pickpocket.ts',
-        requirements: [level('Thieving', 40)], trains: ['Thieving'],
+        requirements: [level('Thieving', 40)], trains: ['Thieving'], options: pickpocketOptions,
     },
     'pickpocket-knights': {
         label: 'Pickpocket Ardougne Knights', category: 'Thieving', usage: 'repeatable', script: 'pickpocket.ts',
-        requirements: [level('Thieving', 55)], trains: ['Thieving'],
+        requirements: [level('Thieving', 55)], trains: ['Thieving'], options: pickpocketOptions,
     },
     'pickpocket-paladins': {
         label: 'Pickpocket Paladins', category: 'Thieving', usage: 'repeatable', script: 'pickpocket.ts',
-        requirements: [level('Thieving', 70)], trains: ['Thieving'],
+        requirements: [level('Thieving', 70)], trains: ['Thieving'], options: pickpocketOptions,
     },
     'pickpocket-heroes': {
         label: 'Pickpocket Heroes', category: 'Thieving', usage: 'repeatable', script: 'pickpocket.ts',
-        requirements: [level('Thieving', 80), level('Hitpoints', 80)], trains: ['Thieving'],
+        requirements: [level('Thieving', 80), level('Hitpoints', 80)], trains: ['Thieving'], options: pickpocketOptions,
     },
     'craft-body-runes': {
         label: 'Craft Body runes', category: 'Runecraft', usage: 'repeatable', script: 'craft-body-runes.ts', trains: ['Runecraft'],
@@ -120,6 +129,24 @@ export type ActivityId = keyof typeof activityCatalog;
 export const isActivity = (id: unknown): id is ActivityId => typeof id === 'string' && Object.hasOwn(activityCatalog, id);
 export const activity = (id: ActivityId): Activity => activityCatalog[id];
 export const activityIds = Object.keys(activityCatalog) as ActivityId[];
+
+export function activityOptionsFor(task: ActivityId, values?: Readonly<Record<string, unknown>>): ActivityOptions | undefined {
+    const enabled = activity(task).options?.filter(({ id }) => values?.[id] === true);
+    return enabled?.length ? Object.fromEntries(enabled.map(({ id }) => [id, true])) : undefined;
+}
+
+export function parseActivityOptions(task: ActivityId, value: unknown): ActivityOptions | undefined {
+    if (value === undefined) return undefined;
+    if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Invalid activity options.');
+    const values = value as Record<string, unknown>;
+    const options = activity(task).options;
+    for (const [id, enabled] of Object.entries(values)) {
+        if (!options?.some(option => option.id === id) || typeof enabled !== 'boolean') {
+            throw new Error('Choose a valid option for this activity.');
+        }
+    }
+    return activityOptionsFor(task, values);
+}
 
 export const planCatalog = activityIds.flatMap(id => {
     const { script, ...meta } = activity(id);

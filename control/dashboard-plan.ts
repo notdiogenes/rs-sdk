@@ -1,5 +1,6 @@
 import type { BotWorldState } from '../sdk/types';
-import { activity, activityIds, isActivity, inTutorialDestination, onTutorial, trainingSkills, type ActivityId, type Requirement, type TrainingSkill } from './dashboard-task-catalog';
+import { activity, activityIds, activityOptionsFor, isActivity, inTutorialDestination, onTutorial, parseActivityOptions, trainingSkills,
+    type ActivityId, type ActivityOptions, type Requirement, type TrainingSkill } from './dashboard-task-catalog';
 
 export type Finish =
     | { type: 'complete' }
@@ -8,8 +9,8 @@ export type Finish =
     | { type: 'minutes'; minutes: number }
     | { type: 'level'; skill: TrainingSkill; level: number }
     | { type: 'forever' };
-export type Step = { task: ActivityId; finish: Finish; requirements: Requirement[] };
-export type Work = { task: ActivityId; finish: Finish; inserted: boolean; reason?: string };
+export type Step = { task: ActivityId; finish: Finish; requirements: Requirement[]; options?: ActivityOptions };
+export type Work = { task: ActivityId; finish: Finish; inserted: boolean; reason?: string; options?: ActivityOptions };
 
 const isLevel = (value: unknown): value is number =>
     typeof value === 'number' && Number.isSafeInteger(value) && value >= 1 && value <= 99;
@@ -35,7 +36,7 @@ function parseRequirement(value: unknown): Requirement {
 export function parseSteps(value: unknown): Step[] {
     if (!Array.isArray(value) || !value.length || value.length > 12) throw new Error('Add between 1 and 12 activities.');
     return value.map((entry, index) => {
-        const { task, finish, requirements = [] } = fields(entry);
+        const { task, finish, requirements = [], options } = fields(entry);
         if (!isActivity(task) || ['Setup', 'Legacy'].includes(activity(task).category)) {
             throw new Error('Choose an activity from the plan catalog.');
         }
@@ -44,26 +45,28 @@ export function parseSteps(value: unknown): Step[] {
         if (parsed.some(req => req.type === 'quest' && req.task === task)) throw new Error('A quest cannot require itself.');
         const ending = fields(finish);
         const meta = activity(task);
-        if (meta.usage === 'once' && ending.type === 'complete') return { task, requirements: parsed, finish: { type: 'complete' } };
+        const enabled = parseActivityOptions(task, options);
+        const step = { task, requirements: parsed, ...(enabled && { options: enabled }) };
+        if (meta.usage === 'once' && ending.type === 'complete') return { ...step, finish: { type: 'complete' } };
         if (meta.usage === 'repeatable') {
             if (ending.type === 'bank-stock' && meta.category === 'Mining' && task.endsWith('-bank') &&
                 typeof ending.quantity === 'number' && Number.isSafeInteger(ending.quantity) &&
                 ending.quantity >= 1 && ending.quantity <= 100_000) {
-                return { task, requirements: parsed, finish: { type: 'bank-stock', quantity: ending.quantity } };
+                return { ...step, finish: { type: 'bank-stock', quantity: ending.quantity } };
             }
             if (task === 'craft-body-runes' && ending.type === 'essence-exhausted') {
-                return { task, requirements: parsed, finish: { type: 'essence-exhausted' } };
+                return { ...step, finish: { type: 'essence-exhausted' } };
             }
             if (ending.type === 'forever') {
                 if (index !== value.length - 1) throw new Error('An indefinite grind must be the final activity.');
-                return { task, requirements: parsed, finish: { type: 'forever' } };
+                return { ...step, finish: { type: 'forever' } };
             }
             if (ending.type === 'minutes' && typeof ending.minutes === 'number' && Number.isSafeInteger(ending.minutes) &&
                 ending.minutes >= 1 && ending.minutes <= 10_080) {
-                return { task, requirements: parsed, finish: { type: 'minutes', minutes: ending.minutes } };
+                return { ...step, finish: { type: 'minutes', minutes: ending.minutes } };
             }
             if (ending.type === 'level' && isSkill(ending.skill) && meta.trains?.includes(ending.skill) && isLevel(ending.level)) {
-                return { task, requirements: parsed, finish: { type: 'level', skill: ending.skill, level: ending.level } };
+                return { ...step, finish: { type: 'level', skill: ending.skill, level: ending.level } };
             }
         }
         throw new Error('Choose a valid finish condition for each activity. Durations must be 1–10,080 minutes.');
@@ -103,7 +106,7 @@ export function nextWork(step: Step, state: BotWorldState, elapsedMs = 0): Work 
     if (onTutorial(player.worldX, player.worldZ)) {
         return { task: 'skip-tutorial', finish: { type: 'complete' }, inserted: true, reason: 'Leave Tutorial Island' };
     }
-    const requested: Work = { task: step.task, finish: step.finish, inserted: false };
+    const requested: Work = { task: step.task, finish: step.finish, inserted: false, ...(step.options && { options: step.options }) };
     if (finished(requested, state, elapsedMs)) return null;
 
     function resolve(req: Requirement, visited: Set<ActivityId>): Work {
@@ -136,5 +139,8 @@ export function nextWork(step: Step, state: BotWorldState, elapsedMs = 0): Work 
 
     // Meet fixed requirements in catalog order, then any requirements added by the user.
     const missing = [...(activity(step.task).requirements ?? []), ...step.requirements].find(req => !met(req, state));
-    return missing ? resolve(missing, new Set()) : requested;
+    if (!missing) return requested;
+    const prerequisite = resolve(missing, new Set());
+    const options = activityOptionsFor(prerequisite.task, step.options);
+    return options ? { ...prerequisite, options } : prerequisite;
 }

@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import type { BotWorldState } from '../sdk/types';
 import type { ControllerStatus } from './dashboard-activity';
 import { finished, nextWork, type Step, type Work } from './dashboard-plan';
-import { activity, type ActivityId } from './dashboard-task-catalog';
+import { activity, type ActivityId, type ActivityOptions } from './dashboard-task-catalog';
 
 export type Plan = {
     bot: string;
@@ -21,7 +21,7 @@ export type PlanBackend = {
     status(): ControllerStatus;
     prepare(signal: AbortSignal): Promise<void>;
     observe(): Promise<BotWorldState | null>;
-    start(task: ActivityId, skill?: string, bankTarget?: number): Promise<void>;
+    start(task: ActivityId, skill?: string, bankTarget?: number, options?: ActivityOptions): Promise<void>;
     stop(): Promise<void>;
 };
 
@@ -37,17 +37,21 @@ function readPlan(data: string): Plan {
     return plan;
 }
 
+const sameOptions = (first?: ActivityOptions, second?: ActivityOptions) =>
+    JSON.stringify(first ?? {}) === JSON.stringify(second ?? {});
+
 function sameStep(first: Step | undefined, second: Step | undefined) {
     if (!first || !second) return first === second;
     return first.task === second.task && JSON.stringify(first.finish) === JSON.stringify(second.finish) &&
-        JSON.stringify(first.requirements) === JSON.stringify(second.requirements);
+        JSON.stringify(first.requirements) === JSON.stringify(second.requirements) && sameOptions(first.options, second.options);
 }
 
 const workSkill = (work: Work) => work.finish.type === 'level' ? work.finish.skill : undefined;
 const workBankTarget = (work: Work) => work.finish.type === 'bank-stock' ? work.finish.quantity : undefined;
 
 function sameLaunch(first: Work, second: Work) {
-    return first.task === second.task && workSkill(first) === workSkill(second) && workBankTarget(first) === workBankTarget(second);
+    return first.task === second.task && workSkill(first) === workSkill(second) &&
+        workBankTarget(first) === workBankTarget(second) && sameOptions(first.options, second.options);
 }
 
 export function createPlanManager(directory: string, backendFor: (bot: string, signal: AbortSignal) => Promise<PlanBackend>) {
@@ -124,7 +128,7 @@ export function createPlanManager(directory: string, backendFor: (bot: string, s
                 signal.throwIfAborted();
                 if (backend.status().task) throw new Error('Stop the current activity before running a plan.');
                 const launchedWork = { ...work };
-                await backend.start(work.task, workSkill(work), workBankTarget(work));
+                await backend.start(work.task, workSkill(work), workBankTarget(work), work.options);
                 owned = true;
                 let lastLive = Date.now();
                 let previous = lastLive;

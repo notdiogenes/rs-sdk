@@ -6,6 +6,7 @@ import type { BotWorldState } from '../sdk/types';
 import { nextWork, parseSteps } from './dashboard-plan';
 import { createPlanManager, PlanEditConflict, type PlanBackend } from './dashboard-plan-runner';
 import { dashboardRoster } from './dashboard-roster';
+import { planCatalog } from './dashboard-task-catalog';
 
 function world(thieving: number, hp: number, cook = false, tutorial = false) {
     return {
@@ -64,6 +65,25 @@ test('accepts bank totals only for mining tasks in banking mode', () => {
     expect(parseSteps([{ task: 'mine-coal-bank', finish }])[0]?.finish).toEqual(finish);
     expect(() => parseSteps([{ task: 'mine-coal-power', finish }])).toThrow('valid finish condition');
     expect(() => parseSteps([{ task: 'mine-iron-bank', finish: { ...finish, quantity: 0 } }])).toThrow('valid finish condition');
+});
+
+test('accepts only declared activity options and carries pickpocket banking into eligible prerequisite work', () => {
+    const finish = { type: 'forever' };
+    const task = 'pickpocket-heroes';
+    const options = { banking: true } as const;
+    expect(planCatalog.find(entry => entry.id === task)?.options).toEqual([
+        { id: 'banking', type: 'checkbox', label: 'Bank loot and restock food' },
+    ]);
+    const [step] = parseSteps([{ task, finish, options }]);
+    expect(step?.options).toEqual(options);
+    expect(nextWork(step!, world(70, 99))).toMatchObject({ task: 'pickpocket-paladins', inserted: true, options });
+    expect(nextWork(step!, world(80, 99))).toMatchObject({ task, inserted: false, options });
+    expect(nextWork(step!, world(80, 10))?.options).toBeUndefined();
+    expect(nextWork(step!, world(80, 99, true, true))?.options).toBeUndefined();
+    expect(parseSteps([{ task, finish, options: { banking: false } }])[0]?.options).toBeUndefined();
+    expect(() => parseSteps([{ task, finish, options: { banking: 'true' } }])).toThrow('valid option');
+    expect(() => parseSteps([{ task, finish, options: { unknown: true } }])).toThrow('valid option');
+    expect(() => parseSteps([{ task: 'fish-sharks', finish, options }])).toThrow('valid option');
 });
 
 test('creates private profiles and rejects duplicate names case-insensitively', async () => {
@@ -279,6 +299,44 @@ test('an edit during task launch restarts only after the old child stops when la
         rmSync(directory, { recursive: true, force: true });
     }
 }, 15_000);
+
+test('editing the active banking option relaunches the child and persists through resume', async () => {
+    const directory = mkdtempSync(join(process.cwd(), '.plan-test-'));
+    const game = world(80, 99);
+    const status: ReturnType<PlanBackend['status']> = { bot: 'Bot', tasks: [], client: null, task: null };
+    const launched: boolean[] = [];
+    const backend: PlanBackend = {
+        status: () => status,
+        async prepare() { status.client = { startedAt: new Date().toISOString(), stopping: false }; },
+        async observe() { game.tick++; return game; },
+        async start(name, _skill, _target, options) {
+            expect(status.task).toBeNull();
+            launched.push(options?.banking === true);
+            status.task = { name, startedAt: new Date().toISOString(), stopping: false };
+        },
+        async stop() { status.task = null; },
+    };
+    let manager = createPlanManager(directory, async () => backend);
+    const steps = (banking: boolean) => parseSteps([{ task: 'pickpocket-heroes', finish: { type: 'forever' }, options: { banking } }]);
+    try {
+        manager.start('Bot', steps(false));
+        await until(() => launched.length === 1);
+        manager.update('Bot', steps(true), manager.get('Bot')!.revision);
+        await until(() => launched.length === 2);
+        expect(launched).toEqual([false, true]);
+        await manager.pause('Bot');
+        manager.close();
+        manager = createPlanManager(directory, async () => backend);
+        expect(manager.get('Bot')?.steps[0]?.options?.banking).toBe(true);
+        manager.resume('Bot');
+        await until(() => launched.length === 3);
+        expect(launched).toEqual([false, true, true]);
+    } finally {
+        await manager.pause('Bot');
+        manager.close();
+        rmSync(directory, { recursive: true, force: true });
+    }
+}, 20_000);
 
 test('edits legacy completed plans without restarting and rejects a persisted stale revision', () => {
     const directory = mkdtempSync(join(process.cwd(), '.plan-test-'));

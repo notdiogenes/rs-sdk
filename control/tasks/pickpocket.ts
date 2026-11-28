@@ -18,7 +18,7 @@ const result = await runScript(async ctx => {
             if (target === 'men') await leaveTutorial(ctx);
             else await ctx.sdk.waitForReady();
         }, () => ({ outcome: 'ready' }));
-    await adventure(ctx).pickpocket(target);
+    await adventure(ctx).pickpocket(target, process.env.RS_ACTIVITY_PICKPOCKET_BANKING === '1');
 }, { printState: false });
 
 if (!result.success) process.exitCode = 1;
