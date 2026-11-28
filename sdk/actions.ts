@@ -8,7 +8,6 @@ import { throwIfExecutionAborted, withExecutionDeadline } from './execution-cont
 import { GEActions } from './ge-actions';
 import type { GEOfferRequest, GEActionResult } from './ge-types';
 import { ActionHelpers, ALREADY_FIGHTING_REFUSALS, NO_RUNES_REFUSALS } from './actions-helpers';
-import { findDoorsAlongPath, isTileWalkable } from './pathfinding';
 import type {
     ActionResult,
     BotWorldState,
@@ -1160,7 +1159,7 @@ export class BotActions {
                 // Temporarily exclude after repeated reach failures. The
                 // session-owned evidence expires automatically.
                 if (fails >= 3 && !this.sdk.isDoorTemporarilyBlocked(level, nearest.x, nearest.z)) {
-                    this.sdk.blockDoorTemporarily(level, nearest.x, nearest.z);
+                    await this.sdk.sendBlockDoorTemporarily(level, nearest.x, nearest.z);
                     console.log(`[walkTo] Temporarily avoiding impassable door at (${nearest.x}, ${nearest.z}) — re-routing`);
                 }
             }
@@ -1183,9 +1182,8 @@ export class BotActions {
                     // cause is a destination that is simply blocked — a wall, or a
                     // tile a loc stands on. Say which, so callers pick a neighbour
                     // tile instead of chasing a phantom pathfinder bug.
-                    const level = this.sdk.getState()?.player?.level ?? 0;
                     const reason = path.error
-                        ?? (isTileWalkable(level, x, z) ? 'no waypoints' : 'destination tile is blocked');
+                        ?? (path.destinationWalkable === false ? 'destination tile is blocked' : 'no waypoints');
                     console.error(`[walkTo] PATHFINDING FAILED: ${reason} - from (${pos.x}, ${pos.z}) to (${x}, ${z})`);
                     return { success: false, message: `No path to (${x}, ${z}) from (${pos.x}, ${pos.z}): ${reason}` };
                 }
@@ -1215,7 +1213,7 @@ export class BotActions {
             lastPartialEnd = partial ? { x: endWp.x, z: endWp.z } : null;
 
             // Identify doors the path crosses through so we can open them proactively
-            const requiredDoors = findDoorsAlongPath(path.waypoints);
+            const requiredDoors = path.doors ?? [];
             const requiredDoorKeys = new Set(requiredDoors.map(d => `${d.x},${d.z}`));
 
             // Walk waypoints
@@ -1249,7 +1247,7 @@ export class BotActions {
                                     } else if (result === 'locked') {
                                         // Definitely locked right now — avoid it for
                                         // this session's next path queries.
-                                        this.sdk.blockDoorTemporarily(door.level, door.x, door.z);
+                                        await this.sdk.sendBlockDoorTemporarily(door.level, door.x, door.z);
                                         requiredDoorKeys.delete(dk);
                                         console.log(`[walkTo] Temporarily avoiding locked door at (${door.x}, ${door.z}) — re-routing`);
                                         break; // Re-query path on next iteration
@@ -1266,7 +1264,7 @@ export class BotActions {
                                         const fails = (doorFailCounts.get(dk) ?? 0) + 1;
                                         doorFailCounts.set(dk, fails);
                                         if (fails >= 3) {
-                                            this.sdk.blockDoorTemporarily(door.level, door.x, door.z);
+                                            await this.sdk.sendBlockDoorTemporarily(door.level, door.x, door.z);
                                             requiredDoorKeys.delete(dk);
                                             console.log(`[walkTo] Temporarily avoiding impassable door at (${door.x}, ${door.z}) after ${fails} failures — re-routing`);
                                         } else {

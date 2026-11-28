@@ -26,6 +26,8 @@ case "${4:-legacy}" in
             "$source_dir/dashboard-demo.ts" "$source_dir/dashboard-task-catalog.ts" "$source_dir/dashboard-roster.ts" "$source_dir/mining-routes.ts"
             "$source_dir/dashboard-plan.ts" "$source_dir/dashboard-plan-runner.ts" "$source_dir"/tasks/*.ts
             "$source_dir/../sdk/audit-trace.ts" "$source_dir/../sdk/index.ts" "$source_dir/../sdk/runner.ts"
+            "$source_dir/../sdk/"pathfinding*.ts "$source_dir/../sdk/collision-data.json"
+            "$source_dir/../server/vendor/rsmod-pathfinder/rsmod-pathfinder.js" "$source_dir/../server/vendor/rsmod-pathfinder/rsmod_bg.wasm"
             "$source_dir/../sdk/inventory-command.ts" "$source_dir/../sdk/fleet-telemetry.ts"
             "$source_dir"/tasks/quests/*.ts "$source_dir/../server/webclient/src/lite/runner.ts"
             "$source_dir/../server/webclient/src/lite/LiteClient.ts" "$source_dir/../server/webclient/src/lite/actions.ts"

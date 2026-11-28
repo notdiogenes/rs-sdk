@@ -48,8 +48,11 @@ async function stopProcess(handle: Process | undefined, signal: 'SIGINT' | 'SIGT
     try { await handle.process.exited; } finally { clearTimeout(deadline); }
 }
 
+export type DashboardPathfinding = { socket: string; ensureReady(): Promise<void> };
+
 export function dashboardDemo(runtimeDir: string, botsDir: string, configDir: string, token: string,
-    recordBank: ReturnType<typeof dashboardFleetStats>['recordBank'], roster?: BotProfile, audit?: DashboardAudit, revision?: string) {
+    recordBank: ReturnType<typeof dashboardFleetStats>['recordBank'], roster?: BotProfile, audit?: DashboardAudit, revision?: string,
+    pathfinding?: DashboardPathfinding) {
     const writableDir = roster ? join(runtimeDir, 'managed-bots', roster.name) : join(runtimeDir, 'pickpocket-demo');
     const workingDir = roster?.directory ?? writableDir;
     const envFile = join(workingDir, 'bot.env');
@@ -207,6 +210,7 @@ export function dashboardDemo(runtimeDir: string, botsDir: string, configDir: st
     }
 
     async function startTask(bot: string, name: DemoTaskName, planned = false, skill?: string, bankTarget?: number) {
+        await pathfinding?.ensureReady();
         const credentials = await botCredentials(bot, workingDir);
         const script = join(import.meta.dir, 'tasks', activity(name).script);
         const scriptSha = audit ? await Bun.file(script).arrayBuffer()
@@ -219,6 +223,7 @@ export function dashboardDemo(runtimeDir: string, botsDir: string, configDir: st
             env: {
                 ...process.env, BOT_USERNAME: credentials.username, PASSWORD: credentials.password,
                 SERVER: 'rs-sdk.maxbittker.com', SHOW_CHAT: 'false', GATEWAY_DIRECT: 'false',
+                ...(pathfinding && { RS_PATHFINDING_SOCKET: pathfinding.socket }),
                 RS_ACTIVITY: name, RS_ACTIVITY_AUDIT: auditId ? '1' : '0', RS_PLANNED: planned ? '1' : '0', RS_ACTIVITY_SKILL: skill ?? '',
                 RS_ACTIVITY_BANK_TARGET: bankTarget === undefined ? '' : String(bankTarget),
             },
@@ -233,8 +238,9 @@ export function dashboardDemo(runtimeDir: string, botsDir: string, configDir: st
         task = running;
         taskExit = null;
         taskStopped = false;
-        event('task-started', { task: name, pid: child.pid });
-        if (auditId) audit?.append(auditId, { kind: 'worker', name: 'task-started', pid: child.pid, planned, skill });
+        const launchDetails = { pid: child.pid, ...(pathfinding && { pathfinding: 'shared' }) };
+        event('task-started', { task: name, ...launchDetails });
+        if (auditId) audit?.append(auditId, { kind: 'worker', name: 'task-started', ...launchDetails, planned, skill });
         const readEvents = consumeTaskEvents(child.stdout, running).catch(() => { event('task-event-reader-failed'); });
         const readErrors = child.stderr && consumeTaskErrors(child.stderr).catch(() => { event('task-error-reader-failed'); });
         void child.exited.then(async exitCode => {

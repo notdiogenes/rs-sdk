@@ -1,6 +1,5 @@
 import { auditEvent, auditFrame, auditOperation } from '../../sdk/audit-trace';
 import { throwIfExecutionAborted } from '../../sdk/execution-context';
-import { findLongPath, isTileWalkable } from '../../sdk/pathfinding';
 import type { ScriptContext } from '../../sdk/runner';
 import type { BotWorldState, InventoryItem, NearbyLoc } from '../../sdk/types';
 import { reportTaskActivity } from '../dashboard-task-activity';
@@ -221,12 +220,13 @@ export async function mineResources({ bot, sdk }: ScriptContext, task = process.
             const sides = [{ x: rock.x + 1, z: rock.z }, { x: rock.x, z: rock.z - 1 },
                 { x: rock.x - 1, z: rock.z }, { x: rock.x, z: rock.z + 1 }]
                 .sort((a, b) => miningDistance(a, position) - miningDistance(b, position));
-            const side = sides.find(point => {
-                if (miningDistance(point, position) === 0) return true;
-                if (!isTileWalkable(0, point.x, point.z)) return false;
-                const end = findLongPath(0, position.x, position.z, point.x, point.z, 50).at(-1);
-                return end?.x === point.x && end.z === point.z;
-            });
+            let side: Tile | undefined;
+            for (const point of sides) {
+                if (miningDistance(point, position) === 0 || await sdk.canRouteToTile(0, position.x, position.z, point.x, point.z, 50)) {
+                    side = point;
+                    break;
+                }
+            }
             if (!side) return { outcome: 'unconfirmed', message: 'No reachable tile beside this rock.' };
             await walk({ ...side, name: 'the tile beside the rock' }, 0, `Moving to a new ${rockLabel}`);
         }

@@ -5,7 +5,6 @@ import { BotSDK, deriveGatewayUrl } from './index';
 import { auditEnabled, auditEvent, auditState } from './audit-trace';
 import { BotActions } from './actions';
 import { executionContext, abortable } from './execution-context';
-import { initPathfinding } from './pathfinding';
 import { formatWorldStateSummary } from './formatter';
 import type { BotWorldState } from './types';
 import { readFileSync, existsSync } from 'fs';
@@ -165,7 +164,9 @@ async function getOrCreateConnection(): Promise<BotConnection> {
     // gateway to kill the connection on missed pings - which presented as
     // "interactLoc froze the whole process". Idempotent, so repeat
     // connections skip it.
-    initPathfinding();
+    if (!process.env.RS_PATHFINDING_SOCKET) {
+        (await import('./pathfinding')).initPathfinding();
+    }
 
     console.error(`[Runner] Connecting to bot "${username}"...`);
 

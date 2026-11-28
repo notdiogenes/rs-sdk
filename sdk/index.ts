@@ -28,15 +28,22 @@ import type {
     PrayerState,
     PrayerName,
     GameMessage,
-    FindOptions
+    FindOptions,
+    PathfindingResult
 } from './types';
 import type { TradeState } from './types';
 import { PRAYER_INDICES, PRAYER_NAMES, PLAYER_CHAT_TYPES, isPlayerChat, TRADE_REQUEST_CHAT_TYPE } from './types';
 import { ChatHistory } from './chat-history';
 import { executionContext, executionWait, throwIfExecutionAborted } from './execution-context';
 import { redactCredentials } from './redact';
-import * as pathfinding from './pathfinding';
+import { TemporaryDoorBlocklist } from './pathfinding-doors';
+import { PathfindingServiceError, requestPathfinding } from './pathfinding-transport';
 import { matchesPlayerName, playerNameForms, resolveInterfaceOption, shortestNameMatch, type InterfaceOptionSelector } from './action-quantity';
+
+function localPathfinding(): typeof import('./pathfinding') {
+    // Only standalone callers load the collision data and WebAssembly into this process.
+    return require('./pathfinding');
+}
 
 /**
  * Apply {@link FindOptions} to a find* winner. `shortestNameMatch` already
@@ -203,7 +210,8 @@ export class BotSDK {
     private connectionListeners = new Set<(state: ConnectionState, attempt?: number) => void>();
     private connectPromise: Promise<void> | null = null;
     private sdkClientId: string;
-    private temporaryDoorBlocks = new pathfinding.TemporaryDoorBlocklist();
+    private temporaryDoorBlocks = new TemporaryDoorBlocklist();
+    private readonly pathfindingSocket = process.env.RS_PATHFINDING_SOCKET;
 
     /** True once the gateway has accepted our credentials (sdk_connected received). */
     private authenticated = false;
@@ -1796,14 +1804,13 @@ export class BotSDK {
         });
     }
 
-    // ============ Local Pathfinding ============
+    // ============ Pathfinding ============
 
-    /** Find path to destination using local collision data. */
-    findPath(
-        destX: number,
-        destZ: number,
-        maxWaypoints: number = 500
-    ): { success: boolean; waypoints: Array<{ x: number; z: number; level: number }>; reachedDestination?: boolean; error?: string } {
+    /** Find a route synchronously in standalone mode. Hosted tasks use sendFindPath(). */
+    findPath(destX: number, destZ: number, maxWaypoints: number = 500): PathfindingResult {
+        if (this.pathfindingSocket) {
+            return { success: false, waypoints: [], error: 'Shared pathfinding requires sendFindPath()' };
+        }
         const state = this.getState();
         if (!state?.player) {
             return { success: false, waypoints: [], error: 'No player state available' };
@@ -1811,6 +1818,7 @@ export class BotSDK {
 
         const { worldX: srcX, worldZ: srcZ, level } = state.player;
 
+        const pathfinding = localPathfinding();
         // Only require source zone to be allocated - we need to know where we ARE
         // Destination zone may be unallocated (e.g., past a gate we haven't opened yet)
         // The pathfinder will find a partial path to the edge of known areas
@@ -1830,7 +1838,15 @@ export class BotSDK {
             maxWaypoints,
             this.temporaryDoorBlocks.active()
         );
+        return this.routeResult(destX, destZ, destZoneAllocated, waypoints);
+    }
 
+    private routeResult(
+        destX: number,
+        destZ: number,
+        destZoneAllocated: boolean,
+        waypoints: PathfindingResult['waypoints'],
+    ): PathfindingResult {
         // If no waypoints and destination zone isn't allocated, that's expected -
         // we just can't path there yet (might need to open a door first)
         if (waypoints.length === 0 && !destZoneAllocated) {
@@ -1858,11 +1874,12 @@ export class BotSDK {
     }
 
     /**
-     * Temporarily exclude a known door from this SDK instance's path queries.
-     * The shared collision map is never mutated beyond the synchronous query.
+     * Temporarily exclude a known door in standalone mode.
+     * Hosted tasks use sendBlockDoorTemporarily().
      */
     blockDoorTemporarily(level: number, x: number, z: number, ttlMs: number = 30_000): boolean {
-        const door = pathfinding.getDoorAt(level, x, z);
+        if (this.pathfindingSocket) return false;
+        const door = localPathfinding().getDoorAt(level, x, z);
         if (!door) return false;
         this.temporaryDoorBlocks.block(door, ttlMs);
         return true;
@@ -1873,13 +1890,60 @@ export class BotSDK {
         return this.temporaryDoorBlocks.has(level, x, z);
     }
 
-    /** Find path to destination (async alias for findPath). */
-    async sendFindPath(
-        destX: number,
-        destZ: number,
-        maxWaypoints: number = 500
-    ): Promise<{ success: boolean; waypoints: Array<{ x: number; z: number; level: number }>; reachedDestination?: boolean; error?: string }> {
-        return this.findPath(destX, destZ, maxWaypoints);
+    /** Temporarily exclude a known door from this bot's route requests. */
+    async sendBlockDoorTemporarily(level: number, x: number, z: number, ttlMs: number = 30_000): Promise<boolean> {
+        if (!this.pathfindingSocket) return this.blockDoorTemporarily(level, x, z, ttlMs);
+        const { door } = await requestPathfinding(this.pathfindingSocket, { type: 'door', level, x, z });
+        if (!door) return false;
+        this.temporaryDoorBlocks.block(door, ttlMs);
+        return true;
+    }
+
+    /** Find a route using the configured shared pathfinder or bundled collision data. */
+    async sendFindPath(destX: number, destZ: number, maxWaypoints: number = 500): Promise<PathfindingResult> {
+        const player = this.getState()?.player;
+        if (!player) return { success: false, waypoints: [], error: 'No player state available' };
+
+        if (!this.pathfindingSocket) {
+            const result = this.findPath(destX, destZ, maxWaypoints);
+            const pathfinding = localPathfinding();
+            if (result.waypoints.length) result.doors = pathfinding.findDoorsAlongPath(result.waypoints);
+            else if (!result.error) result.destinationWalkable = pathfinding.isTileWalkable(player.level, destX, destZ);
+            return result;
+        }
+
+        try {
+            const route = await requestPathfinding(this.pathfindingSocket, {
+                type: 'route', level: player.level, srcX: player.worldX, srcZ: player.worldZ,
+                destX, destZ, maxWaypoints, blockedDoors: this.temporaryDoorBlocks.active(),
+            });
+            if (!route.sourceAllocated) {
+                return { success: false, waypoints: [], error: 'Source zone not allocated (no collision data for current position)' };
+            }
+            const result = this.routeResult(destX, destZ, route.destinationAllocated, route.waypoints);
+            return { ...result, doors: route.doors, destinationWalkable: route.destinationWalkable };
+        } catch (error) {
+            if (!(error instanceof PathfindingServiceError)) throw error;
+            return { success: false, waypoints: [], error: error.message };
+        }
+    }
+
+    /** Check whether a walkable destination can be reached from the given tile. */
+    async canRouteToTile(
+        level: number, srcX: number, srcZ: number, destX: number, destZ: number, maxWaypoints: number
+    ): Promise<boolean> {
+        if (this.pathfindingSocket) {
+            const route = await requestPathfinding(this.pathfindingSocket, {
+                type: 'route', level, srcX, srcZ, destX, destZ, maxWaypoints,
+            });
+            const end = route.waypoints.at(-1);
+            return route.destinationWalkable && end?.x === destX && end.z === destZ;
+        }
+
+        const pathfinding = localPathfinding();
+        if (!pathfinding.isTileWalkable(level, destX, destZ)) return false;
+        const end = pathfinding.findLongPath(level, srcX, srcZ, destX, destZ, maxWaypoints).at(-1);
+        return end?.x === destX && end.z === destZ;
     }
 
     // ============ Plumbing: State Waiting ============

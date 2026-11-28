@@ -12,7 +12,7 @@ import type { FleetStateFrame } from '../sdk/fleet-telemetry';
 import { dashboardFleetStats } from './dashboard-fleet-stats';
 import { dashboardQuestPoints } from './dashboard-quests';
 import { dashboardAudit } from './dashboard-audit';
-import { dashboardDemo, isBundledTask } from './dashboard-demo';
+import { dashboardDemo, isBundledTask, type DashboardPathfinding } from './dashboard-demo';
 import { activity, planCatalog, trainingSkills } from './dashboard-task-catalog';
 import { parseSteps } from './dashboard-plan';
 import { createPlanManager, type Plan } from './dashboard-plan-runner';
@@ -43,7 +43,7 @@ export type Snapshot = { bots: Bot[]; checkedAt: string };
 type ManagedProfile = BotProfile & { worker?: ReturnType<typeof dashboardDemo> };
 type PrimaryFleet = { status: ControllerStatus; frame?: FleetStateFrame };
 
-export async function createDashboardSupervisor(botsDir: string, configDir: string) {
+export async function createDashboardSupervisor(botsDir: string, configDir: string, pathfinding?: DashboardPathfinding) {
     const token = (await Bun.file(join(configDir, 'token')).text()).trim();
     if (!/^[a-f0-9]{64}$/.test(token)) throw new Error('Invalid control API token');
     const runtimeDir = join(dirname(configDir), 'rs-sdk-public-status');
@@ -52,7 +52,7 @@ export async function createDashboardSupervisor(botsDir: string, configDir: stri
     const git = Bun.spawnSync(['git', 'rev-parse', 'HEAD'], { cwd: import.meta.dir, stderr: 'ignore' });
     const revision = git.success ? git.stdout.toString().trim() : undefined;
     const recordStats = dashboardFleetStats(runtimeDir);
-    const demo = dashboardDemo(runtimeDir, botsDir, configDir, token, recordStats.recordBank, undefined, audit, revision);
+    const demo = dashboardDemo(runtimeDir, botsDir, configDir, token, recordStats.recordBank, undefined, audit, revision, pathfinding);
     const rosterControllers = new Map<string, ReturnType<typeof dashboardDemo>>();
     const botRoster = dashboardRoster(botsDir, runtimeDir);
     const plans = createPlanManager(runtimeDir, planBackend);
@@ -124,7 +124,7 @@ export async function createDashboardSupervisor(botsDir: string, configDir: stri
         const key = profile.name.toLowerCase();
         let worker = rosterControllers.get(key);
         if (!worker) {
-            worker = dashboardDemo(runtimeDir, botsDir, configDir, token, recordStats.recordBank, profile, audit, revision);
+            worker = dashboardDemo(runtimeDir, botsDir, configDir, token, recordStats.recordBank, profile, audit, revision, pathfinding);
             rosterControllers.set(key, worker);
         }
         return worker;

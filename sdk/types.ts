@@ -1,3 +1,4 @@
+import type { DoorInfo } from './pathfinding-doors';
 import type { GEState } from './ge-types';
 // Re-export all types from the agent types module
 // This file provides the full type definitions for remote SDK users
@@ -1010,4 +1011,13 @@ export interface StringAmuletResult {
     xpGained?: number;
     product?: InventoryItem;
     reason?: 'no_amulet' | 'no_string' | 'level_too_low' | 'timeout';
+}
+
+export interface PathfindingResult {
+    success: boolean;
+    waypoints: Array<{ x: number; z: number; level: number }>;
+    reachedDestination?: boolean;
+    error?: string;
+    doors?: DoorInfo[];
+    destinationWalkable?: boolean;
 }

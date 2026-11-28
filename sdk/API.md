@@ -219,7 +219,8 @@
 | `countInventoryItems(pattern: string \| RegExp): number` | Count total item quantity matching a name pattern. This sums stack sizes across every matching slot. Use `getInventory().filter(...)` when the number of occupied slots is needed. |
 | `async clickInterfaceOption(selector: InterfaceOptionSelector): Promise<ActionResult>` | Click exactly one interface option, selected by its state object or by visible text (substring for strings, match for regexes). This dispatches the option's `componentId` and never interprets `InterfaceOption.index` as an array position. |
 | `async dm(targetName: string, text: string, opts: { maxLen?: number; delayTicks?: number } = {}): Promise<ActionResult[]>` | Send a private message of any length, auto-split into chunks like {@link say}. Returns one ActionResult per chunk. |
-| `blockDoorTemporarily(level: number, x: number, z: number, ttlMs: number = 30_000): boolean` | Temporarily exclude a known door from this SDK instance's path queries. The shared collision map is never mutated beyond the synchronous query. |
+| `blockDoorTemporarily(level: number, x: number, z: number, ttlMs: number = 30_000): boolean` | Temporarily exclude a known door in standalone mode. Hosted tasks use sendBlockDoorTemporarily(). |
+| `async canRouteToTile(level: number, srcX: number, srcZ: number, destX: number, destZ: number, maxWaypoints: number): Promise<boolean>` | Check whether a walkable destination can be reached from the given tile. |
 
 ### Condition Waiting
 
@@ -305,13 +306,14 @@
 | `async sendBankDeposit(slot: number, amount: number = 1): Promise<ActionResult>` | Deposit item to bank by slot. |
 | `async sendBankWithdraw(slot: number, amount: number = 1): Promise<ActionResult>` | Withdraw item from bank by slot. |
 | `async sendScreenshot(timeout: number = 10000): Promise<string>` | Request a screenshot from the bot client. Returns the screenshot as a data URL (data:image/png;base64,...). |
-| `async sendFindPath(destX: number, destZ: number, maxWaypoints: number = 500): Promise<{ success: boolean; waypoints: Array<{ x: number; z: number; level: number }>; reachedDestination?: boolean; error?: string }>` | Find path to destination (async alias for findPath). |
+| `async sendBlockDoorTemporarily(level: number, x: number, z: number, ttlMs: number = 30_000): Promise<boolean>` | Temporarily exclude a known door from this bot's route requests. |
+| `async sendFindPath(destX: number, destZ: number, maxWaypoints: number = 500): Promise<PathfindingResult>` | Find a route using the configured shared pathfinder or bundled collision data. |
 
 ### Pathfinding
 
 | Signature | Description |
 |---|---|
-| `findPath(destX: number, destZ: number, maxWaypoints: number = 500): { success: boolean; waypoints: Array<{ x: number; z: number; level: number }>; reachedDestination?: boolean; error?: string }` | Find path to destination using local collision data. |
+| `findPath(destX: number, destZ: number, maxWaypoints: number = 500): PathfindingResult` | Find a route synchronously in standalone mode. Hosted tasks use sendFindPath(). |
 
 ---
 
@@ -549,6 +551,11 @@ interface BotWorldState {
   inGame: boolean;
   player: PlayerState | null;
   skills: SkillState[];
+  questJournal?: QuestJournal;
+  /** Text in the currently open game quest journal window. */
+  openQuestJournal?: { title: string; text: string };
+  /** Total quest points reported by the game client. */
+  questPoints?: number;
   inventory: InventoryItem[];
   equipment: InventoryItem[];
   nearbyNpcs: NearbyNpc[];
@@ -893,8 +900,8 @@ interface PickpocketResult {
   success: boolean;
   message: string;
   xpGained?: number;
-  /** 'dispatch_failed' = never reached the game (client stalled or dropped it). 'rejected' = the server discarded the op. Retryable, cheaply. 'not_started' = no attempt message and no rejection either; unaccounted for. 'timeout' = the attempt did start, then never resolved. */
-  reason?: 'npc_not_found' | 'no_pickpocket_option' | 'cant_reach' | 'stunned' | 'timeout' | 'dispatch_failed' | 'rejected' | 'not_started';
+  /** 'target_not_found' = the selected NPC is no longer present at its index. 'dispatch_failed' = never reached the game (client stalled or dropped it). 'rejected' = the server discarded the op. Retryable, cheaply. 'not_started' = no attempt message and no rejection either; unaccounted for. 'timeout' = the attempt did start, then never resolved. */
+  reason?: 'npc_not_found' | 'target_not_found' | 'no_pickpocket_option' | 'cant_reach' | 'stunned' | 'timeout' | 'dispatch_failed' | 'rejected' | 'not_started';
 }
 ```
 
@@ -931,6 +938,19 @@ interface StringAmuletResult {
   xpGained?: number;
   product?: InventoryItem;
   reason?: 'no_amulet' | 'no_string' | 'level_too_low' | 'timeout';
+}
+```
+
+### PathfindingResult
+
+```typescript
+interface PathfindingResult {
+  success: boolean;
+  waypoints: Array<{ x: number; z: number; level: number }>;
+  reachedDestination?: boolean;
+  error?: string;
+  doors?: DoorInfo[];
+  destinationWalkable?: boolean;
 }
 ```
 

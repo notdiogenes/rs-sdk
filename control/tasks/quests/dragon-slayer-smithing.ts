@@ -1,5 +1,4 @@
 import { auditEvent, auditOperation } from '../../../sdk/audit-trace';
-import { findLongPath, isTileWalkable } from '../../../sdk/pathfinding';
 import { questSkill } from './quest-combat';
 import { buyQuestSupply, continueDialog, itemNamed, prepareQuestStep, questPhase, readQuest, walk, type QuestContext } from './shared';
 
@@ -20,16 +19,16 @@ function count({ sdk }: QuestContext, name: string) {
     return sdk.countInventoryItems(itemNamed(name));
 }
 
-function miningApproach(ctx: QuestContext, rock: { x: number; z: number }) {
-    const p = ctx.sdk.getState()?.player;
-    if (!p) return undefined;
+async function miningApproach({ sdk }: QuestContext, rock: { x: number; z: number }) {
+    const player = sdk.getState()?.player;
+    if (!player) return undefined;
     const candidates = [[rock.x + 1, rock.z], [rock.x, rock.z - 1], [rock.x - 1, rock.z], [rock.x, rock.z + 1]] as const;
-    return candidates.find(([x, z]) => {
-        if (p.worldX === x && p.worldZ === z) return true;
-        if (!isTileWalkable(p.level, x, z)) return false;
-        const end = findLongPath(p.level, p.worldX, p.worldZ, x, z, 50).at(-1);
-        return end?.x === x && end.z === z;
-    });
+    for (const point of candidates) {
+        const [x, z] = point;
+        if ((player.worldX === x && player.worldZ === z) ||
+            await sdk.canRouteToTile(player.level, player.worldX, player.worldZ, x, z, 50)) return point;
+    }
+    return undefined;
 }
 
 async function collectOre(ctx: QuestContext, ore: Ore, amount: number) {
@@ -63,7 +62,7 @@ async function collectOreAt(ctx: QuestContext, ore: Ore, amount: number, anchor:
             continue;
         }
         attempted.set(key(rock), sdk.getState()?.tick ?? 0);
-        const approach = miningApproach(ctx, rock);
+        const approach = await miningApproach(ctx, rock);
         const before = count(ctx, stock[ore]);
         const mined = await auditOperation('dragon-slayer-mine-ship-ore', 'Stand beside the rock and wait for the ore before trying another',
             { ore, id: rock.id, x: rock.x, z: rock.z, approach, remaining: amount - before }, () => sdk.getState(),

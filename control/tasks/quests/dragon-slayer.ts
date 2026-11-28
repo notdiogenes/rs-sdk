@@ -98,8 +98,8 @@ async function exitZanaris(ctx: QuestContext) {
     const { sdk, bot } = ctx;
     questPhase('dragon-slayer-leave-zanaris');
     await bot.closeInterface();
-    sdk.blockDoorTemporarily(0, 3238, 9558, 600_000);
-    sdk.blockDoorTemporarily(0, 3233, 9554, 600_000);
+    await sdk.sendBlockDoorTemporarily(0, 3238, 9558, 600_000);
+    await sdk.sendBlockDoorTemporarily(0, 3233, 9554, 600_000);
     const bank = [3152, 9578] as const;
     const magic = questSkill(ctx, 'Magic');
     const air = /^air rune$/i;

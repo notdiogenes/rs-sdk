@@ -84,7 +84,8 @@ for (const { name, fishing, guildUnavailable, expected } of [
 ]) {
     test(`Coal Trucks selects the bank at setup and unloading ${name}`, async () => {
         const start = { x: 2576, z: 3479 };
-        const rock = { id: 2096, x: start.x + 1, z: start.z, distance: 1, optionsWithIndex: [{ text: 'Mine', opIndex: 1 }] };
+        const rock = { id: 2096, x: start.x + 2, z: start.z, distance: 2, optionsWithIndex: [{ text: 'Mine', opIndex: 1 }] };
+        const approach = { x: rock.x, z: rock.z - 1 };
         const ore = { id: 453, name: 'Coal', count: 1, slot: 0, optionsWithIndex: [] };
         const state = {
             inGame: true, tick: 1,
@@ -98,11 +99,16 @@ for (const { name, fishing, guildUnavailable, expected } of [
         } as unknown as BotWorldState;
         const success = { success: true, message: '' };
         const bankAttempts: number[][] = [];
+        const routeProbes: number[][] = [];
         const context = {
             sdk: {
                 getState: () => state,
                 getStateAge: () => 0,
                 scanNearbyLocs: async () => state.nearbyLocs,
+                canRouteToTile: async (level: number, srcX: number, srcZ: number, destX: number, destZ: number, maxWaypoints: number) => {
+                    routeProbes.push([level, srcX, srcZ, destX, destZ, maxWaypoints]);
+                    return destX === approach.x && destZ === approach.z;
+                },
                 sendInteractLoc: async () => {
                     state.inventory.push(ore);
                     state.skills[0]!.experience += 50;
@@ -116,9 +122,10 @@ for (const { name, fishing, guildUnavailable, expected } of [
             bot: {
                 walkTo: async (x: number, z: number) => {
                     const atMine = x === coalTrucks.mine.x && z === coalTrucks.mine.z;
+                    const atRock = x === approach.x && z === approach.z;
                     state.player!.worldX = atMine ? start.x : x;
                     state.player!.worldZ = atMine ? start.z : z;
-                    state.nearbyLocs = atMine ? [rock as BotWorldState['nearbyLocs'][number]] : [];
+                    state.nearbyLocs = atMine || atRock ? [rock as BotWorldState['nearbyLocs'][number]] : [];
                     return success;
                 },
                 openBank: async () => {
@@ -139,6 +146,10 @@ for (const { name, fishing, guildUnavailable, expected } of [
             },
         } as unknown as ScriptContext;
         await mineResources(context, 'mine-coal-bank', 6000);
+        expect(routeProbes).toEqual([
+            [0, start.x, start.z, start.x + 1, start.z, 50],
+            [0, start.x, start.z, approach.x, approach.z, 50],
+        ]);
         expect(bankAttempts).toEqual(expected.map(({ x, z }) => [x, z]));
         expect(state.bank.items[0]!.count).toBe(6000);
         expect(state.bank.isOpen).toBe(false);

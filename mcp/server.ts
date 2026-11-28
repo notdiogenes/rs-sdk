@@ -17,7 +17,6 @@ import {
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 import { botManager } from './api/index.js';
-import { initPathfinding } from '../sdk/pathfinding.js';
 import { marketTool, readMarket } from './market-tools.js';
 import { installExecutionConsoleCapture } from './console-capture.js';
 import { executeCode, executionError, botExecutions, EXECUTE_CODE_OUTPUT_SCHEMA, type WorldOption } from './execute-code.js';
@@ -236,7 +235,9 @@ async function main() {
   // Warm the pathfinder before any live session exists: init is fully
   // synchronous (tens of seconds on slow hosts), and paying it lazily inside
   // a walkTo blocks the event loop until the gateway drops the connection.
-  initPathfinding();
+  if (!process.env.RS_PATHFINDING_SOCKET) {
+    (await import('../sdk/pathfinding.js')).initPathfinding();
+  }
 
   const transport = new StdioServerTransport();
   await server.connect(transport);

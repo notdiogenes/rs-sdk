@@ -2,6 +2,9 @@
 import * as rsmod from '../server/vendor/rsmod-pathfinder';
 import { CollisionType, CollisionFlag } from '../server/vendor/rsmod-pathfinder';
 import collisionData from './collision-data.json';
+import { doorKey, type DoorInfo } from './pathfinding-doors';
+
+export { TemporaryDoorBlocklist, type DoorInfo } from './pathfinding-doors';
 
 let initialized = false;
 
@@ -9,56 +12,6 @@ interface CollisionData {
     tiles: Array<[number, number, number, number]>;
     zones: Array<[number, number, number]>;
     doors?: Array<[number, number, number, number, number, number]>; // [level, x, z, shape, angle, blockrange]
-}
-
-export interface DoorInfo {
-    level: number;
-    x: number;
-    z: number;
-    shape: number;
-    angle: number;
-    blockrange: boolean;
-}
-
-interface TemporaryDoorBlock {
-    door: DoorInfo;
-    expiresAt: number;
-}
-
-/**
- * Session-owned evidence that a door is temporarily impassable.
- *
- * Entries expire automatically so a transient route failure cannot poison the
- * process-wide collision map for every bot until restart.
- */
-export class TemporaryDoorBlocklist {
-    private entries = new Map<string, TemporaryDoorBlock>();
-
-    constructor(private readonly now: () => number = Date.now) {}
-
-    block(door: DoorInfo, ttlMs: number = 30_000): void {
-        this.entries.set(doorKey(door.level, door.x, door.z), {
-            door,
-            expiresAt: this.now() + Math.max(0, ttlMs)
-        });
-    }
-
-    active(): DoorInfo[] {
-        const now = this.now();
-        for (const [key, entry] of this.entries) {
-            if (entry.expiresAt <= now) this.entries.delete(key);
-        }
-        return [...this.entries.values()].map(entry => entry.door);
-    }
-
-    has(level: number, x: number, z: number): boolean {
-        this.active();
-        return this.entries.has(doorKey(level, x, z));
-    }
-
-    clear(): void {
-        this.entries.clear();
-    }
 }
 
 // Spatial index of all known door positions, keyed by "level,x,z"
@@ -99,10 +52,6 @@ function setDoorCollision(door: DoorInfo, add: boolean): void {
     } else {
         rsmod.changeWall(door.x, door.z, door.level, door.angle, door.shape, door.blockrange, false, add);
     }
-}
-
-function doorKey(level: number, x: number, z: number): string {
-    return `${level},${x},${z}`;
 }
 
 export function initPathfinding(): void {
