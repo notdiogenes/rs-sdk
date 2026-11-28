@@ -3,6 +3,7 @@ import { throwIfExecutionAborted } from '../../sdk/execution-context';
 import { findLongPath, isTileWalkable } from '../../sdk/pathfinding';
 import type { ScriptContext } from '../../sdk/runner';
 import type { BotWorldState, InventoryItem, NearbyLoc } from '../../sdk/types';
+import { reportTaskActivity } from '../dashboard-task-activity';
 import { alKharidTollGate, coalTrucks, fishingGuildBank, guildLadder, inMiningGuild, miningBanks, miningDistance,
     miningResources, miningSelection, miningSiteBanks, miningTravelDistance, miningTravelTimeout, miningTravelVia,
     rankMiningSites, type MiningSite, type Tile } from '../mining-routes';
@@ -38,6 +39,8 @@ export async function mineResources({ bot, sdk }: ScriptContext, task = process.
     if (level === undefined || level < 41) throw new Error('Mining level 41 is required to use the rune pickaxe.');
     const { resource } = selection;
     const settings = miningResources[resource];
+    const material = settings.label.toLowerCase();
+    const rockLabel = resource === 'gems' ? 'gem rock' : `${material} rock`;
     const products: readonly number[] = settings.items;
     const rockIds: readonly number[] = settings.rocks;
     const isProduct = (item: InventoryItem) => products.includes(item.id);
@@ -65,10 +68,11 @@ export async function mineResources({ bot, sdk }: ScriptContext, task = process.
         return result;
     }
 
-    async function walkLeg(target: Tile & { name: string }, radius: number) {
+    async function walkLeg(target: Tile & { name: string }, radius: number, label = `Walking to ${target.name}`) {
         const distance = miningDistance(tile(current()), target);
         if (distance <= radius) return;
         const timeout = miningTravelTimeout(distance);
+        reportTaskActivity(label);
         await act('mining-walk', `Reach ${target.name}`, { ...target, distance, timeout },
             () => bot.walkTo(target.x, target.z, radius, { timeout }));
         if (miningDistance(tile(current()), target) > radius) throw new Error(`Arrival at ${target.name} was not confirmed.`);
@@ -84,11 +88,11 @@ export async function mineResources({ bot, sdk }: ScriptContext, task = process.
         await observe(next => !next.dialog.isOpen, 5_000);
     }
 
-    async function walk(target: Tile & { name: string }, radius: number) {
+    async function walk(target: Tile & { name: string }, radius: number, label?: string) {
         const via = miningTravelVia(tile(current()), target);
         await dismissTollDialogue();
         if (via) await walkLeg(via, 0);
-        await walkLeg(target, radius);
+        await walkLeg(target, radius, label);
     }
 
     async function leaveEssenceMine() {
@@ -125,6 +129,7 @@ export async function mineResources({ bot, sdk }: ScriptContext, task = process.
         await leaveEssenceMine();
         if (inMiningGuild(tile(current()))) await guildTransition(false);
         await walk(bank, bank === fishingGuildBank ? 1 : 4);
+        reportTaskActivity(`Opening ${bank.name}`);
         await act('mining-open-bank', `Open ${bank.name}`, bank, () => bot.openBank());
         if (!current().bank.isOpen) throw new Error('The game did not confirm bank access.');
     }
@@ -164,8 +169,9 @@ export async function mineResources({ bot, sdk }: ScriptContext, task = process.
         if (current().bank.isOpen) await act('mining-close-bank', 'Close the bank', {}, () => bot.closeBank());
     }
 
-    async function bankItems(keep: (item: InventoryItem) => boolean) {
+    async function bankItems(keep: (item: InventoryItem) => boolean, label = 'Banking items') {
         const items = current().inventory.filter(item => !keep(item));
+        if (items.length) reportTaskActivity(label);
         for (const id of new Set(items.map(item => item.id))) {
             const item = current().inventory.find(entry => entry.id === id);
             if (!item) continue;
@@ -222,7 +228,7 @@ export async function mineResources({ bot, sdk }: ScriptContext, task = process.
                 return end?.x === point.x && end.z === point.z;
             });
             if (!side) return { outcome: 'unconfirmed', message: 'No reachable tile beside this rock.' };
-            await walk({ ...side, name: 'the tile beside the rock' }, 0);
+            await walk({ ...side, name: 'the tile beside the rock' }, 0, `Moving to a new ${rockLabel}`);
         }
         const atTile = (await sdk.scanNearbyLocs(resource === 'essence' ? 18 : 5))
             .filter(loc => loc.x === rock.x && loc.z === rock.z);
@@ -238,6 +244,7 @@ export async function mineResources({ bot, sdk }: ScriptContext, task = process.
         const count = quantity(before);
         const dispatch = await sdk.sendInteractLoc(live.x, live.z, live.id, option.opIndex);
         if (!dispatch.success) return { outcome: 'unconfirmed', message: dispatch.message };
+        reportTaskActivity(`Mining ${material}`);
         const timeout = resource === 'adamantite' || resource === 'mithril' ? 45_000 : 24_000;
         const feedback = (state: BotWorldState, pattern: RegExp) => state.gameMessages?.find(message =>
             message.tick > before.tick && message.type === 0 && pattern.test(message.text))?.text;
@@ -269,11 +276,12 @@ export async function mineResources({ bot, sdk }: ScriptContext, task = process.
         let complete = false;
         if (selection.mode === 'bank') {
             await openFirstBank(miningSiteBanks(site, fishingLevel(current())), count);
-            await bankItems(item => !isProduct(item));
+            await bankItems(item => !isProduct(item), `Banking ${material}`);
             complete = checkStock();
             await closeBank();
         } else {
             phase('mining-drop-haul', { quantity: count });
+            reportTaskActivity(`Dropping ${material}`);
             for (const id of products) {
                 const item = current().inventory.find(entry => entry.id === id);
                 if (item) await act('mining-drop-product', `Drop ${item.name}`, { id }, () => bot.dropItem(item, 'all'));
@@ -342,7 +350,10 @@ export async function mineResources({ bot, sdk }: ScriptContext, task = process.
                     const rock = proven ?? (tooManyMisses ? undefined : candidates[0]);
                     if (!rock) {
                         if (tooManyMisses) break;
-                        emptySince ||= Date.now();
+                        if (!emptySince) {
+                            emptySince = Date.now();
+                            reportTaskActivity(`Waiting for a ${rockLabel}`);
+                        }
                         const nearbyPlayers = here.nearbyPlayers.filter(player => miningDistance(player, site.mine) <= 16).length;
                         const wait = nearbyPlayers && !yieldedHere ? 18_000 : Math.min(90_000, Math.max(24_000, settings.respawn * 1000));
                         if (Date.now() - emptySince >= wait) {

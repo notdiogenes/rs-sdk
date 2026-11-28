@@ -6,6 +6,8 @@ import type { Plan } from './dashboard-plan-runner';
 import type { BankSnapshot } from './dashboard-fleet-stats';
 import { dashboardPresentation } from './dashboard-presentation';
 import { loadQuestCatalog, type QuestColumn } from './dashboard-quests';
+import { readTaskActivity } from './dashboard-task-activity';
+import type { LastActivity } from './dashboard-last-activity';
 
 type CallSupervisor = (request: Request) => Promise<Response>;
 type LoadPresentation = ReturnType<typeof dashboardPresentation>;
@@ -137,6 +139,7 @@ export function dashboardWebHandler(worker: CallSupervisor, presentation: LoadPr
             return new Response(null, { status: 405, headers: { Allow: 'GET, HEAD' } });
         }
         let data: Snapshot | undefined;
+        const taskActivity = new Map<string, LastActivity>();
         try {
             const response = await call('/internal/fleet-snapshot');
             if (response.ok) {
@@ -150,7 +153,21 @@ export function dashboardWebHandler(worker: CallSupervisor, presentation: LoadPr
         } catch { /* Render the unavailable page until the supervisor is reachable. */ }
         const nonce = crypto.randomUUID();
         const { fleetPage, fleetStyle, controls } = await presentation();
-        return new Response(request.method === 'HEAD' ? null : fleetPage({ nonce, data, questCatalog, fleetStyle, controls, refreshSeconds, displayTimeZone }), {
+        if (request.method === 'GET') {
+            for (const bot of data?.bots ?? []) {
+                const control = bot.control;
+                if (bot.status !== 'Online' || !control?.running || control.transitioning || control.waiting || !control.startedAt) continue;
+                const startedAt = Date.parse(control.startedAt);
+                if (!Number.isFinite(startedAt)) continue;
+                try {
+                    const latest = readTaskActivity(auditDatabase(), bot.name, startedAt);
+                    if (latest) taskActivity.set(bot.name, latest);
+                } catch { /* Observed game activity is available without the task trace. */ }
+            }
+        }
+        return new Response(request.method === 'HEAD' ? null : fleetPage({
+            nonce, data, taskActivity, questCatalog, fleetStyle, controls, refreshSeconds, displayTimeZone,
+        }), {
             status: data ? 200 : 503,
             headers: {
                 ...noStore,

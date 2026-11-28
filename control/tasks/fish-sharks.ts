@@ -1,16 +1,17 @@
 import { auditEvent } from '../../sdk/audit-trace';
 import { runScript, type ScriptContext } from '../../sdk/runner';
 import type { BotWorldState } from '../../sdk/types';
-import { miningBanks } from '../mining-routes';
+import { reportTaskActivity } from '../dashboard-task-activity';
+import { miningBanks, type Tile } from '../mining-routes';
 
-const catherbyBank = { x: 2809, z: 3441 };
-const catherbyRange = { x: 2817, z: 3444 };
-const harrysShop = { x: 2834, z: 3445 };
-const beach = { x: 2845, z: 3433 };
+const catherbyBank = { name: 'Catherby Bank', x: 2809, z: 3441 };
+const catherbyRange = { name: 'the Catherby range', x: 2817, z: 3444 };
+const harrysShop = { name: 'Harry’s Fishing Shop', x: 2834, z: 3445 };
+const beach = { name: 'the Catherby fishing spots', x: 2845, z: 3433 };
 // Land tiles beside the four groups of NPC movement tiles on the beach.
 const shoreline = [{ x: 2837, z: 3432 }, beach, { x: 2853, z: 3425 }, { x: 2859, z: 3427 }];
 const shorelineSearchTimeout = 240_000;
-const banks = [catherbyBank, { x: 2655, z: 3284 }, ...Object.values(miningBanks)];
+const banks = [catherbyBank, { name: 'the bank', x: 2655, z: 3284 }, ...Object.values(miningBanks)];
 const capacity = 28;
 const coins = 995;
 
@@ -79,21 +80,27 @@ export async function fishSharks({ bot, sdk }: ScriptContext, cook = process.env
         if (!result.success) throw new Error(`${label}: ${result.message}`);
     }
 
-    async function walk(target: { x: number; z: number }, tolerance: number, label: string) {
+    async function walk(target: Tile & { name: string }, tolerance: number, label: string) {
+        const player = sdk.getState()?.player;
+        if (player && Math.max(Math.abs(player.worldX - target.x), Math.abs(player.worldZ - target.z)) > tolerance) {
+            reportTaskActivity(`Walking to ${target.name}`);
+        }
         await requireAction(label, bot.walkTo(target.x, target.z, tolerance));
     }
 
-    async function openBank(target: { x: number; z: number }) {
+    async function openBank(target: (typeof banks)[number]) {
         if (current().bank.isOpen) return;
         await walk(target, 3, 'Reach the bank');
         await bot.dismissBlockingUI();
         if (current().interface?.isOpen) await requireAction('Close the open interface', bot.closeInterface());
+        reportTaskActivity(`Opening ${target.name}`);
         await requireAction('Open the bank', bot.openBank());
         if (!current().bank.isOpen) throw new Error('The bank did not open.');
     }
 
     async function bankBackpack(keepId?: number) {
         const deposit = current().inventory.filter(item => item.id !== keepId);
+        if (deposit.length) reportTaskActivity('Banking items');
         for (const id of new Set(deposit.map(item => item.id))) {
             const item = current().inventory.find(entry => entry.id === id);
             if (!item) continue;
@@ -173,6 +180,7 @@ export async function fishSharks({ bot, sdk }: ScriptContext, cook = process.env
         for (let item = nextFish(); item; item = nextFish()) {
             const { id, name } = item;
             const count = quantity(current(), id);
+            reportTaskActivity('Cooking fish at the Catherby range');
             await requireAction(`Use ${name} on the range`, bot.useItemOnLoc(item, range));
             // A burn still consumes the raw fish, so XP is not a reliable
             // completion signal for an individual cook.
@@ -200,7 +208,7 @@ export async function fishSharks({ bot, sdk }: ScriptContext, cook = process.env
 
         async function searchShoreline() {
             const { player } = current();
-            const distance = (from: typeof player, point: typeof beach) =>
+            const distance = (from: typeof player, point: Tile) =>
                 Math.max(Math.abs(from.worldX - point.x), Math.abs(from.worldZ - point.z));
             const points = [...shoreline].sort((a, b) => distance(player, a) - distance(player, b));
             for (const point of points) {
@@ -222,6 +230,7 @@ export async function fishSharks({ bot, sdk }: ScriptContext, cook = process.env
             if (!spot || !option) {
                 if (searchStarted === undefined) {
                     searchStarted = Date.now();
+                    reportTaskActivity(`Searching the Catherby shore for ${stage.label}`);
                     const state = current();
                     auditEvent('setback', 'fishing-spot-unavailable', {
                         fish: stage.label, x: state.player.worldX, z: state.player.worldZ,
@@ -253,6 +262,8 @@ export async function fishSharks({ bot, sdk }: ScriptContext, cook = process.env
             // Clicking a fishing spot clears a level-up dialog and starts a
             // new cast. The high-level interaction would click Continue first.
             const action = await sdk.sendInteractNpc(spot.index, option.opIndex);
+            const activityLabel = `Fishing for ${stage.label} at Catherby`;
+            if (action.success) reportTaskActivity(activityLabel);
             let closingPreviousDialog = before.dialog.isOpen;
             let xp = skill(before, 'Fishing')?.experience ?? 0;
             let failure = action.message;
@@ -268,6 +279,7 @@ export async function fishSharks({ bot, sdk }: ScriptContext, cook = process.env
                 if (gained > xp) {
                     missed = 0;
                     xp = gained;
+                    reportTaskActivity(activityLabel);
                 }
                 if (batchComplete(state)) return;
                 if (closingPreviousDialog && state.tick > before.tick && !state.dialog.isOpen) {

@@ -3,6 +3,7 @@ import { fleetActionIcon, fleetSkillIcon, type FleetActionIcon } from './dashboa
 import { questHiscore, type QuestColumn } from './dashboard-quests';
 import { activity, activityIds } from './dashboard-task-catalog';
 import type { Bot, ControlActivity, Snapshot } from './public-status';
+import type { LastActivity } from './dashboard-last-activity';
 
 const escape = (value: string) => value.replaceAll('&', '&amp;').replaceAll('<', '&lt;')
     .replaceAll('>', '&gt;').replaceAll('"', '&quot;').replaceAll("'", '&#39;');
@@ -66,10 +67,11 @@ function cardAction(label: string, icon: FleetActionIcon, attributes: string) {
     return `<button type="button" class="card-action" ${attributes} aria-label="${escape(label)}" title="${escape(label)}">${fleetActionIcon(icon)}</button>`;
 }
 
-function card(bot: Bot, category: Group, reason: string, managed: ControlActivity | undefined, now: number) {
+function card(bot: Bot, category: Group, reason: string, managed: ControlActivity | undefined, now: number,
+    reportedActivity?: LastActivity) {
     const name = escape(bot.name);
-    const last = bot.lastActivity;
-    const effect = last ? `<time datetime="${escape(last.at)}">${activityClock.format(new Date(last.at))}</time>` : '';
+    const last = reportedActivity ?? bot.lastActivity;
+    const timestamp = last ? `<time datetime="${escape(last.at)}">${activityClock.format(new Date(last.at))}</time>` : '';
     const activityDetail = last?.reason.split(' · ').map(signal => {
         if (signal !== 'Moved') return signal;
         return bot.location ? `Moved to ${bot.location}` : 'Position changed';
@@ -89,12 +91,12 @@ function card(bot: Bot, category: Group, reason: string, managed: ControlActivit
     ${bot.activity === '—' ? '' : `<p class="task-line" data-activity>${escape(bot.activity)}</p>`}
     ${showReason ? `<p class="reason">${escape(reason)}</p>` : ''}
     <div class="last-activity">
-      <div><span>Last activity</span><strong>${escape(activityDetail)}</strong></div>${effect}
+      <span>Last activity</span>${timestamp}<strong>${escape(activityDetail)}</strong>
     </div>
     <dl class="facts">
       ${fact('Heartbeat', timeAgo(now, bot.heartbeat))}
       ${fact('Progress', managed?.startedAt ? timeAgo(now, Date.parse(managed.startedAt)) + ' running' : '—')}
-      ${fact('Effect', timeAgo(now, last ? Date.parse(last.at) : undefined))}
+      ${fact('Effect', timeAgo(now, bot.lastActivity ? Date.parse(bot.lastActivity.at) : undefined))}
       ${fact('Client', bot.status, 'status-' + bot.status.toLowerCase())}
     </dl>
     <div class="location-line"><strong>${escape(bot.location ?? 'Location unavailable')}</strong><small data-card-xp hidden></small></div>
@@ -118,9 +120,10 @@ function card(bot: Bot, category: Group, reason: string, managed: ControlActivit
     </article>`;
 }
 
-type Page = { nonce: string; data?: Snapshot; questCatalog: QuestColumn[]; fleetStyle: string; controls: string; refreshSeconds: number; displayTimeZone: string };
+type Page = { nonce: string; data?: Snapshot; taskActivity?: ReadonlyMap<string, LastActivity>;
+    questCatalog: QuestColumn[]; fleetStyle: string; controls: string; refreshSeconds: number; displayTimeZone: string };
 
-export function fleetPage({ nonce, data, questCatalog, fleetStyle, controls, refreshSeconds, displayTimeZone }: Page) {
+export function fleetPage({ nonce, data, taskActivity, questCatalog, fleetStyle, controls, refreshSeconds, displayTimeZone }: Page) {
     const now = data ? Date.parse(data.checkedAt) : Date.now();
     const roster = (data?.bots ?? []).map(bot => {
         const managed = bot.control;
@@ -140,7 +143,8 @@ export function fleetPage({ nonce, data, questCatalog, fleetStyle, controls, ref
         return `<section class="group" data-group><div class="group-title">
           <h2 class="${id}">${label}</h2><span class="count">${members.length}</span>
           ${id === 'attention' ? '<small>Review activity and connection status</small>' : ''}
-          </div><div class="grid">${members.map(({ bot, category, reason, managed }) => card(bot, category, reason, managed, now)).join('')}</div></section>`;
+          </div><div class="grid">${members.map(({ bot, category, reason, managed }) =>
+            card(bot, category, reason, managed, now, taskActivity?.get(bot.name))).join('')}</div></section>`;
     }).join('');
     const rowList = roster.map(({ bot, category }) => ({
         name: bot.name, category, hiscore: questHiscore(bot.name),

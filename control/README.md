@@ -89,8 +89,9 @@ the map plane when available. It shows a dash for offline bots, stale data,
 or missing coordinates. Activity comes from a running task managed by the
 control API or from combat reported by the game client. If neither is
 available, the page says so. Stale or failed game checks appear as **Unknown**.
-**Last activity** shows when the dashboard last observed a change in position
-or floor, an XP gain, or a bot entering or leaving combat. The service checks
+**Last activity** shows the latest action and timestamp reported by a running
+mining or shark-fishing script. When no script action is available, it shows
+the last observed position or floor change, XP gain, or combat change. The service checks
 every 15 seconds from the latest local client frame, with a gateway read
 for clients that do not publish to Fleet Desk. Inventory and Diagnostics
 use the same state source. The service keeps the observation

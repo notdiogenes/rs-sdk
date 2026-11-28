@@ -18,9 +18,9 @@ section.group{margin-top:15px}.group-title{display:flex;align-items:baseline;gap
 .quest-count{font-size:12px;color:var(--gold);font-weight:750;white-space:nowrap}
 .task-line{font-size:clamp(18px,1.7vw,23px);font-weight:700;line-height:1.2;color:inherit;margin-top:13px;overflow-wrap:anywhere}
 .reason{font-size:12px;margin-top:5px;overflow-wrap:anywhere}
-.last-activity{display:flex;justify-content:space-between;align-items:end;flex-wrap:wrap;gap:4px 12px;margin-top:9px;padding:7px 9px;border-radius:8px;background:#222a23}
-.last-activity span,.last-activity time{font-size:12px;color:#a6afa6}.last-activity span{display:block;margin-bottom:2px}
-.last-activity strong{font-size:14px;overflow-wrap:anywhere}.last-activity time{font-variant-numeric:tabular-nums}
+.last-activity{display:grid;grid-template-columns:1fr auto;align-items:baseline;gap:4px 12px;margin-top:9px;padding:7px 9px;border-radius:8px;background:#222a23}
+.last-activity span,.last-activity time{font-size:12px;color:#a6afa6}
+.last-activity strong{grid-column:1/-1;font-size:14px;overflow-wrap:anywhere}.last-activity time{text-align:right;font-variant-numeric:tabular-nums}
 .facts{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));margin:10px 0;border:1px solid #343d35;border-radius:9px;background:#222a23}
 .facts div{padding:7px 8px;min-width:0}.facts div+div{border-left:1px solid #343d35}
 dt{font-size:9px;color:var(--muted);font-weight:750;text-transform:uppercase}dd{margin:1px 0 0;font-size:11px;font-weight:750;overflow-wrap:anywhere}

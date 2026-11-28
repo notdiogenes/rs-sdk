@@ -82,6 +82,45 @@ test('restarts the Fleet Desk web listener while the Unix supervisor keeps recor
     }
 });
 
+test('renders named task activity with its own timestamp and ignores reports from another run', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'fleet-activity-'));
+    let now = Date.parse('2026-11-27T23:20:00Z');
+    const recording = recordDashboardAudit(directory, () => now);
+    const reports = new Database(join(directory, 'activity-audit.sqlite'), { readonly: true });
+    const run = recording.begin('Scout', 'mine-coal-bank', null, null, ['test-secret']);
+    const bot = {
+        name: 'Scout', status: 'Online', activity: 'Mine and bank coal', location: 'X 2635, Z 3381 · Plane 0',
+        lastActivity: { at: new Date(now).toISOString(), reason: 'Moved' },
+        control: { running: true, startedAt: new Date(now).toISOString() },
+    };
+    const handle = dashboardWebHandler(
+        async () => Response.json({ bots: [bot], checkedAt: new Date(now).toISOString() }),
+        async () => ({ revision: 'fixture', fleetStyle: '', controls: '', fleetPage, auditDashboardLocation, readDashboardAudit }),
+        () => reports, [],
+    );
+    const render = async () => (await handle(new Request('https://fleet.test/bots'))).text();
+    try {
+        expect(await render()).toContain('Moved to X 2635, Z 3381');
+        now += 120_000;
+        recording.append(run, { kind: 'task-event', name: 'fleet-activity', label: 'Walking to Fishing Guild Bank' });
+        const page = await render();
+        expect(page).toContain('<span>Last activity</span><time datetime="2026-11-27T23:22:00.000Z">Nov 27, 2026, 6:22 PM EST</time><strong>Walking to Fishing Guild Bank</strong>');
+        expect(page).toContain('<dt>Effect</dt><dd class="">2m</dd>');
+        recording.append(run, { kind: 'task-event', name: 'fleet-activity', label: 'Walking to test-secret' });
+        expect(await render()).not.toContain('Walking to test-secret');
+        expect(await render()).not.toContain('Walking to [redacted]');
+        now += 1000;
+        recording.begin('Scout', 'fish-sharks-cook', null, null, []);
+        recording.append(run, { kind: 'task-event', name: 'fleet-activity', label: 'Moving to a new coal rock' });
+        expect(await render()).toContain('Moved to X 2635, Z 3381');
+        expect(await render()).not.toContain('Moving to a new coal rock');
+    } finally {
+        reports.close();
+        recording.close();
+        rmSync(directory, { recursive: true, force: true });
+    }
+});
+
 test('groups matching breakpoints and preserves bounded evidence beyond trace eviction', () => {
     const directory = mkdtempSync(join(process.cwd(), '.audit-test-'));
     let now = 1_800_000_000_000;
@@ -337,7 +376,7 @@ test('reloads a committed Fleet Desk presentation while the same audit writer ke
     try {
         for (const file of [
             'dashboard-presentation-entry.ts', 'dashboard-fleet-page.ts', 'dashboard-fleet-icons.ts', 'dashboard-fleet.css',
-            'public-status-controls.js', 'dashboard-fleet-stats.ts', 'dashboard-quests.ts', 'dashboard-task-catalog.ts',
+            'public-status-controls.js', 'dashboard-fleet-stats.ts', 'dashboard-quests.ts', 'dashboard-task-catalog.ts', 'mining-routes.ts',
             'dashboard-audit-report.ts', 'dashboard-audit-insights-report.ts', 'dashboard-audit-schema.ts',
         ]) copyFileSync(join(import.meta.dir, file), join(source, file));
         git('init', '-q');
