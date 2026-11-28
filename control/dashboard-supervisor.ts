@@ -16,7 +16,7 @@ import { dashboardAudit } from './dashboard-audit';
 import { dashboardDemo, isBundledTask, type DashboardPathfinding } from './dashboard-demo';
 import { activity, planCatalog, trainingSkills } from './dashboard-task-catalog';
 import { parseSteps } from './dashboard-plan';
-import { createPlanManager, type Plan } from './dashboard-plan-runner';
+import { createPlanManager, PlanEditConflict, type Plan } from './dashboard-plan-runner';
 import { dashboardRoster, type BotProfile } from './dashboard-roster';
 
 export type Bot = {
@@ -197,12 +197,18 @@ export async function createDashboardSupervisor(botsDir: string, configDir: stri
             if (body.action === 'pause') plan = await plans.pause(profile.name);
             else if (body.action === 'resume') plan = plans.resume(profile.name);
             else if (body.action === 'start') plan = plans.start(profile.name, parseSteps(body.steps));
-            else if (body.action === 'queue-mining') plan = plans.queueMining(profile.name, parseSteps([body.step])[0]!);
-            else return reply({ error: 'Choose start, pause, resume, or queue mining.' }, 400);
+            else if (body.action === 'update') {
+                if (typeof body.expectedRevision !== 'string' || !body.expectedRevision) {
+                    return reply({ error: 'Reload the current plan before saving changes.' }, 400);
+                }
+                plan = plans.update(profile.name, parseSteps(body.steps), body.expectedRevision);
+            } else if (body.action === 'queue-mining') plan = plans.queueMining(profile.name, parseSteps([body.step])[0]!);
+            else return reply({ error: 'Choose start, update, pause, resume, or queue mining.' }, 400);
             expiresAt = 0;
-            return reply({ bot: profile.name, plan }, body.action === 'pause' ? 200 : 202);
+            return reply({ bot: profile.name, plan }, body.action === 'pause' || body.action === 'update' ? 200 : 202);
         } catch (error) {
-            return reply({ error: error instanceof Error ? error.message : 'Could not update the plan.' }, 400);
+            return reply({ error: error instanceof Error ? error.message : 'Could not update the plan.' },
+                error instanceof PlanEditConflict ? 409 : 400);
         }
     }
 

@@ -330,14 +330,20 @@ export function fleetPage({ nonce, revision = '', data, taskActivity, questCatal
   <div><button type="submit"></button> <button type="button" id="activity-close">Close</button></div>
 </form></dialog>
 <dialog id="plan-dialog" aria-labelledby="plan-title"><form class="dialog-body" id="plan-form">
-  <div class="dialog-header"><h2 id="plan-title">Activity plan</h2><button type="button" id="plan-close">Close</button></div>
-  <label id="plan-name-field" hidden>Bot name <input id="plan-bot-name" maxlength="12" pattern="[A-Za-z0-9]{1,12}" placeholder="Random name" autocomplete="off"></label>
-  <p id="plan-error" role="status" aria-live="polite"></p>
-  <ol id="plan-steps"></ol>
+  <div class="dialog-header plan-header"><h2 id="plan-title">Activity plan</h2><button type="button" id="plan-close" autofocus>Close</button></div>
+  <div class="plan-content">
+    <label id="plan-name-field" hidden>Bot name <input id="plan-bot-name" maxlength="12" pattern="[A-Za-z0-9]{1,12}" placeholder="Random name" autocomplete="off"></label>
+    <p id="plan-error" role="status" aria-live="polite"></p>
+    <p id="plan-edit-status" role="status" aria-live="polite" aria-atomic="true"></p>
+    <ol id="plan-steps" aria-label="Activity steps"></ol>
+  </div>
   <div class="plan-toolbar">
     <button type="button" id="plan-add">Add activity</button>
-    <button type="button" id="plan-edit" hidden>New plan</button>
-    <button type="submit" id="plan-save">Start plan</button>
+    <div class="plan-toolbar-actions">
+      <button type="button" id="plan-cancel-edit" hidden>Cancel edits</button>
+      <button type="button" id="plan-edit" hidden>Edit plan</button>
+      <button type="submit" id="plan-save">Start plan</button>
+    </div>
   </div>
 </form></dialog>
 <dialog id="dashboard-sign-in" aria-labelledby="sign-in-title"><form class="dialog-body">

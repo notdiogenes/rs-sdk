@@ -237,14 +237,20 @@ A paused plan retains its current step and credited time. Timed steps count
 time while their activity and the game client are running, including travel
 and recovery. Plans and credited time persist in `activity-plans.sqlite`.
 After a service restart, an active plan reconnects and checks live state before
-continuing. A blocked plan shows why it stopped and can be resumed. Editing a
-saved plan starts a new plan. Pausing leaves its managed client online.
+continuing. A blocked plan shows why it stopped and can be resumed. Open
+**View plan** and choose **Edit plan** to change a saved plan while it runs.
+Edits to upcoming activities preserve the current task and credited time.
+A change to the current activity can also keep its task running when it needs
+the same task and launch settings. Pausing leaves its managed client online.
 
 Use `GET /bots/activity?view=plan` to fetch the catalog, or add `&bot=NAME` to
 read a saved plan. A signed-in session or control Bearer credential can POST
 `{ "action": "start", "steps": [...] }` with the bot query, or
-`{ "action": "create", "name": "", "steps": [...] }` without it. Existing
-plans also accept `pause` and `resume`. The catalog specifies each activity’s
+`{ "action": "create", "name": "", "steps": [...] }` without it. To edit a saved
+plan, POST `{ "action": "update", "expectedRevision": "...", "steps": [...] }`
+with the bot query and the plan's current `revision` from GET. A stale revision
+returns `409`. Existing plans also accept `pause` and `resume`. The catalog
+specifies each activity’s
 finish modes via `usage` and `trains`. Example step:
 
 ```json

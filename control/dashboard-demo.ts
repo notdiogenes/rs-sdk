@@ -40,10 +40,15 @@ type Task = Process & {
     recovery?: { since: string; resumeAt: number };
     completion?: NonNullable<ControllerStatus['lastTask']>['completion'];
     bankTarget?: number;
+    settled?: Promise<void>;
 };
 
 async function stopProcess(handle: Process | undefined, signal: 'SIGINT' | 'SIGTERM') {
     if (!handle || handle.process.exitCode !== null) return;
+    if (handle.stopping) {
+        await handle.process.exited;
+        return;
+    }
     handle.stopping = true;
     handle.process.kill(signal);
     const deadline = setTimeout(() => handle.process.kill('SIGKILL'), 4000);
@@ -193,6 +198,13 @@ export function dashboardDemo(runtimeDir: string, botsDir: string, configDir: st
         return name;
     }
 
+    async function stopTask() {
+        const stopping = task;
+        if (!stopping) return;
+        await stopProcess(stopping, 'SIGTERM');
+        await stopping.settled;
+    }
+
     function startClient(bot: string) {
         const inventory = inventoryControls();
         const feed = dashboardClientFeed((items, at) => recordBank(bot, items, at));
@@ -216,7 +228,7 @@ export function dashboardDemo(runtimeDir: string, botsDir: string, configDir: st
             inventory.disconnect();
             clientExit = { exitCode, at: new Date().toISOString() };
             event('client-exited', { exitCode });
-            try { await stopProcess(task, 'SIGTERM'); }
+            try { await stopTask(); }
             finally { if (client === running) client = undefined; }
         }).catch(() => { event('client-observer-failed'); });
     }
@@ -255,7 +267,7 @@ export function dashboardDemo(runtimeDir: string, botsDir: string, configDir: st
         if (auditId) audit?.append(auditId, { kind: 'worker', name: 'task-started', ...launchDetails, planned, skill });
         const readEvents = consumeTaskEvents(child.stdout, running).catch(() => { event('task-event-reader-failed'); });
         const readErrors = child.stderr && consumeTaskErrors(child.stderr).catch(() => { event('task-error-reader-failed'); });
-        void child.exited.then(async exitCode => {
+        running.settled = child.exited.then(async exitCode => {
             const errorOutput = await readErrors;
             await readEvents;
             taskExit = { name, exitCode, at: new Date().toISOString(), completion: running.completion };
@@ -362,7 +374,7 @@ export function dashboardDemo(runtimeDir: string, botsDir: string, configDir: st
                 return json({ bot, task: name, phase: 'starting' }, 202);
             }
             if (task) taskStopped = true;
-            await stopProcess(task, 'SIGTERM');
+            await stopTask();
             if (route === 'client/stop') await stopProcess(client, 'SIGINT');
             return json({ ok: true });
         } catch {

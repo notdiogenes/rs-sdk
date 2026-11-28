@@ -2112,6 +2112,8 @@
     const planSteps = planDialog.querySelector('#plan-steps');
     const planAdd = planDialog.querySelector('#plan-add');
     const planEdit = planDialog.querySelector('#plan-edit');
+    const planCancelEdit = planDialog.querySelector('#plan-cancel-edit');
+    const planEditStatus = planDialog.querySelector('#plan-edit-status');
     const planSave = planDialog.querySelector('#plan-save');
     const planClose = planDialog.querySelector('#plan-close');
     let planBot = null;
@@ -2119,7 +2121,12 @@
     let planCatalog = [];
     let planSkills = [];
     let draft = [];
-    let editing = false;
+    let editing = null;
+    let planEditBase = null;
+    let planConflict = false;
+    let planSubmitting = false;
+    let planReloading = false;
+    let planSaved = false;
     let planChanged = false;
     let planVersion = 0;
     let planWatch;
@@ -2223,7 +2230,7 @@
                 [draft[index], draft[next]] = [draft[next], draft[index]];
                 renderPlan();
             }, title);
-            button.disabled = index + offset < 0 || index + offset >= draft.length;
+            button.disabled = index + offset < (planEditBase?.index ?? 0) || index + offset >= draft.length;
             ordering.append(button);
         }
         ordering.append(planButton('Remove', () => { draft.splice(index, 1); renderPlan(); }, 'Remove this activity'));
@@ -2268,26 +2275,70 @@
         return row;
     }
 
-    function renderPlan() {
+    function planDraftDirty() {
+        return editing === 'update' && JSON.stringify(draft) !== JSON.stringify(planEditBase.steps);
+    }
+
+    function planEditMessage() {
+        if (editing !== 'update') return planSaved ? 'Changes saved.' : '';
+        if (planConflict) return 'Cancel edits to load the latest plan.';
+        if (planEditBase.status !== 'running') return 'Save changes to this plan. Resume when ready.';
+        const oldStep = planEditBase.steps[planEditBase.index];
+        const nextStep = draft[planEditBase.index];
+        if (!nextStep) return 'Saving leaves no activities queued after the completed steps.';
+        if (JSON.stringify(oldStep) === JSON.stringify(nextStep)) {
+            return 'Changes to queued steps keep the current activity running.';
+        }
+        const skill = finish => finish.type === 'level' ? finish.skill : undefined;
+        const bankTarget = finish => finish.type === 'bank-stock' ? finish.quantity : undefined;
+        if (!oldStep || oldStep.task !== nextStep.task || skill(oldStep.finish) !== skill(nextStep.finish) ||
+            bankTarget(oldStep.finish) !== bankTarget(nextStep.finish)) {
+            return 'Saving this change may stop the current task and start a different activity.';
+        }
+        if (JSON.stringify(oldStep.requirements) !== JSON.stringify(nextStep.requirements) || planEditBase.work?.inserted) {
+            return 'The current activity may change after Fleet Desk checks the updated step and its prerequisites.';
+        }
+        return 'The current task can continue if it still needs to reach the updated finish condition.';
+    }
+
+    function renderPlanActions() {
         planNameField.hidden = !!planBot || !editing;
-        planName.disabled = planNameField.hidden;
+        planName.disabled = planNameField.hidden || planSubmitting;
+        planSteps.inert = planSubmitting;
+        planAdd.hidden = !editing;
+        planAdd.disabled = planSubmitting || draft.length >= 12;
+        planEdit.hidden = !!editing || !planState;
+        planEdit.disabled = planSubmitting || planReloading;
+        planEdit.textContent = planState?.status === 'complete' ? 'New plan' : 'Edit plan';
+        planCancelEdit.hidden = !editing || (!planState && editing === 'new');
+        planCancelEdit.disabled = planSubmitting;
+        planClose.disabled = planSubmitting;
+        planSave.hidden = !editing && (!planState || planState.status === 'complete');
+        planSave.disabled = planSubmitting || planReloading || (!!editing && !draft.length) ||
+            (editing === 'update' && (!planDraftDirty() || planConflict));
+        planSave.textContent = editing === 'update' ? 'Save changes' : editing ? planBot ? 'Start plan' : 'Create bot and start'
+            : planState?.status === 'running' ? 'Pause plan' : 'Resume plan';
+        setText(planEditStatus, planEditMessage());
+        setHidden(planEditStatus, !planEditStatus.textContent);
+    }
+
+    function renderPlan() {
         const list = editing ? draft : planState?.steps ?? [];
+        const current = (planEditBase ?? planState)?.index;
         planSteps.replaceChildren(...list.map((step, index) => {
-            if (editing) return renderStep(step, index);
-            const row = node('li', '', 'plan-step plan-readonly');
-            row.append(node('strong', labelFor(step.task)), node('small', finishLabel(step.finish)));
-            const state = index < planState.index ? 'Done' : index === planState.index ? 'Current' : 'Queued';
-            row.append(node('small', state, 'plan-kind'));
+            const state = index < current ? 'done' : index === current ? 'current' : 'queued';
+            const canEdit = editing && (editing !== 'update' || state !== 'done');
+            const row = canEdit ? renderStep(step, index) : node('li', '', 'plan-step plan-readonly');
+            if (!canEdit) row.append(node('strong', labelFor(step.task)), node('small', finishLabel(step.finish)));
+            if (editing !== 'new') {
+                row.dataset.stepState = state;
+                const marker = node('small', { done: 'Done', current: 'Current', queued: 'Queued' }[state], 'plan-kind plan-step-state');
+                marker.dataset.stepState = state;
+                row.prepend(marker);
+            }
             return row;
         }));
-        planAdd.hidden = !editing;
-        planAdd.disabled = draft.length >= 12;
-        planEdit.hidden = editing || !planState || planState.status === 'running';
-        planEdit.textContent = planState?.status === 'complete' ? 'New plan' : 'Edit as new plan';
-        planSave.hidden = !editing && (!planState || planState.status === 'complete');
-        planSave.disabled = editing && !draft.length;
-        planSave.textContent = editing ? planBot ? 'Start plan' : 'Create bot and start'
-            : planState?.status === 'running' ? 'Pause plan' : 'Resume plan';
+        renderPlanActions();
         if (!editing && planState) {
             const work = planState.work;
             const progress = work?.finish.type === 'minutes' ? ` · ${Math.floor(planState.elapsedMs / 60000)} of ${work.finish.minutes} min` : '';
@@ -2307,7 +2358,7 @@
             planSkills = data.skills;
             planState = data.plan;
             if (initialLoad) {
-                editing = !planState;
+                editing = planState ? null : 'new';
                 draft = editing ? [defaultStep()] : [];
                 planError.textContent = '';
             }
@@ -2325,7 +2376,8 @@
         planBot = button.dataset.planBot || null;
         planState = null;
         draft = [];
-        editing = planChanged = false;
+        editing = planEditBase = null;
+        planChanged = planConflict = planSubmitting = planReloading = planSaved = false;
         planName.value = '';
         planTitle.textContent = planBot ? `Activity plan · ${planBot}` : 'New bot';
         planError.textContent = 'Loading activities…';
@@ -2336,13 +2388,38 @@
 
     planAdd.addEventListener('click', () => { draft.push(defaultStep()); renderPlan(); });
     planEdit.addEventListener('click', () => {
-        draft = planState.status === 'complete' ? [defaultStep()] : structuredClone(planState.steps);
-        editing = true;
+        if (!planState || planSubmitting) return;
+        clearTimeout(planWatch);
+        planVersion++;
+        const replacing = planState.status === 'complete';
+        editing = replacing ? 'new' : 'update';
+        planEditBase = replacing ? null : planState;
+        draft = replacing ? [defaultStep()] : structuredClone(planState.steps);
+        planConflict = planSaved = false;
         planError.textContent = '';
         renderPlan();
+        planSteps.querySelector('select')?.focus();
     });
-    planClose.addEventListener('click', () => planDialog.close());
-    planDialog.addEventListener('cancel', event => { if (planClose.disabled) event.preventDefault(); });
+    planCancelEdit.addEventListener('click', async () => {
+        if (planSubmitting) return;
+        editing = planEditBase = null;
+        planConflict = false;
+        planReloading = true;
+        draft = [];
+        const version = ++planVersion;
+        renderPlan();
+        planError.textContent = 'Loading the saved plan…';
+        await refreshPlan(version);
+        if (version !== planVersion) return;
+        planReloading = false;
+        renderPlanActions();
+        planEdit.focus();
+    });
+    planForm.addEventListener('input', () => { if (editing) renderPlanActions(); });
+    planForm.addEventListener('change', () => { if (editing) renderPlanActions(); });
+    const canClosePlan = () => !planSubmitting && (!planDraftDirty() || window.confirm('Discard unsaved plan changes?'));
+    planClose.addEventListener('click', () => { if (canClosePlan()) planDialog.close(); });
+    planDialog.addEventListener('cancel', event => { if (!canClosePlan()) event.preventDefault(); });
     planDialog.addEventListener('close', () => {
         planVersion++;
         clearTimeout(planWatch);
@@ -2351,29 +2428,41 @@
     });
     planForm.addEventListener('submit', async event => {
         event.preventDefault();
-        if (planSave.disabled) return;
+        if (planSave.disabled || planSave.hidden) return;
         if (editing && draft.some((step, index) => step.finish.type === 'forever' && index !== draft.length - 1)) {
             planError.textContent = 'Move the indefinite grind to the end of the plan.';
             return;
         }
         clearTimeout(planWatch);
         const version = ++planVersion;
-        planSave.disabled = planClose.disabled = true;
-        const action = editing ? planBot ? 'start' : 'create' : planState.status === 'running' ? 'pause' : 'resume';
+        const action = editing === 'update' ? 'update' : editing ? planBot ? 'start' : 'create'
+            : planState.status === 'running' ? 'pause' : 'resume';
+        const payload = action === 'update' ? { action, steps: draft, expectedRevision: planEditBase.revision }
+            : editing ? { action, steps: draft, ...(!planBot ? { name: planName.value.trim() } : {}) } : { action };
+        planSubmitting = true;
+        renderPlanActions();
         try {
-            const data = await request(planUrl(), editing ? { action, steps: draft, ...(!planBot ? { name: planName.value.trim() } : {}) } : { action });
+            const data = await request(planUrl(), payload);
             if (version !== planVersion) return;
             planBot = data.bot;
             planState = data.plan;
             planChanged = true;
+            planSaved = action === 'update';
             planTitle.textContent = `Activity plan · ${planBot}`;
-            editing = false;
+            editing = planEditBase = null;
+            planConflict = false;
             renderPlan();
             if (planState?.status === 'running') planWatch = setTimeout(() => void refreshPlan(version), 1500);
         } catch (error) {
-            if (version === planVersion) planError.textContent = error.message;
+            if (version === planVersion) {
+                if (action === 'update' && error.status === 409) planConflict = true;
+                planError.textContent = error.message;
+            }
         } finally {
-            if (version === planVersion) planSave.disabled = planClose.disabled = false;
+            if (version === planVersion) {
+                planSubmitting = false;
+                renderPlanActions();
+            }
         }
     });
 

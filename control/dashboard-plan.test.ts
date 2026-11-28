@@ -1,9 +1,10 @@
 import { expect, test } from 'bun:test';
+import { Database } from 'bun:sqlite';
 import { mkdtempSync, mkdirSync, rmSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import type { BotWorldState } from '../sdk/types';
 import { nextWork, parseSteps } from './dashboard-plan';
-import { createPlanManager, type PlanBackend } from './dashboard-plan-runner';
+import { createPlanManager, PlanEditConflict, type PlanBackend } from './dashboard-plan-runner';
 import { dashboardRoster } from './dashboard-roster';
 
 function world(thieving: number, hp: number, cook = false, tutorial = false) {
@@ -172,3 +173,133 @@ test('appends mining without stopping runecrafting and starts after confirmed es
         rmSync(directory, { recursive: true, force: true });
     }
 }, 16_000);
+
+test('keeps the active child and credited time through compatible plan edits, then protects completed steps', async () => {
+    const directory = mkdtempSync(join(process.cwd(), '.plan-test-'));
+    const game = world(80, 99, true);
+    const status: ReturnType<PlanBackend['status']> = { bot: 'Bot', tasks: [], client: null, task: null };
+    let starts = 0;
+    let stops = 0;
+    const backend: PlanBackend = {
+        status: () => status,
+        async prepare() { status.client = { startedAt: new Date().toISOString(), stopping: false }; },
+        async observe() { game.tick++; return game; },
+        async start(name) {
+            expect(status.task).toBeNull();
+            starts++;
+            status.task = { name, startedAt: new Date().toISOString(), stopping: false };
+        },
+        async stop() { stops++; status.task = null; },
+    };
+    const manager = createPlanManager(directory, async () => backend);
+    const planSteps = (minutes?: number, follow = 'mine-iron-bank') => parseSteps([
+        { task: 'cooks-assistant', finish: { type: 'complete' } },
+        { task: 'pickpocket-men', finish: minutes === undefined ? { type: 'forever' } : { type: 'minutes', minutes } },
+        ...(minutes === undefined ? [] : [{ task: follow, finish: { type: 'forever' } }]),
+    ]);
+    try {
+        const firstRevision = manager.start('Bot', planSteps()).revision;
+        await until(() => starts === 1);
+        const originalTask = status.task;
+        const original = manager.get('Bot')!;
+        expect(original.index).toBe(1);
+        expect(() => manager.update('Bot', planSteps(5), firstRevision)).toThrow(PlanEditConflict);
+        expect(() => manager.update('Bot', planSteps().slice(1), original.revision)).toThrow(PlanEditConflict);
+
+        const db = new Database(join(directory, 'activity-plans.sqlite'));
+        db.exec("CREATE TRIGGER reject_plan_edit BEFORE INSERT ON activity_plan WHEN json_extract(new.data, '$.steps[1].finish.minutes') = 7 BEGIN SELECT RAISE(ABORT, 'Test save failure'); END");
+        db.close();
+        expect(() => manager.update('Bot', planSteps(7), original.revision)).toThrow('Test save failure');
+        expect(manager.get('Bot')?.steps).toEqual(planSteps());
+
+        const edited = manager.update('Bot', planSteps(5), original.revision);
+        const revision = edited.revision;
+        expect(edited.status).toBe('running');
+        expect(() => manager.update('Bot', planSteps(6), original.revision)).toThrow(PlanEditConflict);
+        await until(() => (manager.get('Bot')?.elapsedMs ?? 0) > 0);
+        const elapsed = manager.get('Bot')!.elapsedMs;
+        expect(manager.get('Bot')?.revision).toBe(revision);
+        expect(status.task).toBe(originalTask);
+        expect(stops).toBe(0);
+
+        const futureEdit = manager.update('Bot', planSteps(5, 'mine-coal-bank'), revision);
+        const futureRevision = futureEdit.revision;
+        expect(futureEdit.elapsedMs).toBe(elapsed);
+        await until(() => (manager.get('Bot')?.elapsedMs ?? 0) > elapsed);
+        expect(manager.get('Bot')?.revision).toBe(futureRevision);
+        expect(status.task).toBe(originalTask);
+        expect(starts).toBe(1);
+        expect(stops).toBe(0);
+    } finally {
+        await manager.pause('Bot');
+        manager.close();
+        rmSync(directory, { recursive: true, force: true });
+    }
+}, 20_000);
+
+test('an edit during task launch restarts only after the old child stops when launch arguments change', async () => {
+    const directory = mkdtempSync(join(process.cwd(), '.plan-test-'));
+    const game = world(80, 99, true);
+    const status: ReturnType<PlanBackend['status']> = { bot: 'Bot', tasks: [], client: null, task: null };
+    const entering = Promise.withResolvers<void>();
+    const ready = Promise.withResolvers<void>();
+    const targets: Array<number | undefined> = [];
+    let stops = 0;
+    const backend: PlanBackend = {
+        status: () => status,
+        async prepare() { status.client = { startedAt: new Date().toISOString(), stopping: false }; },
+        async observe() { game.tick++; return game; },
+        async start(name, _skill, target) {
+            expect(status.task).toBeNull();
+            targets.push(target);
+            if (targets.length === 1) {
+                entering.resolve();
+                await ready.promise;
+            }
+            status.task = { name, startedAt: new Date().toISOString(), stopping: false };
+        },
+        async stop() { stops++; status.task = null; },
+    };
+    const manager = createPlanManager(directory, async () => backend);
+    const steps = (quantity: number) => parseSteps([{ task: 'mine-iron-bank', finish: { type: 'bank-stock', quantity } }]);
+    try {
+        const plan = manager.start('Bot', steps(10));
+        await entering.promise;
+        manager.update('Bot', steps(20), plan.revision);
+        expect(targets).toEqual([10]);
+        ready.resolve();
+        await until(() => targets.length === 2);
+        expect(targets).toEqual([10, 20]);
+        expect(stops).toBe(1);
+        expect(manager.get('Bot')?.work?.finish).toEqual({ type: 'bank-stock', quantity: 20 });
+    } finally {
+        ready.resolve();
+        await manager.pause('Bot');
+        manager.close();
+        rmSync(directory, { recursive: true, force: true });
+    }
+}, 15_000);
+
+test('edits legacy completed plans without restarting and rejects a persisted stale revision', () => {
+    const directory = mkdtempSync(join(process.cwd(), '.plan-test-'));
+    const manager = createPlanManager(directory, async () => { throw new Error('Editing must not start a task.'); });
+    try {
+        const steps = parseSteps([{ task: 'cooks-assistant', finish: { type: 'complete' } }]);
+        const db = new Database(join(directory, 'activity-plans.sqlite'));
+        db.run('INSERT INTO activity_plan (bot, data) VALUES (?, ?)', ['Bot', JSON.stringify({
+            bot: 'Bot', steps, index: 1, elapsedMs: 0, status: 'complete',
+        })]);
+        db.close();
+
+        expect(manager.get('Bot')?.revision).toBe('legacy');
+        const next = parseSteps([{ task: 'pickpocket-men', finish: { type: 'forever' } }]);
+        const updated = manager.update('Bot', [...steps, ...next], 'legacy');
+        expect(updated).toMatchObject({ index: 1, status: 'paused', steps: [...steps, ...next] });
+        expect(manager.active('Bot')).toBe(false);
+        expect(manager.get('Bot')?.revision).toBe(updated.revision);
+        expect(() => manager.update('Bot', steps, 'legacy')).toThrow(PlanEditConflict);
+    } finally {
+        manager.close();
+        rmSync(directory, { recursive: true, force: true });
+    }
+});
