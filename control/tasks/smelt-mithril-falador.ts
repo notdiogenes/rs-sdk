@@ -4,6 +4,7 @@ import { Spells } from '../../sdk/spells';
 import type { BotWorldState } from '../../sdk/types';
 import { bankLocations, place, type NamedTile, type Tile } from '../bank-locations';
 import { reportTaskActivity } from '../dashboard-task-activity';
+import { reportBankStockTarget } from './bank-stock';
 import { fishingGuildBank } from '../mining-routes';
 import { trainSmithingWithIron } from './mithril-smithing-training';
 import { withTaskUpdateCheckpoints, type TaskCheckpoint } from './update-checkpoint';
@@ -223,8 +224,7 @@ export async function smeltMithrilFalador(ctx: ScriptContext, checkpoint?: TaskC
     const banked = stored(mithrilBar);
     await closeBank();
     auditEvent('milestone', 'mithril-smelting-complete', { banked, smelted: banked - startingBars });
-    // The bank-stock plan protocol uses this existing completion event name.
-    if (target !== undefined) auditEvent('milestone', 'mining-bank-target-confirmed', { banked, target });
+    if (target !== undefined) reportBankStockTarget(banked, target);
 }
 
 if (import.meta.main) {

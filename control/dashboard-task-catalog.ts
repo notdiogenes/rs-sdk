@@ -2,6 +2,14 @@ import { miningResources, miningSelection, type MiningTask } from './mining-rout
 
 export const trainingSkills = ['Hitpoints', 'Thieving', 'Attack', 'Strength', 'Defence', 'Runecraft', 'Mining', 'Fishing', 'Cooking'] as const;
 export type TrainingSkill = typeof trainingSkills[number];
+export type Finish =
+    | { type: 'complete' }
+    | { type: 'essence-exhausted' }
+    | { type: 'bank-stock'; quantity: number }
+    | { type: 'minutes'; minutes: number }
+    | { type: 'level'; skill: TrainingSkill; level: number }
+    | { type: 'forever' };
+
 export type Requirement =
     | { type: 'level'; skill: TrainingSkill; level: number }
     | { type: 'quest'; task: string };
@@ -26,8 +34,9 @@ type Activity = ActivitySettingsContract & {
     category: 'Quests' | 'Combat' | 'Thieving' | 'Runecraft' | 'Mining' | 'Fishing' | 'Smithing' | 'Setup' | 'Legacy';
     usage: 'once' | 'repeatable';
     script: string;
-    /** When set, plans require a bank-stock target for this item. */
-    stockTargetItem?: string;
+    selectors?: readonly { label: string; value: string }[];
+    bankStockItem?: string;
+    finishModes?: readonly Finish['type'][];
     requirements?: Requirement[];
     trains?: readonly TrainingSkill[];
     journal?: number;
@@ -36,6 +45,30 @@ type Activity = ActivitySettingsContract & {
 
 const level = (skill: TrainingSkill, minimum: number): Requirement => ({ type: 'level', skill, level: minimum });
 
+function pickpocket(target: string, ...requirements: Requirement[]): Activity {
+    return {
+        label: `Pickpocket ${target}`, category: 'Thieving', usage: 'repeatable', script: 'pickpocket.ts',
+        trains: ['Thieving'], options: pickpocketOptions, selectors: [{ label: 'Target', value: target }],
+        ...(requirements.length > 0 && { requirements }),
+    };
+}
+
+function sharkFishing(label: string, location: 'Catherby' | 'Fishing Guild', cook: boolean): Activity {
+    const requirements: Requirement[] = [];
+    if (location === 'Fishing Guild') {
+        requirements.push(level('Fishing', 68));
+        if (cook) requirements.push(level('Cooking', 10));
+    }
+    return {
+        label, category: 'Fishing', usage: 'repeatable', script: 'fish-sharks.ts',
+        trains: cook ? ['Fishing', 'Cooking'] : ['Fishing'],
+        bankStockItem: cook ? 'cooked sharks' : 'raw sharks',
+        selectors: [{ label: 'Location', value: location }, { label: 'Catch handling', value: cook ? 'Cook' : 'Keep raw' }],
+        ...(requirements.length > 0 && { requirements }),
+    };
+}
+
+const ores = new Set(['copper', 'tin', 'iron', 'silver', 'gold', 'mithril', 'adamantite']);
 const miningTasks = Object.keys(miningResources).flatMap(resource =>
     (['bank', 'power'] as const).map(mode => `mine-${resource}-${mode}` as MiningTask));
 const miningActivities = Object.fromEntries<Activity>(miningTasks.map(id => {
@@ -44,6 +77,8 @@ const miningActivities = Object.fromEntries<Activity>(miningTasks.map(id => {
     return [id, {
         label: mode === 'bank' ? `Mine and bank ${name.toLowerCase()}` : `Powermine ${name.toLowerCase()}`,
         category: 'Mining', usage: 'repeatable', script: 'mine-resources.ts', trains: ['Mining'],
+        selectors: [{ label: 'Resource', value: name }, { label: 'Method', value: mode === 'bank' ? 'Bank the yield' : 'Powermine' }],
+        ...(mode === 'bank' && { bankStockItem: ores.has(resource) ? `${resource} ore` : name.toLowerCase() }),
     } satisfies Activity];
 })) as Record<MiningTask, Activity>;
 
@@ -98,48 +133,24 @@ export const activityCatalog = {
         label: 'Train melee on cows', category: 'Combat', usage: 'repeatable', script: 'train-cows.ts',
         requirements: [level('Hitpoints', 15)], trains: ['Attack', 'Strength', 'Defence'],
     },
-    'pickpocket-men': {
-        label: 'Pickpocket Men', category: 'Thieving', usage: 'repeatable', script: 'pickpocket.ts', trains: ['Thieving'], options: pickpocketOptions,
-    },
-    'pickpocket-guards': {
-        label: 'Pickpocket Guards', category: 'Thieving', usage: 'repeatable', script: 'pickpocket.ts',
-        requirements: [level('Thieving', 40)], trains: ['Thieving'], options: pickpocketOptions,
-    },
-    'pickpocket-knights': {
-        label: 'Pickpocket Ardougne Knights', category: 'Thieving', usage: 'repeatable', script: 'pickpocket.ts',
-        requirements: [level('Thieving', 55)], trains: ['Thieving'], options: pickpocketOptions,
-    },
-    'pickpocket-paladins': {
-        label: 'Pickpocket Paladins', category: 'Thieving', usage: 'repeatable', script: 'pickpocket.ts',
-        requirements: [level('Thieving', 70)], trains: ['Thieving'], options: pickpocketOptions,
-    },
-    'pickpocket-heroes': {
-        label: 'Pickpocket Heroes', category: 'Thieving', usage: 'repeatable', script: 'pickpocket.ts',
-        requirements: [level('Thieving', 80), level('Hitpoints', 80)], trains: ['Thieving'], options: pickpocketOptions,
-    },
+    'pickpocket-men': pickpocket('Men'),
+    'pickpocket-guards': pickpocket('Guards', level('Thieving', 40)),
+    'pickpocket-knights': pickpocket('Ardougne Knights', level('Thieving', 55)),
+    'pickpocket-paladins': pickpocket('Paladins', level('Thieving', 70)),
+    'pickpocket-heroes': pickpocket('Heroes', level('Thieving', 80), level('Hitpoints', 80)),
     'craft-body-runes': {
         label: 'Craft Body runes', category: 'Runecraft', usage: 'repeatable', script: 'craft-body-runes.ts', trains: ['Runecraft'],
+        finishModes: ['minutes', 'level', 'essence-exhausted', 'forever'],
     },
     ...miningActivities,
     'smelt-mithril-falador': {
         label: 'Smelt mithril bars in Falador', category: 'Smithing', usage: 'repeatable',
-        script: 'smelt-mithril-falador.ts', stockTargetItem: 'mithril bars',
+        script: 'smelt-mithril-falador.ts', bankStockItem: 'mithril bars', finishModes: ['bank-stock'],
     },
-    'fish-sharks': {
-        label: 'Fish sharks', category: 'Fishing', usage: 'repeatable', script: 'fish-sharks.ts', trains: ['Fishing'],
-    },
-    'fish-sharks-cook': {
-        label: 'Fish sharks and cook them', category: 'Fishing', usage: 'repeatable',
-        script: 'fish-sharks.ts', trains: ['Fishing', 'Cooking'],
-    },
-    'fish-sharks-guild': {
-        label: 'Fish sharks at the Fishing Guild', category: 'Fishing', usage: 'repeatable',
-        script: 'fish-sharks.ts', requirements: [level('Fishing', 68)], trains: ['Fishing'],
-    },
-    'fish-sharks-guild-cook': {
-        label: 'Fish and cook sharks at the Fishing Guild', category: 'Fishing', usage: 'repeatable',
-        script: 'fish-sharks.ts', requirements: [level('Fishing', 68), level('Cooking', 10)], trains: ['Fishing', 'Cooking'],
-    },
+    'fish-sharks': sharkFishing('Fish sharks', 'Catherby', false),
+    'fish-sharks-cook': sharkFishing('Fish sharks and cook them', 'Catherby', true),
+    'fish-sharks-guild': sharkFishing('Fish sharks at the Fishing Guild', 'Fishing Guild', false),
+    'fish-sharks-guild-cook': sharkFishing('Fish and cook sharks at the Fishing Guild', 'Fishing Guild', true),
     'skip-tutorial': { label: 'Skip Tutorial Island', category: 'Setup', usage: 'once', script: 'skip-tutorial.ts' },
     'train-hp-pickpocket': {
         label: 'Train Hitpoints, then pickpocket', category: 'Legacy', usage: 'repeatable', script: 'train-hp-pickpocket.ts',
@@ -168,10 +179,27 @@ export function parseActivityOptions(task: ActivityId, value: unknown): Activity
     return activityOptionsFor(task, values);
 }
 
+export function finishModesFor(meta: Activity): readonly Finish['type'][] {
+    if (meta.finishModes) return meta.finishModes;
+    if (meta.usage === 'once') return ['complete'];
+    const modes: Finish['type'][] = ['minutes'];
+    if (meta.trains?.length) modes.push('level');
+    if (meta.bankStockItem) modes.push('bank-stock');
+    modes.push('forever');
+    return modes;
+}
+
 export const planCatalog = activityIds.flatMap(id => {
-    const { script, settingsMigrations, ...meta } = activity(id);
-    return meta.category === 'Legacy' || meta.category === 'Setup' ? [] : [{
-        id, ...meta, settingsVersion: meta.settingsVersion ?? initialSettingsVersion,
+    const entry = activity(id);
+    if (entry.category === 'Legacy' || entry.category === 'Setup') return [];
+    const { script, settingsMigrations, ...meta } = entry;
+    const finishModes = finishModesFor(entry);
+    const selectors = meta.selectors ?? (meta.category === 'Quests' ? [{ label: 'Quest', value: meta.label }]
+        : meta.category === 'Combat' ? [{ label: 'Training activity', value: meta.label }] : []);
+    return [{
+        id, ...meta, selectors, finishModes, settingsVersion: meta.settingsVersion ?? initialSettingsVersion,
+        // Older dashboard versions interpret this field as a mandatory bank target.
+        ...(finishModes.length === 1 && finishModes[0] === 'bank-stock' && { stockTargetItem: meta.bankStockItem }),
     }];
 });
 

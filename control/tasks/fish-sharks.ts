@@ -2,6 +2,7 @@ import { auditEvent } from '../../sdk/audit-trace';
 import { runScript, type ScriptContext } from '../../sdk/runner';
 import type { BotWorldState } from '../../sdk/types';
 import { reportTaskActivity } from '../dashboard-task-activity';
+import { reportBankStockTarget } from './bank-stock';
 import { bankLocations, type Tile } from '../bank-locations';
 import { withTaskUpdateCheckpoints, type TaskCheckpoint } from './update-checkpoint';
 
@@ -31,6 +32,7 @@ const rawFish = {
     shark: { id: 383, cooking: 80, name: 'sharks' },
 };
 const rawFishIds = new Set(Object.values(rawFish).map(fish => fish.id));
+const cookedShark = 385;
 
 type Stage = {
     label: string;
@@ -102,7 +104,13 @@ const cookingActivity = activity === 'fish-sharks-cook' || activity === 'fish-sh
 const guildActivity = activity === 'fish-sharks-guild' || activity === 'fish-sharks-guild-cook';
 
 export async function fishSharks({ bot, sdk }: ScriptContext, cook = cookingActivity,
-    checkpoint?: TaskCheckpoint, area: FishingArea = guildActivity ? 'guild' : 'catherby') {
+    checkpoint?: TaskCheckpoint, area: FishingArea = guildActivity ? 'guild' : 'catherby',
+    bankTarget = process.env.RS_ACTIVITY_BANK_TARGET ? Number(process.env.RS_ACTIVITY_BANK_TARGET) : undefined) {
+    if (bankTarget !== undefined && (!Number.isSafeInteger(bankTarget) || bankTarget < 1 || bankTarget > 100_000)) {
+        throw new Error('Choose a bank target between 1 and 100,000 sharks.');
+    }
+    const product = cook ? cookedShark : rawFish.shark.id;
+    let remaining = Infinity;
     const site = locations[area];
     reportTaskActivity(`Preparing to fish at ${site.name}`);
     await sdk.waitForReady();
@@ -167,15 +175,37 @@ export async function fishSharks({ bot, sdk }: ScriptContext, cook = cookingActi
         if (!current().bank.isOpen) throw new Error('The bank did not open.');
     }
 
-    async function bankBackpack(bank: (typeof banks)[number], label: string, keepId?: number) {
-        const deposit = current().inventory.filter(item => item.id !== keepId);
-        if (deposit.length) reportTaskActivity(`${label} at ${bank.name}`);
-        for (const id of new Set(deposit.map(item => item.id))) {
-            const item = current().inventory.find(entry => entry.id === id);
-            if (!item) continue;
-            await requireAction(`Deposit ${item.name}`, bot.depositItem(item, -1));
-            if (quantity(current(), id)) throw new Error(`Deposit of ${item.name} was not confirmed.`);
+    function bankedSharks(state: BotWorldState) {
+        if (!state.bank.isOpen) throw new Error('Open the bank before reading the shark stock.');
+        return state.bank.items.find(item => item.id === product)?.count ?? 0;
+    }
+
+    async function finishAtBank() {
+        if (bankTarget === undefined) return false;
+        const banked = bankedSharks(current());
+        remaining = Math.max(0, bankTarget - banked);
+        if (remaining) return false;
+        await requireAction('Close the bank', bot.closeBank());
+        reportBankStockTarget(banked, bankTarget, { item: product });
+        return true;
+    }
+
+    async function deposit(id: number) {
+        const state = current();
+        const item = state.inventory.find(entry => entry.id === id);
+        if (!item) return;
+        const expected = bankTarget !== undefined && id === product ? bankedSharks(state) + quantity(state, id) : undefined;
+        await requireAction(`Deposit ${item.name}`, bot.depositItem(item, -1));
+        if (quantity(current(), id)) throw new Error(`Deposit of ${item.name} was not confirmed.`);
+        if (expected !== undefined && bankedSharks(current()) < expected) {
+            await sdk.waitForCondition(next => next.bank.isOpen && bankedSharks(next) >= expected, 5_000);
         }
+    }
+
+    async function bankBackpack(bank: (typeof banks)[number], label: string, keepId?: number) {
+        const items = current().inventory.filter(item => item.id !== keepId);
+        if (items.length) reportTaskActivity(`${label} at ${bank.name}`);
+        for (const id of new Set(items.map(item => item.id))) await deposit(id);
     }
 
     async function openFishingShop(tool: Stage['tool']) {
@@ -215,8 +245,6 @@ export async function fishSharks({ bot, sdk }: ScriptContext, cook = cookingActi
     }
 
     async function prepareTool(tool: Stage['tool']) {
-        await openBank(site.bank);
-        await bankBackpack(site.bank, 'Banking the fishing catch', tool.id);
         const stored = current().bank.items.find(item => item.id === tool.id);
         if (!quantity(current(), tool.id) && stored) {
             reportTaskActivity(`Withdrawing a ${tool.name} at ${site.bank.name}`);
@@ -304,7 +332,8 @@ export async function fishSharks({ bot, sdk }: ScriptContext, cook = cookingActi
         const catchCount = (state: BotWorldState) =>
             state.inventory.reduce((count, item) => count + (rawFishIds.has(item.id) ? item.count : 0), 0);
         const batchComplete = (state: BotWorldState) =>
-            state.inventory.length >= capacity || selectFishingStage(state, cook, area) !== stage;
+            state.inventory.length >= capacity || (remaining !== Infinity && quantity(state, rawFish.shark.id) >= remaining)
+            || selectFishingStage(state, cook, area) !== stage;
         function availableSpot(state: BotWorldState) {
             const nearby = state.nearbyNpcs
                 .filter(npc => npc.id === stage.spot && npc.reachable !== false && npc.optionsWithIndex.some(option => stage.option.test(option.text)))
@@ -408,6 +437,17 @@ export async function fishSharks({ bot, sdk }: ScriptContext, cook = cookingActi
 
     const { player } = current();
     if (player.level !== 0) throw new Error('Start this activity on the surface.');
+    const nearbyBank = bankTarget !== undefined && insideGuild(current()) ? locations.guild.bank : banks.reduce((nearest, candidate) =>
+        Math.max(Math.abs(candidate.x - player.worldX), Math.abs(candidate.z - player.worldZ)) <
+        Math.max(Math.abs(nearest.x - player.worldX), Math.abs(nearest.z - player.worldZ)) ? candidate : nearest);
+    if (bankTarget !== undefined) {
+        await openBank(nearbyBank);
+        if (await finishAtBank()) return;
+        if (quantity(current(), product)) {
+            await deposit(product);
+            if (await finishAtBank()) return;
+        }
+    }
     if (area === 'guild') {
         selectFishingStage(current(), cook, area);
         auditEvent('phase', 'fishing-travel-to-guild');
@@ -416,15 +456,16 @@ export async function fishSharks({ bot, sdk }: ScriptContext, cook = cookingActi
         if (current().shop.isOpen) await requireAction('Close the shop', bot.closeShop());
     }
     // A restarted cook task can still be carrying the batch it was working on.
-    if (cook && (area === 'guild' || Math.max(Math.abs(player.worldX - catherbyRange.x), Math.abs(player.worldZ - catherbyRange.z)) <= 3)) {
+    if (cook && (area === 'guild' || Math.max(Math.abs(player.worldX - catherbyRange.x), Math.abs(player.worldZ - catherbyRange.z)) <= 3
+        || (bankTarget !== undefined && quantity(current(), rawFish.shark.id) > 0))) {
+        if (current().bank.isOpen) await requireAction('Close the bank', bot.closeBank());
         await cookBackpack();
     }
-    const nearestBank = area === 'guild' ? site.bank : banks.reduce((nearest, candidate) =>
-        Math.max(Math.abs(candidate.x - player.worldX), Math.abs(candidate.z - player.worldZ)) <
-        Math.max(Math.abs(nearest.x - player.worldX), Math.abs(nearest.z - player.worldZ)) ? candidate : nearest);
+    const nearestBank = area === 'guild' ? site.bank : nearbyBank;
     auditEvent('phase', 'fishing-bank-starting-items', { area });
     await openBank(nearestBank);
     await bankBackpack(nearestBank, 'Banking starting items');
+    if (await finishAtBank()) return;
     const worn = current().equipment;
     if (worn.length) {
         reportTaskActivity('Removing worn gear to bank before fishing');
@@ -449,6 +490,9 @@ export async function fishSharks({ bot, sdk }: ScriptContext, cook = cookingActi
                 { fish: stage.label, cook, area });
             previousStage = stage;
         }
+        await openBank(site.bank);
+        await bankBackpack(site.bank, 'Banking the fishing catch', stage.tool.id);
+        if (await finishAtBank()) return;
         await prepareTool(stage.tool);
         // The bank closed and the next cast has not been sent.
         await checkpoint?.();

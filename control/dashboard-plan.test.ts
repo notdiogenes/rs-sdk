@@ -3,7 +3,7 @@ import { Database } from 'bun:sqlite';
 import { mkdtempSync, mkdirSync, rmSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import type { BotWorldState } from '../sdk/types';
-import { nextWork, parseSteps } from './dashboard-plan';
+import { checkStepCompatibility, nextWork, parseSteps, type Finish } from './dashboard-plan';
 import { createPlanManager, PlanEditConflict, type PlanBackend } from './dashboard-plan-runner';
 import { dashboardRoster } from './dashboard-roster';
 import { dashboardSessions } from './dashboard-session';
@@ -105,6 +105,39 @@ test('accepts bank totals for mining in banking mode and requires a bar target f
     expect(nextWork(step!, world(1, 10))).toMatchObject({ task, finish, inserted: false });
     expect(() => parseSteps([{ task, finish: { type: 'forever' } }])).toThrow('target of 1–100,000 mithril bars');
     expect(() => parseSteps([{ task, finish: { ...finish, quantity: 0 } }])).toThrow('target of 1–100,000 mithril bars');
+});
+
+test('the public catalog offers exactly the finish conditions accepted for each activity', () => {
+    for (const entry of planCatalog) {
+        const finishes: Record<Finish['type'], Finish> = {
+            complete: { type: 'complete' }, minutes: { type: 'minutes', minutes: 30 },
+            level: { type: 'level', skill: entry.trains?.[0] ?? 'Fishing', level: 40 },
+            'bank-stock': { type: 'bank-stock', quantity: 250 },
+            'essence-exhausted': { type: 'essence-exhausted' }, forever: { type: 'forever' },
+        };
+        for (const finish of Object.values(finishes)) {
+            const parse = () => parseSteps([{ task: entry.id, finish }]);
+            if (entry.finishModes.includes(finish.type)) expect(parse()[0]?.finish).toEqual(finish);
+            else expect(parse).toThrow();
+        }
+        expect(entry.finishModes.includes('bank-stock')).toBe(Boolean(entry.bankStockItem));
+    }
+});
+
+test('both fishing locations support optional raw or cooked shark totals and keep existing plan steps compatible', () => {
+    const fish = planCatalog.filter(entry => entry.category === 'Fishing');
+    expect(fish.map(entry => [entry.id, entry.selectors.map(selector => selector.value), entry.bankStockItem])).toEqual([
+        ['fish-sharks', ['Catherby', 'Keep raw'], 'raw sharks'],
+        ['fish-sharks-cook', ['Catherby', 'Cook'], 'cooked sharks'],
+        ['fish-sharks-guild', ['Fishing Guild', 'Keep raw'], 'raw sharks'],
+        ['fish-sharks-guild-cook', ['Fishing Guild', 'Cook'], 'cooked sharks'],
+    ]);
+    for (const entry of fish) {
+        expect(entry.finishModes).toEqual(['minutes', 'level', 'bank-stock', 'forever']);
+        expect(entry.stockTargetItem).toBeUndefined();
+        expect(checkStepCompatibility({ task: entry.id, finish: { type: 'minutes', minutes: 30 }, requirements: [] }))
+            .toMatchObject({ status: 'compatible', migrated: false });
+    }
 });
 
 test('accepts only declared activity options and carries pickpocket banking into eligible prerequisite work', () => {
@@ -569,14 +602,18 @@ test('the plan API clears the last row of a completed plan only on a worker that
 
         const { supportsCompletedRemoval: _capability, ...oldPlans } = manager;
         const runtime = {
-            botProfile: async () => ({ name: 'Bot' }), plans: oldPlans, invalidateSnapshot: () => {},
+            botProfile: async () => ({ name: 'Bot' }), botRoster: {}, plans: oldPlans, invalidateSnapshot: () => {},
             demo: { allowed: async () => true }, sessions: { authenticate: async () => undefined },
             isPlanEditConflict: (error: unknown) => error instanceof PlanEditConflict,
         } as unknown as DashboardWorkerApiRuntime;
         const request = (body?: object) => handleWorkerRequest(new Request('https://fleet.test/bots/activity?view=plan&bot=Bot',
             body && { method: 'POST', body: JSON.stringify(body) }), runtime);
         const edit = { action: 'update', steps: [], expectedRevision: 'legacy', removedCompletedIndexes: [0] };
-        expect(await (await request()).json()).toMatchObject({ canRemoveCompleted: false });
+        const response = await (await request()).json();
+        expect(response.canRemoveCompleted).toBe(false);
+        expect(response.catalog.find((entry: { id: string }) => entry.id === 'fish-sharks-cook')).toMatchObject({
+            bankStockItem: 'cooked sharks', finishModes: ['minutes', 'level', 'bank-stock', 'forever'],
+        });
         expect((await request(edit)).status).toBe(503);
         expect(manager.get('Bot')?.index).toBe(1);
 

@@ -1,15 +1,9 @@
 import type { BotWorldState } from '../sdk/types';
 import { upgradeActivityOptions } from './dashboard-activity-compatibility';
-import { activity, activityIds, activityOptionsFor, initialSettingsVersion, isActivity, inTutorialDestination, onTutorial, parseActivityOptions, trainingSkills,
-    type ActivityId, type ActivityOptions, type Requirement, type TrainingSkill } from './dashboard-task-catalog';
+import { activity, activityIds, activityOptionsFor, finishModesFor, initialSettingsVersion, isActivity, inTutorialDestination, onTutorial, parseActivityOptions, trainingSkills,
+    type ActivityId, type ActivityOptions, type Finish, type Requirement, type TrainingSkill } from './dashboard-task-catalog';
 
-export type Finish =
-    | { type: 'complete' }
-    | { type: 'essence-exhausted' }
-    | { type: 'bank-stock'; quantity: number }
-    | { type: 'minutes'; minutes: number }
-    | { type: 'level'; skill: TrainingSkill; level: number }
-    | { type: 'forever' };
+export type { Finish } from './dashboard-task-catalog';
 export type Step = { task: ActivityId; finish: Finish; requirements: Requirement[]; options?: ActivityOptions; configurationVersion?: number };
 export type Work = { task: ActivityId; finish: Finish; inserted: boolean; reason?: string; options?: ActivityOptions };
 
@@ -58,28 +52,33 @@ export function parseSteps(value: unknown): Step[] {
             task, requirements: parsed, configurationVersion: meta.settingsVersion ?? initialSettingsVersion,
             ...(enabled && { options: enabled }),
         };
-        if (meta.usage === 'once' && ending.type === 'complete') return { ...step, finish: { type: 'complete' } };
-        if (meta.usage === 'repeatable') {
-            if (ending.type === 'bank-stock' && (meta.stockTargetItem || meta.category === 'Mining' && task.endsWith('-bank')) &&
-                typeof ending.quantity === 'number' && Number.isSafeInteger(ending.quantity) &&
-                ending.quantity >= 1 && ending.quantity <= 100_000) {
-                return { ...step, finish: { type: 'bank-stock', quantity: ending.quantity } };
-            }
-            if (meta.stockTargetItem) throw new Error(`Choose a target of 1–100,000 ${meta.stockTargetItem} in the bank.`);
-            if (task === 'craft-body-runes' && ending.type === 'essence-exhausted') {
-                return { ...step, finish: { type: 'essence-exhausted' } };
-            }
-            if (ending.type === 'forever') {
+        const modes = finishModesFor(meta);
+        switch (modes.find(mode => mode === ending.type)) {
+            case 'complete': return { ...step, finish: { type: 'complete' } };
+            case 'essence-exhausted': return { ...step, finish: { type: 'essence-exhausted' } };
+            case 'forever':
                 if (index !== value.length - 1) throw new Error('An indefinite grind must be the final activity.');
                 return { ...step, finish: { type: 'forever' } };
-            }
-            if (ending.type === 'minutes' && typeof ending.minutes === 'number' && Number.isSafeInteger(ending.minutes) &&
-                ending.minutes >= 1 && ending.minutes <= 10_080) {
-                return { ...step, finish: { type: 'minutes', minutes: ending.minutes } };
-            }
-            if (ending.type === 'level' && isSkill(ending.skill) && meta.trains?.includes(ending.skill) && isLevel(ending.level)) {
-                return { ...step, finish: { type: 'level', skill: ending.skill, level: ending.level } };
-            }
+            case 'bank-stock':
+                if (typeof ending.quantity === 'number' && Number.isSafeInteger(ending.quantity) &&
+                    ending.quantity >= 1 && ending.quantity <= 100_000) {
+                    return { ...step, finish: { type: 'bank-stock', quantity: ending.quantity } };
+                }
+                break;
+            case 'minutes':
+                if (typeof ending.minutes === 'number' && Number.isSafeInteger(ending.minutes) &&
+                    ending.minutes >= 1 && ending.minutes <= 10_080) {
+                    return { ...step, finish: { type: 'minutes', minutes: ending.minutes } };
+                }
+                break;
+            case 'level':
+                if (isSkill(ending.skill) && meta.trains?.includes(ending.skill) && isLevel(ending.level)) {
+                    return { ...step, finish: { type: 'level', skill: ending.skill, level: ending.level } };
+                }
+                break;
+        }
+        if (modes.length === 1 && modes[0] === 'bank-stock') {
+            throw new Error(`Choose a target of 1–100,000 ${meta.bankStockItem} in the bank.`);
         }
         throw new Error('Choose a valid finish condition for each activity. Durations must be 1–10,080 minutes.');
     });

@@ -228,6 +228,12 @@ To add a game account you created yourself, sign in and choose **New bot**,
 then **Register existing bot**. Fleet Desk saves the profile in its private
 runtime directory. Open its card to assign an activity plan when ready.
 
+Choose an activity family in the plan editor, then select the resource, target,
+or method for that step. For example, choose **Mining**, **Iron**, and the
+banking method, then set a bank total of 250. The target includes iron ore
+already in the bank. Fishing can target raw sharks or cooked sharks according
+to the catch handling selected. Each step offers its supported finish conditions.
+
 Plans are ordered. Quests finish when the live journal confirms completion.
 Repeatable activities can run for a duration, until a supported skill reaches
 a target level, or indefinitely as the last step. Add quest or level
@@ -257,9 +263,10 @@ plan, POST `{ "action": "update", "expectedRevision": "...", "steps": [...] }`
 with the bot query and the plan's current `revision` from GET. A stale revision
 returns `409`. When `canRemoveCompleted` is true, include `removedCompletedIndexes`
 with the original zero-based indexes of completed entries omitted from `steps`.
-Existing plans also accept `pause` and `resume`. The catalog
-specifies each activity’s
-finish modes via `usage` and `trains`. Example step:
+Existing plans also accept `pause` and `resume`. Each catalog entry has a stable
+task ID, its ordered `selectors`, and the `finishModes` accepted by the worker.
+Use `trains` for level targets and `bankStockItem` for the item counted by a
+bank-total target. A step still uses the task ID in its saved plan, for example:
 
 ```json
 {

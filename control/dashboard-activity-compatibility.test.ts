@@ -18,6 +18,11 @@ test('a mining route release changes mining tasks without flagging fishing', () 
     expect(activityAffected('fish-sharks', ['control/tasks/new-shared-helper.ts'])).toBe(true);
     expect(activityAffected('fish-sharks', ['control/new-shared-helper.ts'])).toBe(true);
     expect(activityAffected('train-cows', ['control/tasks/update-checkpoint.ts'])).toBe(true);
+    const bankStock = ['control/tasks/bank-stock.ts'];
+    expect(activityAffected('fish-sharks-guild-cook', bankStock)).toBe(true);
+    expect(activityAffected('mine-iron-bank', bankStock)).toBe(true);
+    expect(activityAffected('smelt-mithril-falador', bankStock)).toBe(true);
+    expect(activityAffected('craft-body-runes', bankStock)).toBe(false);
     const smithingTraining = 'control/tasks/mithril-smithing-training.ts';
     expect(activityAffected('smelt-mithril-falador', [smithingTraining])).toBe(true);
     expect(activityAffected('smelt-mithril-falador', ['control/tasks/update-checkpoint.ts'])).toBe(true);
