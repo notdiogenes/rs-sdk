@@ -1584,6 +1584,7 @@
 
     const monitorField = name => monitorDialog.querySelector(`#monitor-${name}`);
     const monitorSubject = monitorField('subject');
+    const monitorPathfinderOption = monitorSubject.querySelector('option[value="shared"]');
     const monitorOverlay = monitorField('overlay-pathfinder');
     const monitorCanvas = monitorField('chart');
     const monitorHover = monitorField('chart-hover');
@@ -1596,7 +1597,7 @@
     const monitorColors = { client: '#a6d185', task: '#e1b56b', pathfinder: '#91badd', all: '#a6d185' };
     const monitorKinds = ['client', 'task', 'pathfinder'];
     const monitorKey = process => process.kind === 'pathfinder' ? 'shared' : `bot:${process.bot}`;
-    const monitorGroup = key => key === 'shared' ? 'Shared pathfinder' : key === 'all' ? monitorLabels.all : key.slice(4);
+    const monitorGroup = key => key === 'shared' ? 'Shared pathfinder' : key.slice(4);
     const monitorRss = bytes => Number.isFinite(bytes) ? `${num.format(Math.round(bytes / 1048576))} MiB` : '—';
     const monitorCpu = percent => Number.isFinite(percent) ? `${percent.toFixed(1)}%` : '—';
     let monitorData;
@@ -1677,17 +1678,18 @@
         for (const sample of monitorData?.history ?? []) {
             for (const process of sample.processes) keys.add(monitorKey(process));
         }
-        const groups = [...keys].filter(key => key !== 'shared').sort((a, b) => a.localeCompare(b));
-        if (groups.length) groups.push('all');
-        if (keys.has('shared')) groups.push('shared');
-        const options = groups.map(key => `<option value="${escape(key)}">${escape(monitorGroup(key))}</option>`).join('') || '<option>No process data</option>';
+        const bots = [...keys].filter(key => key !== 'shared').sort((a, b) => a.localeCompare(b));
+        const options = bots.map(key => `<option data-monitor-bot value="${escape(key)}">${escape(monitorGroup(key))}</option>`).join('');
         if (options !== monitorSubject.dataset.rendered) {
             const selected = monitorSubject.value;
-            monitorSubject.innerHTML = options;
+            for (const option of monitorSubject.querySelectorAll('[data-monitor-bot]')) option.remove();
+            monitorSubject.insertAdjacentHTML('beforeend', options);
             monitorSubject.dataset.rendered = options;
-            if (groups.includes(selected)) monitorSubject.value = selected;
+            if (keys.has(selected)) monitorSubject.value = selected;
         }
-        monitorSubject.disabled = groups.length === 0;
+        monitorPathfinderOption.disabled = !keys.has('shared');
+        if (monitorSubject.value === 'shared' && monitorPathfinderOption.disabled) monitorSubject.value = 'all';
+        monitorSubject.disabled = keys.size === 0;
         renderMonitorSummary(processes);
         renderMonitorTable(processes);
         drawMonitorChart();
@@ -1735,7 +1737,7 @@
         const start = end - monitorWindow * 1000;
         const samples = (monitorData?.history ?? []).filter(sample => sample.at >= start && sample.at <= end);
         const selection = monitorSubject.value;
-        monitorOverlay.disabled = selection === 'shared' || !monitorSubject.querySelector('option[value="shared"]');
+        monitorOverlay.disabled = selection === 'shared' || monitorPathfinderOption.disabled;
         const series = selection === 'shared' ? ['pathfinder'] : selection === 'all' ? ['all'] : ['client', 'task'];
         if (!monitorOverlay.disabled && monitorOverlay.checked) series.push('pathfinder');
         const kinds = series.filter(kind => samples.some(sample => monitorReading(sample, kind)));
@@ -1743,7 +1745,8 @@
         const chartEmpty = monitorField('chart-empty');
         setText(chartEmpty, monitorData ? `No ${chartName} samples for this selection.` : 'Waiting for samples…');
         setHidden(chartEmpty, kinds.length > 0);
-        const subject = monitorSubject.selectedOptions[0]?.textContent;
+        const selected = monitorSubject.selectedOptions[0];
+        const subject = selected?.getAttribute('aria-label') ?? selected?.textContent;
         monitorCanvas.setAttribute('aria-label', kinds.length ? `${chartName} history for ${subject}` : `${chartName} history, no samples`);
         const events = (monitorData?.events ?? []).filter(event => event.at >= start && event.at <= end &&
             (selection === 'shared' || selection === 'all' || `bot:${event.bot}` === selection));

@@ -229,7 +229,10 @@ export function fleetPage({ nonce, revision = '', data, taskActivity, questCatal
     <section class="monitor-panel" aria-labelledby="monitor-history-title">
       <div class="monitor-panel-header"><div><h3 id="monitor-history-title">Resource history</h3><p id="monitor-chart-info">CPU as a percentage of one core</p></div><span id="monitor-peak"></span></div>
       <div class="monitor-chart-controls">
-        <select id="monitor-subject" aria-label="Select processes for resource history" disabled><option>No process data</option></select>
+        <select id="monitor-subject" aria-label="Select processes for resource history" disabled>
+          <option value="all" aria-label="All bots">▦ All bots</option>
+          <option value="shared" aria-label="Pathfinder" disabled>◇ Pathfinder</option>
+        </select>
         <div class="monitor-segment" role="group" aria-label="Metric">
           <button type="button" data-monitor-metric="cpu" aria-pressed="true">CPU</button><button type="button" data-monitor-metric="rss" aria-pressed="false">MEM</button>
         </div>
