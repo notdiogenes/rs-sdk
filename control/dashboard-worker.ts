@@ -1,6 +1,7 @@
 import { lstatSync, unlinkSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { createDashboardSupervisor } from './dashboard-supervisor';
+import type { MonitorProcess } from './dashboard-monitor';
 
 const [botsDir, configDir, socket] = process.argv.slice(2);
 if (!botsDir || !configDir || !socket) throw new Error('Expected the bot directory, control config directory, and private socket');
@@ -8,6 +9,7 @@ const pathfindingSocket = join(dirname(socket), 'pathfinding.sock');
 const pathfindingServer = join(import.meta.dir, '../sdk/pathfinding-server.ts');
 const PATHFINDING_START_TIMEOUT = 60_000;
 let pathfindingReady = false;
+let monitoredPathfinder: MonitorProcess | null = null;
 
 async function supervisePathfinding() {
     for (;;) {
@@ -27,6 +29,9 @@ async function supervisePathfinding() {
                     }
                 },
             });
+            monitoredPathfinder = {
+                kind: 'pathfinder', bot: null, pid: child.pid, startedAt: new Date().toISOString(),
+            };
             const startup = setTimeout(() => {
                 console.error('[fleet-pathfinding] The pathfinder did not become ready. Restarting it.');
                 child.kill('SIGKILL');
@@ -37,6 +42,7 @@ async function supervisePathfinding() {
             } finally {
                 clearTimeout(startup);
                 pathfindingReady = false;
+                monitoredPathfinder = null;
             }
         } catch (error) {
             console.error('[fleet-pathfinding] Could not start the pathfinder.', error);
@@ -56,6 +62,7 @@ async function waitForPathfinding() {
 const supervisor = await createDashboardSupervisor(botsDir, configDir, {
     socket: pathfindingSocket,
     ensureReady: waitForPathfinding,
+    monitoredProcess: () => monitoredPathfinder,
 });
 Bun.serve({
     unix: socket,

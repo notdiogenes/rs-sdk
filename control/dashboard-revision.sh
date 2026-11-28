@@ -18,7 +18,8 @@ case "${4:-legacy}" in
         ;;
     worker)
         files=(
-            "$source_dir/dashboard-worker.ts" "$source_dir/dashboard-supervisor.ts"
+            "$source_dir/dashboard-worker.ts" "$source_dir/dashboard-supervisor.ts" "$source_dir/dashboard-monitor.ts"
+            "$source_dir/dashboard-task-activity.ts"
             "$source_dir/dashboard-activity.ts" "$source_dir/dashboard-session.ts" "$source_dir/dashboard-inventory.ts"
             "$source_dir/dashboard-diagnostics.ts" "$source_dir/dashboard-live-state.ts" "$source_dir/dashboard-audit.ts" "$source_dir/dashboard-audit-schema.ts"
             "$source_dir/dashboard-audit-insights.ts" "$source_dir/dashboard-last-activity.ts" "$source_dir/hosted-bot.ts"

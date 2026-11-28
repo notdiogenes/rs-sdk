@@ -9,6 +9,8 @@ import { botCredentials, hostedBotState, isFreshBotState } from './hosted-bot';
 import type { BotProfile } from './dashboard-roster';
 import { auditPrefix } from '../sdk/audit-trace';
 import type { DashboardAudit } from './dashboard-audit';
+import type { MonitorProcess } from './dashboard-monitor';
+import { taskActivityLabel } from './dashboard-task-activity';
 import { activity, activityIds, isActivity, type ActivityId } from './dashboard-task-catalog';
 
 const taskName = 'pickpocket-men';
@@ -28,7 +30,7 @@ const targetLabels: Record<string, string> = {
 const digest = (value: string) => createHash('sha256').update(value).digest();
 const json = (body: unknown, status = 200) => Response.json(body, { status, headers: { 'Cache-Control': 'no-store' } });
 
-type Process = { process: Bun.Subprocess; startedAt: string; stopping?: boolean };
+type Process = { bot: string; process: Bun.Subprocess; startedAt: string; stopping?: boolean };
 type Event = { id: number; at: string; stage: string; [key: string]: unknown };
 type Exit = { at: string; exitCode: number };
 type Task = Process & {
@@ -48,7 +50,11 @@ async function stopProcess(handle: Process | undefined, signal: 'SIGINT' | 'SIGT
     try { await handle.process.exited; } finally { clearTimeout(deadline); }
 }
 
-export type DashboardPathfinding = { socket: string; ensureReady(): Promise<void> };
+export type DashboardPathfinding = {
+    socket: string;
+    ensureReady(): Promise<void>;
+    monitoredProcess?(): MonitorProcess | null;
+};
 
 export function dashboardDemo(runtimeDir: string, botsDir: string, configDir: string, token: string,
     recordBank: ReturnType<typeof dashboardFleetStats>['recordBank'], roster?: BotProfile, audit?: DashboardAudit, revision?: string,
@@ -61,6 +67,7 @@ export function dashboardDemo(runtimeDir: string, botsDir: string, configDir: st
     const ownerKey = digest(`Bearer ${token}`);
     const delegatedKey = Bun.file(join(configDir, 'caller.sha256'));
     const events: Event[] = [];
+    const monitorEvents: Array<{ at: number; bot: string; label: string }> = [];
     let nextEventId = 1;
     let client: (Process & { inventory: ReturnType<typeof inventoryControls>; feed: ReturnType<typeof dashboardClientFeed> }) | undefined;
     let task: Task | undefined;
@@ -97,6 +104,11 @@ export function dashboardDemo(runtimeDir: string, botsDir: string, configDir: st
                                 entry.name === 'mining-bank-target-confirmed' && entry.target === running.bankTarget &&
                                 Number.isSafeInteger(entry.banked) && entry.banked >= running.bankTarget) {
                                 running.completion = 'bank-stock';
+                            }
+                            const label = taskActivityLabel(entry);
+                            if (label && monitorEvents.at(-1)?.label !== label) {
+                                monitorEvents.push({ at: Date.now(), bot: running.bot, label });
+                                if (monitorEvents.length > 1200) monitorEvents.shift();
                             }
                             audit?.append(running.auditId, entry);
                         }
@@ -196,7 +208,7 @@ export function dashboardDemo(runtimeDir: string, botsDir: string, configDir: st
                 RS_LITE_CACHE_DIR: join(writableDir, 'cache'),
             },
         });
-        const running = { process: child, startedAt: new Date().toISOString(), inventory, feed };
+        const running = { bot, process: child, startedAt: new Date().toISOString(), inventory, feed };
         client = running;
         clientExit = null;
         event('client-started', { bot, pid: child.pid });
@@ -234,7 +246,7 @@ export function dashboardDemo(runtimeDir: string, botsDir: string, configDir: st
             }
             throw error;
         }
-        const running: Task = { auditId, process: child, startedAt: new Date().toISOString(), name, activity: activity(name).label, bankTarget };
+        const running: Task = { bot, auditId, process: child, startedAt: new Date().toISOString(), name, activity: activity(name).label, bankTarget };
         task = running;
         taskExit = null;
         taskStopped = false;
@@ -455,5 +467,19 @@ export function dashboardDemo(runtimeDir: string, botsDir: string, configDir: st
         return client && !client.stopping && client.process.exitCode === null ? client.feed.state() : undefined;
     }
 
-    return { handle, profile, status, allowed, recentEvents, planBackend, inventoryClient, fleetState, ...actions };
+    function monitoredProcesses(): MonitorProcess[] {
+        const handles = [['client', client], ['task', task]] as const;
+        return handles.flatMap(([kind, handle]) => handle?.process.exitCode === null
+            ? [{ kind, bot: handle.bot, pid: handle.process.pid, startedAt: handle.startedAt }]
+            : []);
+    }
+
+    function monitorTimeline(since: number) {
+        return monitorEvents.filter(event => event.at >= since);
+    }
+
+    return {
+        handle, profile, status, allowed, recentEvents, planBackend, inventoryClient, fleetState,
+        monitoredProcesses, monitorTimeline, ...actions,
+    };
 }

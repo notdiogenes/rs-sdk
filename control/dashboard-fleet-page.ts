@@ -154,7 +154,6 @@ export function fleetPage({ nonce, revision = '', data, taskActivity, questCatal
         `<div class="metric"><span>${label}</span><strong class="${className}" ${attributes}>${value}</strong><small>${detail}</small></div>`;
     const tab = (id: string, label: string) => `<button type="button" id="${id}-tab" role="tab"
         aria-controls="${id}-panel" aria-selected="${id === 'fleet'}"${id === 'fleet' ? '' : ' tabindex="-1"'}>${label}</button>`;
-    const groupOptions = Object.entries(groups).map(([id, label]) => `<option value="${id}">${label}</option>`).join('');
     const sections = Object.entries(groups).map(([id, label]) => {
         const members = roster.filter(({ category }) => category === id);
         if (!members.length) return '';
@@ -185,7 +184,7 @@ export function fleetPage({ nonce, revision = '', data, taskActivity, questCatal
   <div class="toolbar">
     <nav role="tablist" aria-label="Dashboard views">${tab('fleet', 'Fleet')}${tab('stats', 'Stats')}${tab('quests', 'Quests')}</nav>
     <input id="search" type="search" aria-label="Search accounts" placeholder="Search accounts" autocomplete="off">
-    <select id="status-filter" aria-label="Filter by status"><option value="all">All views</option>${groupOptions}</select>
+    <button type="button" id="monitor-open" aria-haspopup="dialog">Monitor</button>
     <button type="button" id="new-bot">New bot</button>
     <button type="button" id="banks">Check banks</button>
     <button type="button" id="audit-open">Audit history</button>
@@ -210,6 +209,52 @@ export function fleetPage({ nonce, revision = '', data, taskActivity, questCatal
   <div id="stats-panel" role="tabpanel" aria-labelledby="stats-tab" hidden></div>
   <div id="quests-panel" role="tabpanel" aria-labelledby="quests-tab" hidden></div>
 </main>
+<dialog id="monitor-dialog" aria-labelledby="monitor-title"><div class="dialog-body">
+  <div class="dialog-header monitor-header">
+    <div><h2 id="monitor-title">Resource monitor</h2><p>VPS process usage by bot and PID</p></div>
+    <dl class="monitor-meta">
+      <div><dt>Sample interval</dt><dd id="monitor-interval">—</dd></div>
+      <div><dt>Latest sample</dt><dd><time id="monitor-latest">—</time></dd></div>
+    </dl>
+    <button type="button" id="monitor-close" autofocus>Close</button>
+  </div>
+  <p id="monitor-status" role="status" hidden></p>
+  <section class="monitor-summary" aria-label="Resource totals">
+    <article class="metric monitor-bots"><span>Bot processes</span><strong id="monitor-bot-rss">—</strong><small id="monitor-bot-detail">Lite clients and SDK tasks</small></article>
+    <article class="metric monitor-shared"><span>Shared pathfinder</span><strong id="monitor-shared-rss">—</strong><small id="monitor-shared-detail">—</small></article>
+    <article class="metric"><span>Fleet process RSS</span><strong id="monitor-fleet-rss">—</strong><small id="monitor-fleet-detail">—</small></article>
+  </section>
+  <div class="monitor-workspace">
+    <section class="monitor-panel" aria-labelledby="monitor-history-title">
+      <div class="monitor-panel-header"><div><h3 id="monitor-history-title">Resource history</h3><p id="monitor-chart-info">CPU as a percentage of one core</p></div><span id="monitor-peak"></span></div>
+      <div class="monitor-chart-controls">
+        <select id="monitor-subject" aria-label="Select a bot or shared process" disabled><option>No process data</option></select>
+        <div class="monitor-segment" role="group" aria-label="Metric">
+          <button type="button" data-monitor-metric="cpu" aria-pressed="true">CPU</button><button type="button" data-monitor-metric="rss" aria-pressed="false">RSS</button>
+        </div>
+        <div class="monitor-segment" role="group" aria-label="Time range">
+          <button type="button" data-monitor-window="30" aria-pressed="true">30s</button><button type="button" data-monitor-window="300" aria-pressed="false">5m</button><button type="button" data-monitor-window="3600" aria-pressed="false">1h</button>
+        </div>
+      </div>
+      <div class="monitor-chart-frame">
+        <canvas id="monitor-chart" role="img" aria-label="Process resource history" tabindex="0"></canvas>
+        <p id="monitor-chart-empty">Waiting for samples…</p>
+        <output id="monitor-chart-hover" aria-live="off" hidden></output>
+      </div>
+      <div class="monitor-chart-footer"><div id="monitor-legend" aria-label="Chart legend"></div><span id="monitor-resolution"></span></div>
+    </section>
+    <section class="monitor-panel" aria-labelledby="monitor-process-title">
+      <div class="monitor-panel-header"><div><h3 id="monitor-process-title">Process breakdown</h3><p>Copy a PID for <code>atop</code></p></div></div>
+      <div class="monitor-table" tabindex="0" aria-labelledby="monitor-process-title">
+        <table aria-label="Process PID, resident memory, CPU, and start time">
+          <thead><tr><th scope="col">Process</th><th scope="col">PID</th><th scope="col">RSS</th><th scope="col">CPU</th><th scope="col">Started</th></tr></thead>
+          <tbody><tr><td colspan="5">Waiting for samples…</td></tr></tbody>
+        </table>
+      </div>
+      <p id="monitor-copy-status" role="status">RSS is resident memory.</p>
+    </section>
+  </div>
+</div></dialog>
 <dialog id="fleet-details" aria-labelledby="fleet-details-title"><div class="dialog-body">
   <div class="dialog-header"><h2 id="fleet-details-title"></h2><button type="button" data-close>Close</button></div>
   <p id="fleet-details-status" role="status"></p>

@@ -3,6 +3,7 @@ import { hostedBotName, hostedBotState, isFreshBotState } from './hosted-bot';
 import { controllerRequest, dashboardActivity, handleActivity, type ControllerStatus } from './dashboard-activity';
 import { dashboardSessions } from './dashboard-session';
 import { dashboardDiagnostics } from './dashboard-diagnostics';
+import { createDashboardMonitor } from './dashboard-monitor';
 import { dashboardStateReader, fleetAvailability, type FleetStateReading } from './dashboard-live-state';
 import { inventoryActionResponse, inventoryItems } from './dashboard-inventory';
 import { parseInventoryCommand, type InventoryCommand } from '../sdk/inventory-command';
@@ -54,6 +55,13 @@ export async function createDashboardSupervisor(botsDir: string, configDir: stri
     const recordStats = dashboardFleetStats(runtimeDir);
     const demo = dashboardDemo(runtimeDir, botsDir, configDir, token, recordStats.recordBank, undefined, audit, revision, pathfinding);
     const rosterControllers = new Map<string, ReturnType<typeof dashboardDemo>>();
+    const managedWorkers = () => [demo, ...rosterControllers.values()];
+    const monitor = createDashboardMonitor(() => {
+        const processes = managedWorkers().flatMap(worker => worker.monitoredProcesses());
+        const shared = pathfinding?.monitoredProcess?.();
+        if (shared) processes.push(shared);
+        return processes;
+    });
     const botRoster = dashboardRoster(botsDir, runtimeDir);
     const plans = createPlanManager(runtimeDir, planBackend);
     const recordActivity = dashboardLastActivity(runtimeDir);
@@ -392,6 +400,7 @@ export async function createDashboardSupervisor(botsDir: string, configDir: stri
 
     const collectInBackground = () => void refreshSnapshot().catch(() => console.error('Dashboard bot sample failed'));
     collectInBackground();
+    monitor.start();
     plans.restore();
     setInterval(() => {
         try { audit.prune(); } catch { console.error('Activity audit retention check failed'); }
@@ -426,6 +435,25 @@ export async function createDashboardSupervisor(botsDir: string, configDir: stri
             const session = await sessions.authenticate(request).catch(() => undefined);
             const view = searchParams.get('view');
             const bot = searchParams.get('bot');
+            if (view === 'monitor') {
+                const headers: Record<string, string> = { 'Cache-Control': 'no-store' };
+                if (request.method !== 'GET') return new Response(null, { status: 405, headers: { ...headers, Allow: 'GET' } });
+                if (!session && !await demo.allowed(request)) {
+                    return Response.json({ error: 'Sign in to view the resource monitor.' }, { status: 401, headers });
+                }
+                if (session) headers['Set-Cookie'] = session;
+                const requestedWindow = searchParams.get('window') ?? '30';
+                if (!['30', '300', '3600'].includes(requestedWindow)) {
+                    return Response.json({ error: 'Use a window of 30, 300, or 3600 seconds.' }, { status: 400, headers });
+                }
+                const seconds = Number(requestedWindow);
+                const reading = monitor.read(seconds);
+                const end = reading.sampledAt ?? Date.now();
+                const events = managedWorkers().flatMap(worker => worker.monitorTimeline(end - seconds * 1000))
+                    .filter(event => event.at <= end)
+                    .sort((a, b) => a.at - b.at);
+                return Response.json({ ...reading, events }, { headers });
+            }
             if (view === 'plan') {
                 try { return await handlePlan(request, bot, session); }
                 catch { return Response.json({ error: 'Activity plans are temporarily unavailable.' }, { status: 503 }); }

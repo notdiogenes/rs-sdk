@@ -4,6 +4,14 @@ import type { LastActivity } from './dashboard-last-activity';
 
 const event = 'fleet-activity';
 
+function validLabel(label: unknown): label is string {
+    return typeof label === 'string' && /^[\p{L}\p{N}][\p{L}\p{N} .’'-]{0,95}$/u.test(label);
+}
+
+export function taskActivityLabel(entry: { kind?: unknown; name?: unknown; label?: unknown }): string | undefined {
+    if (entry.kind === 'task-event' && entry.name === event && validLabel(entry.label)) return entry.label;
+}
+
 // This label is visible on the public roster. Callers use game activity
 // labels and destinations from their script, never raw logs or chat.
 export function reportTaskActivity(label: string) {
@@ -22,6 +30,6 @@ export function readTaskActivity(db: Database, bot: string, startedAt: number): 
     `).get(bot, event, startedAt, startedAt);
     if (!row || !Number.isFinite(row.at)) return;
     const { label } = JSON.parse(row.data);
-    if (typeof label !== 'string' || !/^[\p{L}\p{N}][\p{L}\p{N} .’'-]{0,95}$/u.test(label)) return;
+    if (!validLabel(label)) return;
     return { at: new Date(row.at).toISOString(), reason: label };
 }

@@ -267,6 +267,17 @@ or control Bearer credential and reads the selected bot's diagnostics. Fleet des
 and task process per bot. It can take over from an idle primary controller
 client when starting a plan.
 
+### VPS resource monitor
+
+Open **Monitor** beside **New bot** to see CPU, resident memory, VPS PIDs,
+and start times for Fleet Desk's managed Lite clients and SDK tasks. The
+shared pathfinder appears once. The worker samples every 500 ms and keeps up
+to one hour of readings in memory.
+
+Use `GET /bots/activity?view=monitor&window=30` with a dashboard session or
+control Bearer credential. The window is in seconds and accepts `30`, `300`,
+or `3600`. Samples include timestamps for matching PIDs against `atop`.
+
 ### Activity audit history
 
 Fleet Desk loads its page, browser assets, and read-only audit reports from one

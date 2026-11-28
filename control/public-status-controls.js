@@ -39,8 +39,9 @@
     let roster = initialRoster;
     const tabs = [...document.querySelectorAll('[role="tab"]')];
     const search = document.querySelector('#search');
-    const statusFilter = document.querySelector('#status-filter');
-    const filterFields = [search, statusFilter];
+    const filterFields = [search];
+    const monitorButton = document.querySelector('#monitor-open');
+    const monitorDialog = document.querySelector('#monitor-dialog');
     const auto = document.querySelector('#auto');
     const banks = document.querySelector('#banks');
     const banksDialog = document.querySelector('#banks-dialog');
@@ -118,13 +119,12 @@
     let view = 'fleet-panel';
     let shownQuestColumns = 0;
 
-    function matches(name, status) {
-        return (statusFilter.value === 'all' || statusFilter.value === status) &&
-            name.toLowerCase().includes(search.value.trim().toLowerCase());
+    function matches(name) {
+        return name.toLowerCase().includes(search.value.trim().toLowerCase());
     }
 
     function matchingRows() {
-        return roster.filter(({ name, category }) => matches(name, category));
+        return roster.filter(({ name }) => matches(name));
     }
 
     function setText(element, value) {
@@ -222,8 +222,8 @@
 
     function updateCards() {
         for (const card of cards) {
-            const { name, status } = card.dataset;
-            setHidden(card, !matches(name, status));
+            const { name } = card.dataset;
+            setHidden(card, !matches(name));
             const stored = stats.get(name);
             const levels = card.querySelector('[data-card-levels]');
             const badges = card.querySelector('[data-card-skills]');
@@ -996,6 +996,7 @@
         if (value) {
             fleetDataReady = loadFleetData();
         } else {
+            if (monitorDialog.open) monitorDialog.close();
             dataVersion++;
             updating = false;
             stats.clear();
@@ -1016,7 +1017,8 @@
         signInSubmit.disabled = needsLink;
         password.disabled = needsLink;
         signInMessage.textContent = needsLink ? 'Open your one-time dashboard setup link.'
-            : auditPending || button?.matches('#audit-open,[data-audit-bot]') ? 'Sign in to open the audit history.' : '';
+            : auditPending || button?.matches('#audit-open,[data-audit-bot]') ? 'Sign in to open the audit history.'
+            : button === monitorButton ? 'Sign in to open the resource monitor.' : '';
         signIn.showModal();
     }
 
@@ -1548,11 +1550,12 @@
         if (!signIn.open && !dialog.open) scheduleRefresh();
     });
 
-    async function request(path, payload) {
+    async function request(path, payload, signal) {
         const headers = { Accept: 'application/json' };
+        const timeout = AbortSignal.timeout(['stop', 'pause'].includes(payload?.action) ? 45000 : 15000);
         const options = {
             headers, credentials: 'same-origin', cache: 'no-store', redirect: 'error',
-            signal: AbortSignal.timeout(['stop', 'pause'].includes(payload?.action) ? 45000 : 15000),
+            signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
         };
         if (payload !== undefined) {
             headers['Content-Type'] = 'application/json';
@@ -1563,6 +1566,7 @@
         try {
             response = await fetch(path, options);
         } catch {
+            signal?.throwIfAborted();
             throw new Error('The control API did not respond. Check the activity before retrying.');
         }
         const result = await response.json().catch(() => ({}));
@@ -1577,6 +1581,402 @@
     function labelTime(value) {
         return value ? diagnosticClock.format(new Date(value)) : '—';
     }
+
+    const monitorField = name => monitorDialog.querySelector(`#monitor-${name}`);
+    const monitorSubject = monitorField('subject');
+    const monitorCanvas = monitorField('chart');
+    const monitorHover = monitorField('chart-hover');
+    const monitorTable = monitorDialog.querySelector('.monitor-table');
+    const monitorClock = new Intl.DateTimeFormat('en-US', {
+        timeZone: controlsScript.dataset.timeZone, hourCycle: 'h23', hour: '2-digit', minute: '2-digit', second: '2-digit',
+    });
+    const monitorTimestamp = at => `${monitorClock.format(at)}.${String(at % 1000).padStart(3, '0')}`;
+    const monitorLabels = { client: 'Lite client', task: 'SDK task', pathfinder: 'Pathfinder' };
+    const monitorColors = { client: '#a6d185', task: '#e1b56b', pathfinder: '#91badd' };
+    const monitorKinds = ['client', 'task', 'pathfinder'];
+    const monitorKey = process => process.kind === 'pathfinder' ? 'shared' : `bot:${process.bot}`;
+    const monitorGroup = key => key === 'shared' ? 'Shared pathfinder' : key.slice(4);
+    const monitorRss = bytes => Number.isFinite(bytes) ? `${num.format(Math.round(bytes / 1048576))} MiB` : '—';
+    const monitorCpu = percent => Number.isFinite(percent) ? `${percent.toFixed(1)}%` : '—';
+    let monitorData;
+    let monitorMetric = 'cpu';
+    let monitorWindow = 30;
+    let monitorTimer;
+    let monitorRequest;
+    let monitorCopyTimer;
+    let monitorChart;
+    let monitorCursorAt;
+
+    function monitorStatus(message) {
+        setText(monitorField('status'), message);
+        setHidden(monitorField('status'), !message);
+    }
+
+    function monitorTotal(processes, property) {
+        if (!Number.isFinite(monitorData?.sampledAt)) return null;
+        if (processes.some(process => !Number.isFinite(process[property]))) return null;
+        return processes.reduce((sum, process) => sum + process[property], 0);
+    }
+
+    function renderMonitorSummary(processes) {
+        const bots = processes.filter(process => process.kind !== 'pathfinder');
+        const shared = processes.find(process => process.kind === 'pathfinder');
+        const clients = bots.filter(process => process.kind === 'client').length;
+        const tasks = bots.length - clients;
+        setText(monitorField('bot-rss'), monitorRss(monitorTotal(bots, 'rssBytes')));
+        setText(monitorField('bot-detail'), monitorData ? `${clients} Lite ${clients === 1 ? 'client' : 'clients'} · ${tasks} SDK ${tasks === 1 ? 'task' : 'tasks'}` : 'Lite clients and SDK tasks');
+        setText(monitorField('shared-rss'), monitorRss(shared?.rssBytes));
+        setText(monitorField('shared-detail'), shared ? `PID ${shared.pid} · CPU ${monitorCpu(shared.cpuPercent)}`
+            : Number.isFinite(monitorData?.sampledAt) ? 'No pathfinder process sampled' : '—');
+        setText(monitorField('fleet-rss'), monitorRss(monitorTotal(processes, 'rssBytes')));
+        setText(monitorField('fleet-detail'), monitorData
+            ? `${processes.length} managed ${processes.length === 1 ? 'process' : 'processes'} · CPU ${monitorCpu(monitorTotal(processes, 'cpuPercent'))}` : '—');
+        setText(monitorField('interval'), Number.isFinite(monitorData?.sampleIntervalMs) ? `${monitorData.sampleIntervalMs} ms` : '—');
+        const latest = monitorField('latest');
+        if (Number.isFinite(monitorData?.sampledAt)) {
+            latest.dateTime = new Date(monitorData.sampledAt).toISOString();
+            latest.title = labelTime(monitorData.sampledAt);
+            setText(latest, monitorTimestamp(monitorData.sampledAt));
+        } else {
+            latest.removeAttribute('datetime');
+            latest.removeAttribute('title');
+            setText(latest, '—');
+        }
+    }
+
+    function renderMonitorTable(processes) {
+        const sorted = [...processes].sort((a, b) => Number(a.kind === 'pathfinder') - Number(b.kind === 'pathfinder') ||
+            String(a.bot ?? '').localeCompare(String(b.bot ?? '')) || monitorKinds.indexOf(a.kind) - monitorKinds.indexOf(b.kind));
+        const groups = new Map();
+        for (const process of sorted) {
+            if (!Number.isSafeInteger(process.pid) || process.pid < 1 || !monitorKinds.includes(process.kind)) continue;
+            const key = monitorKey(process);
+            if (!groups.has(key)) groups.set(key, []);
+            const startedAt = Date.parse(process.startedAt);
+            groups.get(key).push(`<tr><td>${monitorLabels[process.kind]}</td>
+              <td><button type="button" data-monitor-pid="${process.pid}" aria-label="Copy PID ${process.pid}">${process.pid}</button></td>
+              <td>${monitorRss(process.rssBytes)}</td><td>${monitorCpu(process.cpuPercent)}</td>
+              <td>${Number.isFinite(startedAt) ? `<time datetime="${escape(process.startedAt)}" title="${escape(labelTime(startedAt))}">${monitorClock.format(startedAt)}</time>` : '—'}</td></tr>`);
+        }
+        const table = monitorTable.querySelector('table');
+        const bodies = [...groups].map(([key, rows]) => `<tbody><tr class="monitor-group" data-selected="${key === monitorSubject.value}"><th scope="rowgroup" colspan="5">${escape(monitorGroup(key))}</th></tr>${rows.join('')}</tbody>`).join('') ||
+            `<tbody><tr><td colspan="5">${monitorData ? 'No managed processes sampled.' : 'Waiting for samples…'}</td></tr></tbody>`;
+        if (bodies === table.dataset.rendered) return;
+        const focusedPid = monitorTable.contains(document.activeElement) ? document.activeElement.dataset.monitorPid : null;
+        for (const body of [...table.tBodies]) body.remove();
+        table.insertAdjacentHTML('beforeend', bodies);
+        table.dataset.rendered = bodies;
+        if (focusedPid) (table.querySelector(`[data-monitor-pid="${focusedPid}"]`) || monitorTable).focus({ preventScroll: true });
+    }
+
+    function renderMonitor() {
+        const processes = monitorData?.processes ?? [];
+        const keys = new Set(processes.map(monitorKey));
+        for (const sample of monitorData?.history ?? []) {
+            for (const process of sample.processes) keys.add(monitorKey(process));
+        }
+        const groups = [...keys].sort((a, b) => Number(a === 'shared') - Number(b === 'shared') || a.localeCompare(b));
+        const options = groups.map(key => `<option value="${escape(key)}">${escape(monitorGroup(key))}</option>`).join('') || '<option>No process data</option>';
+        if (options !== monitorSubject.dataset.rendered) {
+            const selected = monitorSubject.value;
+            monitorSubject.innerHTML = options;
+            monitorSubject.dataset.rendered = options;
+            if (keys.has(selected)) monitorSubject.value = selected;
+        }
+        monitorSubject.disabled = groups.length === 0;
+        renderMonitorSummary(processes);
+        renderMonitorTable(processes);
+        drawMonitorChart();
+    }
+
+    function monitorReading(sample, kind) {
+        const process = sample.processes.find(row => row.kind === kind && monitorKey(row) === monitorSubject.value);
+        const value = monitorMetric === 'cpu' ? process?.cpuPercent : process?.rssBytes;
+        if (!Number.isFinite(value)) return null;
+        return { pid: process.pid, value: monitorMetric === 'cpu' ? value : value / 1048576 };
+    }
+
+    function monitorBankTrips(events) {
+        const walkingByBot = new Map();
+        const trips = [];
+        for (const event of events) {
+            const walking = /^Walking to (.*\bbank)$/i.exec(event.label);
+            if (walking) {
+                walkingByBot.set(event.bot, { at: event.at, bank: walking[1] });
+                continue;
+            }
+            const start = walkingByBot.get(event.bot);
+            walkingByBot.delete(event.bot);
+            const opening = /^Opening (.*\bbank)$/i.exec(event.label);
+            if (start && opening && start.bank.toLowerCase() === opening[1].toLowerCase() && event.at > start.at) {
+                trips.push({ start: start.at, end: event.at, bank: start.bank, bot: event.bot });
+            }
+        }
+        return trips;
+    }
+
+    function drawMonitorChart() {
+        if (!monitorDialog.open) return;
+        const chartName = monitorMetric === 'cpu' ? 'CPU' : 'Memory';
+        const format = value => monitorMetric === 'cpu' ? monitorCpu(value) : monitorRss(value * 1048576);
+        setText(monitorField('chart-info'), monitorMetric === 'cpu' ? 'CPU as a percentage of one core' : 'Resident memory in MiB');
+        const end = monitorData?.sampledAt;
+        const start = end - monitorWindow * 1000;
+        const samples = (monitorData?.history ?? []).filter(sample => sample.at >= start && sample.at <= end);
+        const kinds = (monitorSubject.value === 'shared' ? ['pathfinder'] : ['client', 'task'])
+            .filter(kind => samples.some(sample => monitorReading(sample, kind)));
+        const readings = samples.map(sample => kinds.map(kind => monitorReading(sample, kind)));
+        const chartEmpty = monitorField('chart-empty');
+        setText(chartEmpty, monitorData ? `No ${chartName} samples for this selection.` : 'Waiting for samples…');
+        setHidden(chartEmpty, kinds.length > 0);
+        const subject = monitorSubject.selectedOptions[0]?.textContent;
+        monitorCanvas.setAttribute('aria-label', kinds.length ? `${chartName} history for ${subject}` : `${chartName} history, no samples`);
+        const events = (monitorData?.events ?? []).filter(event => event.at >= start && event.at <= end &&
+            (monitorSubject.value === 'shared' || `bot:${event.bot}` === monitorSubject.value));
+        const bankTrips = monitorBankTrips(events);
+        monitorField('legend').innerHTML = kinds.map(kind => `<span><i style="--monitor-color:${monitorColors[kind]}"></i>${monitorLabels[kind]}</span>`).join('') +
+            (kinds.length && bankTrips.length ? '<span><i class="monitor-bank-key"></i>Bank trip</span>' : '');
+        setText(monitorField('resolution'), monitorData ? `${monitorData.sampleIntervalMs} ms samples${monitorData.downsampled ? ' · downsampled view' : ''}` : '');
+
+        const box = monitorCanvas.getBoundingClientRect();
+        const width = box.width;
+        const height = box.height;
+        const resolution = window.devicePixelRatio || 1;
+        const context = monitorCanvas.getContext('2d');
+        monitorChart = null;
+        if (!width || !height || !context) return;
+        monitorCanvas.width = Math.round(width * resolution);
+        monitorCanvas.height = Math.round(height * resolution);
+        context.scale(resolution, resolution);
+        if (!kinds.length) {
+            monitorHover.hidden = true;
+            setText(monitorField('peak'), '');
+            return;
+        }
+
+        const peak = readings.reduce((max, values) => Math.max(max, ...values.map(value => value?.value ?? 0)), 0);
+        setText(monitorField('peak'), `Peak ${format(peak)}`);
+        const left = width < 380 ? 37 : 49;
+        const right = width - 10;
+        const top = 29;
+        const bottom = height - 29;
+        if (right <= left || bottom <= top) return;
+        const unit = Math.max(monitorMetric === 'cpu' ? 1 : 4, peak / 4);
+        const magnitude = 10 ** Math.floor(Math.log10(unit));
+        const tick = [1, 2, 5, 10].find(step => step * magnitude >= unit) * magnitude;
+        const x = time => left + (time - start) / (end - start) * (right - left);
+        const y = value => bottom - value / (tick * 4) * (bottom - top);
+        context.font = '11px ui-monospace, monospace';
+        context.textAlign = 'right';
+        context.textBaseline = 'middle';
+        context.strokeStyle = '#3f392f';
+        context.fillStyle = '#b7a996';
+        for (let index = 0; index <= 4; index++) {
+            const value = index * tick;
+            context.beginPath();
+            context.moveTo(left, y(value));
+            context.lineTo(right, y(value));
+            context.stroke();
+            context.fillText(monitorMetric === 'cpu' ? `${value}%` : String(value), left - 5, y(value));
+        }
+        const ticks = width < 400 ? 2 : 4;
+        for (let index = 0; index <= ticks; index++) {
+            const time = start + (end - start) * index / ticks;
+            context.textAlign = index === 0 ? 'left' : index === ticks ? 'right' : 'center';
+            context.fillText(monitorClock.format(time), x(time), bottom + 14);
+        }
+
+        context.fillStyle = '#e1b56b22';
+        for (const trip of bankTrips) context.fillRect(x(trip.start), top, x(trip.end) - x(trip.start), bottom - top);
+        context.strokeStyle = '#927246';
+        context.setLineDash([3, 4]);
+        context.beginPath();
+        for (const event of events) {
+            context.moveTo(x(event.at), top);
+            context.lineTo(x(event.at), bottom);
+        }
+        context.stroke();
+        context.setLineDash([]);
+        const latestEvent = events.at(-1);
+        if (latestEvent) {
+            context.textAlign = 'left';
+            context.fillStyle = '#e1b56b';
+            context.fillText(latestEvent.label, left, 17, right - left);
+        }
+
+        const spacing = monitorData.downsampled ? Math.max(monitorData.sampleIntervalMs, (end - start) / samples.length) : monitorData.sampleIntervalMs;
+        kinds.forEach((kind, series) => {
+            context.strokeStyle = monitorColors[kind];
+            context.fillStyle = monitorColors[kind];
+            context.lineWidth = 2;
+            context.lineJoin = 'round';
+            context.beginPath();
+            let prior;
+            let lastPoint;
+            samples.forEach((sample, index) => {
+                const reading = readings[index][series];
+                if (!reading) {
+                    prior = undefined;
+                    return;
+                }
+                const point = [x(sample.at), y(reading.value)];
+                if (!prior || prior.pid !== reading.pid || sample.at - prior.at > spacing * 3) context.moveTo(...point);
+                else context.lineTo(...point);
+                prior = { pid: reading.pid, at: sample.at };
+                lastPoint = point;
+            });
+            context.stroke();
+            if (lastPoint) {
+                context.beginPath();
+                context.arc(...lastPoint, 2.7, 0, Math.PI * 2);
+                context.fill();
+            }
+        });
+        monitorChart = { samples, events, bankTrips, kinds, readings, width, x, format };
+        if (!monitorHover.hidden && Number.isFinite(monitorCursorAt)) inspectMonitorSample(closestMonitorSample(monitorCursorAt));
+    }
+
+    function closestMonitorSample(time) {
+        const { samples } = monitorChart;
+        let closest = 0;
+        for (let index = 1; index < samples.length; index++) {
+            if (Math.abs(samples[index].at - time) < Math.abs(samples[closest].at - time)) closest = index;
+        }
+        return closest;
+    }
+
+    function inspectMonitorSample(index) {
+        const chart = monitorChart;
+        if (!chart || index < 0 || index >= chart.samples.length) return;
+        const { at } = chart.samples[index];
+        monitorCursorAt = at;
+        const readings = chart.readings[index].map((reading, series) => reading
+            ? `${monitorLabels[chart.kinds[series]]} PID ${reading.pid} · ${chart.format(reading.value)}` : null).filter(Boolean);
+        const point = chart.x(at);
+        const marker = chart.events.find(event => Math.abs(chart.x(event.at) - point) < 7);
+        const trip = chart.bankTrips.find(trip => trip.start <= at && at <= trip.end);
+        const activity = marker ? `${marker.bot} · ${marker.label}` : trip && `${trip.bot} · Bank trip to ${trip.bank}`;
+        monitorHover.textContent = [monitorTimestamp(at), ...readings, activity].filter(Boolean).join(' · ');
+        monitorHover.hidden = false;
+        monitorHover.style.left = `${Math.max(0, Math.min(chart.width - monitorHover.offsetWidth, point + 8))}px`;
+    }
+
+    async function loadMonitor() {
+        clearTimeout(monitorTimer);
+        monitorRequest?.abort();
+        const controller = new AbortController();
+        monitorRequest = controller;
+        try {
+            const data = await request(`/bots/activity?view=monitor&window=${monitorWindow}`, undefined, controller.signal);
+            if (monitorRequest !== controller || !monitorDialog.open) return;
+            if (!Array.isArray(data.processes) || !Array.isArray(data.history)) throw new Error('Invalid monitor response');
+            monitorData = data;
+            renderMonitor();
+            const staleAfter = Math.max(5000, data.sampleIntervalMs * 5);
+            monitorStatus(!Number.isFinite(data.sampledAt) ? 'Waiting for the first sample…'
+                : Date.now() - data.sampledAt > staleAfter ? 'Latest sample is stale.' : '');
+        } catch (error) {
+            if (monitorRequest !== controller || controller.signal.aborted || !monitorDialog.open) return;
+            if (error.status === 401) {
+                setSignedIn(false);
+                if (!signIn.open) openSignIn(monitorButton);
+                return;
+            }
+            monitorStatus(monitorData ? 'Monitor unavailable. Showing the last sample.' : 'Monitor unavailable. Retrying…');
+        } finally {
+            if (monitorRequest === controller) {
+                monitorRequest = undefined;
+                if (monitorDialog.open && signedIn) {
+                    const pollMs = monitorWindow === 30 ? 1000 : monitorWindow === 300 ? 2500 : 5000;
+                    monitorTimer = setTimeout(loadMonitor, pollMs);
+                }
+            }
+        }
+    }
+
+    monitorButton.addEventListener('click', async () => {
+        await sessionReady;
+        if (!signedIn) {
+            openSignIn(monitorButton);
+            return;
+        }
+        if (monitorDialog.open) return;
+        clearTimeout(refresh);
+        monitorStatus('Loading process usage…');
+        monitorDialog.showModal();
+        renderMonitor();
+        void loadMonitor();
+    });
+    monitorField('close').addEventListener('click', () => monitorDialog.close());
+    monitorDialog.addEventListener('close', () => {
+        clearTimeout(monitorTimer);
+        clearTimeout(monitorCopyTimer);
+        monitorRequest?.abort();
+        monitorRequest = undefined;
+        monitorData = undefined;
+        monitorCursorAt = undefined;
+        monitorHover.hidden = true;
+        setText(monitorField('copy-status'), 'RSS is resident memory.');
+        renderMonitor();
+        scheduleRefresh();
+    });
+    for (const button of monitorDialog.querySelectorAll('[data-monitor-metric], [data-monitor-window]')) {
+        button.addEventListener('click', () => {
+            if (button.getAttribute('aria-pressed') === 'true') return;
+            button.parentElement.querySelector('[aria-pressed="true"]').setAttribute('aria-pressed', 'false');
+            button.setAttribute('aria-pressed', 'true');
+            monitorHover.hidden = true;
+            monitorCursorAt = undefined;
+            if (button.dataset.monitorMetric) monitorMetric = button.dataset.monitorMetric;
+            else {
+                monitorWindow = Number(button.dataset.monitorWindow);
+                monitorStatus('Loading history…');
+                void loadMonitor();
+            }
+            drawMonitorChart();
+        });
+    }
+    monitorSubject.addEventListener('change', () => {
+        monitorHover.hidden = true;
+        monitorCursorAt = undefined;
+        renderMonitorTable(monitorData?.processes ?? []);
+        drawMonitorChart();
+    });
+    monitorCanvas.addEventListener('pointermove', event => {
+        if (!monitorChart) return;
+        const point = event.clientX - monitorCanvas.getBoundingClientRect().left;
+        const { samples, x } = monitorChart;
+        const first = samples[0].at;
+        const last = samples.at(-1).at;
+        const span = x(last) - x(first);
+        inspectMonitorSample(span ? closestMonitorSample(first + (last - first) * (point - x(first)) / span) : 0);
+    });
+    monitorCanvas.addEventListener('pointerleave', () => { monitorHover.hidden = true; });
+    monitorCanvas.addEventListener('blur', () => { monitorHover.hidden = true; });
+    monitorCanvas.addEventListener('keydown', event => {
+        if (!monitorChart || !['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+        event.preventDefault();
+        const last = monitorChart.samples.length - 1;
+        const step = event.key === 'ArrowLeft' ? -1 : 1;
+        const index = event.key === 'Home' ? 0 : event.key === 'End' || !Number.isFinite(monitorCursorAt)
+            ? last : closestMonitorSample(monitorCursorAt) + step;
+        inspectMonitorSample(Math.min(last, Math.max(0, index)));
+    });
+    monitorTable.addEventListener('click', async event => {
+        const button = event.target.closest('[data-monitor-pid]');
+        if (!button) return;
+        const pid = button.dataset.monitorPid;
+        const status = monitorField('copy-status');
+        clearTimeout(monitorCopyTimer);
+        try {
+            await navigator.clipboard.writeText(pid);
+            if (monitorDialog.open) setText(status, `Copied PID ${pid}.`);
+        } catch {
+            if (monitorDialog.open) setText(status, `PID ${pid}.`);
+        }
+        if (monitorDialog.open) monitorCopyTimer = setTimeout(() => setText(status, 'RSS is resident memory.'), 2500);
+    });
+    new ResizeObserver(drawMonitorChart).observe(monitorCanvas);
 
     async function loadDiagnostics() {
         const version = ++diagnosticsVersion;
