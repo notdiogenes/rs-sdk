@@ -1,5 +1,6 @@
 import { fleetSkills } from './dashboard-fleet-stats';
 import { fleetActionIcon, fleetSkillIcon, type FleetActionIcon } from './dashboard-fleet-icons';
+import { pickpocketActiveLabels } from './dashboard-pickpocket-activity';
 import { questHiscore, type QuestColumn } from './dashboard-quests';
 import { activity, activityIds } from './dashboard-task-catalog';
 import type { Bot, ControlActivity, Snapshot } from './public-status';
@@ -8,6 +9,9 @@ import type { LastActivity } from './dashboard-last-activity';
 const escape = (value: string) => value.replaceAll('&', '&amp;').replaceAll('<', '&lt;')
     .replaceAll('>', '&gt;').replaceAll('"', '&quot;').replaceAll("'", '&#39;');
 const groups = { attention: 'Needs attention', active: 'Running', idle: 'Idle', offline: 'Offline' } as const;
+const recentActivityMs = 2 * 60_000;
+const activePickpocketActivity = new Set<string>(Object.values(pickpocketActiveLabels));
+const passivePickpocketActivity = /^(?:Waiting to recover to \d+ HP|Waiting to retry banking)$/;
 const taskActivityFallbacks = new Map<string, string>();
 for (const id of activityIds) {
     const { category, label } = activity(id);
@@ -34,16 +38,27 @@ const activityClock = new Intl.DateTimeFormat('en-US', {
     hour: 'numeric', minute: '2-digit', timeZoneName: 'short',
 });
 
-function classify(bot: Bot, managed: ControlActivity | undefined, now: number): { category: Group; reason: string } {
+function classify(bot: Bot, managed: ControlActivity | undefined, now: number,
+    reportedActivity?: LastActivity): { category: Group; reason: string } {
     if (managed?.failed) return { category: 'attention', reason: bot.activity };
     if (bot.status === 'Unknown') return { category: 'attention', reason: 'Game state is unavailable' };
     if (managed?.transitioning) return { category: 'idle', reason: bot.activity };
     if (bot.status === 'Offline') return managed?.running
         ? { category: 'attention', reason: 'Activity running while the bot is offline' }
         : { category: 'offline', reason: 'Logged out' };
-    if (managed?.waiting) return { category: 'idle', reason: managed.waiting };
     const lastEffect = bot.lastActivity ? Date.parse(bot.lastActivity.at) : 0;
-    if (bot.inCombat || now - lastEffect < 2 * 60_000) {
+    const recentEffect = now - lastEffect < recentActivityMs;
+    if (managed?.running && reportedActivity) {
+        const { at, reason } = reportedActivity;
+        const reportedAt = Date.parse(at);
+        const recentReport = now - reportedAt < recentActivityMs;
+        const stillWalkingToBank = (reason === pickpocketActiveLabels.bank || reason === pickpocketActiveLabels.deposit) &&
+            recentEffect && lastEffect >= reportedAt && bot.lastActivity?.reason.split(' · ').includes('Moved');
+        if ((recentReport || stillWalkingToBank) && activePickpocketActivity.has(reason)) return { category: 'active', reason };
+        if (recentReport && passivePickpocketActivity.test(reason)) return { category: 'idle', reason };
+    }
+    if (managed?.waiting) return { category: 'idle', reason: managed.waiting };
+    if (bot.inCombat || recentEffect) {
         return { category: 'active', reason: bot.inCombat ? 'In combat' : 'Recent game activity' };
     }
     if (!managed?.running) return { category: 'idle', reason: 'No recent activity' };
@@ -92,14 +107,16 @@ function cardAction(label: string, icon: FleetActionIcon, attributes: string) {
 function card(bot: Bot, category: Group, reason: string, managed: ControlActivity | undefined, now: number,
     reportedActivity?: LastActivity) {
     const name = escape(bot.name);
-    const waiting = category === 'idle' && managed?.waiting === reason;
+    const waiting = category === 'idle' && (managed?.waiting === reason || passivePickpocketActivity.test(reason));
     let currentActivity: string | undefined;
     if (waiting) {
-        currentActivity = reportedActivity?.reason ?? reason;
+        currentActivity = reportedActivity && !activePickpocketActivity.has(reportedActivity.reason) ? reportedActivity.reason : reason;
     } else if (bot.status === 'Online' && managed?.running) {
         if (managed.transitioning) {
             const label = managed.label ?? bot.activity;
             currentActivity = /^(Starting|Stopping) /.test(label) ? label : `Starting activity - ${label}`;
+        } else if (category === 'active' && reportedActivity?.reason === reason && activePickpocketActivity.has(reason)) {
+            currentActivity = reason;
         } else if (!reportedActivity) {
             currentActivity = taskActivityFallbacks.get(bot.activity);
         }
@@ -164,7 +181,8 @@ export function fleetPage({ nonce, revision = '', data, taskActivity, questCatal
     const now = data ? Date.parse(data.checkedAt) : Date.now();
     const roster = (data?.bots ?? []).map(bot => {
         const managed = bot.control;
-        return { bot, managed, ...classify(bot, managed, now) };
+        const reportedActivity = taskActivity?.get(bot.name);
+        return { bot, managed, reportedActivity, ...classify(bot, managed, now, reportedActivity) };
     });
     const counts = { attention: 0, active: 0, idle: 0, offline: 0 };
     for (const { category } of roster) counts[category]++;
@@ -179,8 +197,8 @@ export function fleetPage({ nonce, revision = '', data, taskActivity, questCatal
         return `<section class="group" data-group="${id}"><div class="group-title">
           <h2 class="${id}">${label}</h2><span class="count">${members.length}</span>
           ${id === 'attention' ? '<small>Review activity and connection status</small>' : ''}
-          </div><div class="grid">${members.map(({ bot, category, reason, managed }) =>
-            card(bot, category, reason, managed, now, taskActivity?.get(bot.name))).join('')}</div></section>`;
+          </div><div class="grid">${members.map(({ bot, category, reason, managed, reportedActivity }) =>
+            card(bot, category, reason, managed, now, reportedActivity)).join('')}</div></section>`;
     }).join('');
     const rowList = roster.map(({ bot, category }) => ({
         name: bot.name, category, hiscore: questHiscore(bot.name),

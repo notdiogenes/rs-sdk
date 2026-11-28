@@ -7,6 +7,7 @@ import { dashboardAudit as recordDashboardAudit } from './dashboard-audit';
 import { auditDashboardLocation, readDashboardAudit } from './dashboard-audit-report';
 import { dashboardPresentation } from './dashboard-presentation';
 import { fleetPage } from './dashboard-fleet-page';
+import { pickpocketActiveLabels } from './dashboard-pickpocket-activity';
 import type { Bot } from './public-status';
 import { dashboardWebHandler } from './dashboard-web';
 import { dashboardSessions } from './dashboard-session';
@@ -146,6 +147,59 @@ test('renders named task activity with its own timestamp and ignores reports fro
         expect(preparing).not.toContain('Moved to X 2635, Z 3381');
         recording.append(runecraftRun, { kind: 'task-event', name: 'fleet-activity', label: 'Crafting Body runes at the Body altar' });
         expect(await render()).toContain('<strong>Crafting Body runes at the Body altar</strong>');
+    } finally {
+        reports.close();
+        recording.close();
+        rmSync(directory, { recursive: true, force: true });
+    }
+});
+
+test('shows active pickpocket recovery work as Running and passive recovery as Idle', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'fleet-pickpocket-activity-'));
+    let now = Date.parse('2026-11-27T23:20:00Z');
+    const recording = recordDashboardAudit(directory, () => now);
+    const reports = new Database(join(directory, 'activity-audit.sqlite'), { readonly: true });
+    const run = recording.begin('Scout', 'pickpocket-heroes', null, null, []);
+    const waiting = 'Recovering HP · resumes at 40 HP';
+    const bot: Bot = {
+        name: 'Scout', status: 'Online', activity: 'Pickpocket Heroes',
+        lastActivity: { at: new Date(now).toISOString(), reason: 'Moved' },
+        control: { bot: 'Scout', running: true, startedAt: new Date(now).toISOString(), waiting },
+    };
+    const handle = dashboardWebHandler(
+        async () => Response.json({ bots: [bot], checkedAt: new Date(now).toISOString() }),
+        async () => ({ revision: 'fixture', fleetStyle: '', controls: '', fleetPage, auditDashboardLocation, readDashboardAudit }),
+        () => reports, [],
+    );
+    const render = async () => (await handle(new Request('https://fleet.test/bots'))).text();
+    const report = (label: string) => recording.append(run, { kind: 'task-event', name: 'fleet-activity', label });
+    try {
+        now += 3 * 60_000;
+        for (const label of Object.values(pickpocketActiveLabels)) {
+            report(label);
+            const page = await render();
+            expect(page).toContain('data-name="Scout" data-status="active"');
+            expect(page).toContain(`<span>Current activity</span><strong>${label}</strong>`);
+        }
+
+        now += 2 * 60_000;
+        bot.lastActivity = { at: new Date(now).toISOString(), reason: 'Moved' };
+        expect(await render()).toContain('data-name="Scout" data-status="idle"');
+
+        report(pickpocketActiveLabels.bank);
+        now += 2 * 60_000;
+        const stale = await render();
+        expect(stale).toContain('data-name="Scout" data-status="idle"');
+        expect(stale).toContain(`<span>Current activity</span><strong>${waiting}</strong>`);
+
+        // Movement supports a longer banking trip, but a new wait report supersedes it.
+        bot.lastActivity = { at: new Date(now).toISOString(), reason: 'Moved' };
+        expect(await render()).toContain('data-name="Scout" data-status="active"');
+        delete bot.control!.waiting;
+        report('Waiting to recover to 40 HP');
+        const resting = await render();
+        expect(resting).toContain('data-name="Scout" data-status="idle"');
+        expect(resting).toContain('<span>Current activity</span><strong>Waiting to recover to 40 HP</strong>');
     } finally {
         reports.close();
         recording.close();
@@ -427,6 +481,7 @@ test('reloads a committed Fleet Desk presentation while the same audit writer ke
             'dashboard-presentation-entry.ts', 'dashboard-fleet-page.ts', 'dashboard-fleet-icons.ts', 'dashboard-fleet.css',
             'public-status-controls.js', 'dashboard-fleet-stats.ts', 'dashboard-quests.ts', 'dashboard-task-catalog.ts', 'mining-routes.ts',
             'dashboard-audit-report.ts', 'dashboard-audit-insights-report.ts', 'dashboard-audit-schema.ts', 'bank-locations.ts',
+            'dashboard-pickpocket-activity.ts',
         ]) copyFileSync(join(import.meta.dir, file), join(source, file));
         git('init', '-q');
         git('add', 'control');

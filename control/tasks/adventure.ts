@@ -2,6 +2,7 @@ import { auditEnabled, auditEvent, auditFrame, auditOperation } from '../../sdk/
 import { throwIfExecutionAborted } from '../../sdk/execution-context';
 import type { ScriptContext } from '../../sdk/runner';
 import type { InventoryItem, NearbyNpc } from '../../sdk/types';
+import { pickpocketActiveLabels } from '../dashboard-pickpocket-activity';
 import { reportTaskActivity } from '../dashboard-task-activity';
 import { activity } from '../dashboard-task-catalog';
 import type { TaskCheckpoint } from './update-checkpoint';
@@ -161,13 +162,14 @@ export function adventure({ bot, sdk }: ScriptContext, checkpoint?: TaskCheckpoi
             { timeoutMs: 90_000 }, world, wait, () => ({ outcome: 'respawn-observed' })) : wait());
         if (auditing) auditEvent('milestone', 'activity-respawned', { after: auditFrame(sdk.getState()) });
     };
-    const eat = async (auditing = false, pickpocketing = false) => {
+    const eat = async (auditing = false, pickpocketing = false, beforeEat?: () => void) => {
         const food = pickpocketing ? sdk.getInventory().find(isPickpocketFood) : sdk.findInventoryItem(heal);
         if (!food) {
             if (auditing) auditEvent('decision', 'eat-food', { intent: 'Restore HP before continuing', outcome: 'skipped', reason: 'no-matching-food' });
             if (auditing) auditEvent('setback', 'out-of-food', { before: auditFrame(sdk.getState()) });
             return false;
         }
+        beforeEat?.();
         const before = auditing ? auditFrame(sdk.getState()) : undefined;
         const eatFood = () => bot.eatFood(food);
         const eaten = await (auditing ? auditOperation('eat-food', 'Restore HP before continuing', { item: food.name, id: food.id, slot: food.slot },
@@ -177,15 +179,17 @@ export function adventure({ bot, sdk }: ScriptContext, checkpoint?: TaskCheckpoi
         });
         return eaten.success;
     };
-    const rest = async (minimum: number, resupply?: () => Promise<void>, auditing = false, pickpocketing = false) => {
+    const rest = async (minimum: number, resupply?: () => Promise<void>, auditing = false,
+        pickpocket?: { eating(): void; waiting(): void }) => {
         await waitAlive(auditing);
         if (!sdk.getState()?.player || (sdk.getState()?.player?.hp ?? 0) >= minimum) return;
         log('recovering', { minimum, ...metrics() });
         if (auditing) auditEvent('setback', 'low-hp', { minimum, before: auditFrame(sdk.getState()) });
         while ((sdk.getState()?.player?.hp ?? 0) < minimum) {
             await waitAlive(auditing);
-            if (!await eat(auditing, pickpocketing)) {
+            if (!await eat(auditing, !!pickpocket, pickpocket?.eating)) {
                 await resupply?.();
+                pickpocket?.waiting();
                 await waitTicks(12, 'Food did not restore HP. Wait for another recovery opportunity before checking HP again.', auditing);
             }
         }
@@ -422,7 +426,7 @@ export function adventure({ bot, sdk }: ScriptContext, checkpoint?: TaskCheckpoi
         };
         const visitSupplyBank = async () => {
             if (Date.now() < nextBank) return false;
-            phase('thieving-banking', banking ? 'Banking loot and restocking food' : 'Depositing spare items');
+            phase('thieving-banking', banking ? pickpocketActiveLabels.bank : pickpocketActiveLabels.deposit);
             let banked = false;
             try {
                 await bankPickpocketSupplies(lumbridge, banking, auditing);
@@ -480,7 +484,6 @@ export function adventure({ bot, sdk }: ScriptContext, checkpoint?: TaskCheckpoi
                 phase('thieving-recovery', recovering);
                 await rest(resumeAt, banking ? async () => {
                     if (Date.now() >= nextFood) await visitSupplyBank();
-                    phase('thieving-recovery', recovering);
                 } : lumbridge ? undefined : async () => {
                     if (Date.now() < nextFood) {
                         if (auditing) auditEvent('decision', 'food-resupply', { intent: 'Avoid repeating the shop trip before the resupply cooldown ends',
@@ -488,10 +491,12 @@ export function adventure({ bot, sdk }: ScriptContext, checkpoint?: TaskCheckpoi
                         return;
                     }
                     nextFood = Date.now() + 45_000;
-                    phase('thieving-resupply', 'Buying recovery food');
+                    phase('thieving-resupply', pickpocketActiveLabels.shop);
                     await buyFood(auditing).catch(error => reportError('thieving-resupply-error', error));
-                    phase('thieving-recovery', recovering);
-                }, auditing, true);
+                }, auditing, {
+                    eating: () => phase('thieving-eating', pickpocketActiveLabels.eat),
+                    waiting: () => phase('thieving-recovery-wait', `Waiting to recover to ${resumeAt} HP`),
+                });
             }
             if (banking) {
                 if (sdk.getInventory().length >= inventoryCapacity) {

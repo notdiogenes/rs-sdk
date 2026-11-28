@@ -146,6 +146,23 @@ test('keeps and eats carried sharks after banking with restocking disabled', asy
     expect(a.walks).toEqual([]);
 });
 
+test('waits for passive recovery when the backpack has no food', async () => {
+    const a = account('Lumbridge', [], [], 3);
+    const waits: number[] = [];
+    a.ctx.sdk.waitForTicks = async ticks => {
+        waits.push(ticks ?? 0);
+        a.state.tick += ticks ?? 0;
+        a.state.player!.hp = 6;
+        return a.state;
+    };
+
+    await expect(adventure(a.ctx).pickpocket('men')).rejects.toThrow(finished);
+
+    expect(waits).toEqual([12]);
+    expect(a.eaten).toEqual([]);
+    expect(a.visits()).toBe(0);
+});
+
 test('banks a batch of stackable loot and returns to Lumbridge', async () => {
     const a = account('Lumbridge', Array.from({ length: 8 }, (_, slot) => item(385, 'Shark', 1, slot)), [], 60, 100);
     await expect(adventure(a.ctx).pickpocket('men', true)).rejects.toThrow(finished);
