@@ -1,10 +1,10 @@
 import { auditEnabled, auditEvent, auditFrame } from '../../sdk/audit-trace';
-import { runScript } from '../../sdk/runner';
+import { runScript, type ScriptContext } from '../../sdk/runner';
 import { readFileSync } from 'node:fs';
-import { withTaskUpdateCheckpoints } from './update-checkpoint';
+import { meleeGoalMet, meleeSkills as melee, meleeTargetSkills, meleeTrainingStyle, parseMeleeGoal, type MeleeGoal } from '../melee-training';
+import { withTaskUpdateCheckpoints, type TaskCheckpoint } from './update-checkpoint';
 
 const planned = process.env.RS_PLANNED === '1';
-const melee = ['Attack', 'Strength', 'Defence'] as const;
 const focus = melee.find(skill => skill === process.env.RS_ACTIVITY_SKILL);
 const cow = /^(cow|cow calf)$/i;
 const swords = ['Adamant longsword', 'Mithril longsword', 'Steel longsword'];
@@ -27,16 +27,18 @@ function isStackable(name: string, count: number) {
     return stackable.get(name);
 }
 
-const result = await runScript(withTaskUpdateCheckpoints(async ({ sdk, bot }, checkpoint) => {
+export async function trainCows({ sdk, bot }: ScriptContext, checkpoint?: TaskCheckpoint,
+    goal: MeleeGoal | undefined = process.env.RS_ACTIVITY_MELEE_GOAL ? parseMeleeGoal(JSON.parse(process.env.RS_ACTIVITY_MELEE_GOAL)) : undefined) {
     let current = '';
     const phase = (name: string) => {
         if (!auditEnabled || current === name) return;
         current = name;
-        auditEvent('phase', name, { focus, state: auditFrame(sdk.getState()) });
+        auditEvent('phase', name, { focus, goal, state: auditFrame(sdk.getState()) });
     };
     phase('combat-requirements');
     await sdk.waitForReady();
-    const stats = () => melee.map(name => {
+    const trackedSkills = goal?.levels.Hitpoints !== undefined ? meleeTargetSkills : melee;
+    const stats = () => trackedSkills.map(name => {
         const skill = sdk.getSkill(name);
         if (!skill) throw new Error(`Missing ${name} in game state`);
         return skill;
@@ -109,13 +111,23 @@ const result = await runScript(withTaskUpdateCheckpoints(async ({ sdk, bot }, ch
     }
 
     console.log('Starting cow training', stats().map(skill => [skill.name, skill.baseLevel, skill.experience]));
+    function goalReached() {
+        if (!goal) return false;
+        const state = sdk.getState();
+        if (!state?.inGame || sdk.getStateAge() > 10_000) throw new Error('Waiting for fresh melee level data.');
+        if (!meleeGoalMet(goal, state.skills)) return false;
+        auditEvent('milestone', 'combat-goal-reached', { goal });
+        return true;
+    }
+
     let fights = 0;
     let misses = 0;
     for (;;) {
+        if (goalReached()) return;
         await equipBest();
         await buryBones();
         const before = stats();
-        if (!planned && before.every(skill => skill.baseLevel >= 99)) {
+        if (!goal && !planned && before.every(skill => skill.baseLevel >= 99)) {
             console.log('Confirmed 99/99/99', before);
             auditEvent('milestone', 'combat-goal-reached');
             return;
@@ -135,16 +147,21 @@ const result = await runScript(withTaskUpdateCheckpoints(async ({ sdk, bot }, ch
             }
         }
 
-        const skill = before.find(s => s.name === focus) ?? before.filter(s => s.baseLevel < 99).sort((a, b) => a.experience - b.experience)[0] ?? (planned ? before[0] : undefined);
-        if (!skill) throw new Error('Could not select the next melee skill');
-        const combat = sdk.getState()?.combatStyle;
-        const style = combat?.styles.find(s => s.trainsSkills.includes(skill.name));
-        if (!style) throw new Error(`No combat style for ${skill.name}`);
+        if (goalReached()) return;
+        const state = sdk.getState();
+        const combat = state?.combatStyle;
+        const legacySkill = goal ? undefined : before.find(s => s.name === focus) ??
+            before.filter(s => s.baseLevel < 99).sort((a, b) => a.experience - b.experience)[0] ?? before[0];
+        const style = goal ? meleeTrainingStyle(goal, state?.skills ?? [], combat)
+            : combat?.styles.find(s => legacySkill && s.trainsSkills.includes(legacySkill.name));
+        if (!style) throw new Error('No combat style for ' + legacySkill?.name);
+        const training = goal ? style.trainsSkills.join('/') : legacySkill?.name;
         if (combat?.currentStyle !== style.index) {
             phase('combat-style');
-            await sdk.sendSetCombatStyle(style.index);
+            const change = await sdk.sendSetCombatStyle(style.index);
+            if (!change.success) throw new Error(change.message);
             await sdk.waitForCondition(s => s.combatStyle?.currentStyle === style.index, 6000);
-            auditEvent('milestone', 'combat-style-confirmed', { skill: skill.name, index: style.index });
+            auditEvent('milestone', 'combat-style-confirmed', { skill: training, index: style.index });
         }
         await checkpoint?.();
         let roundStarted = performance.now();
@@ -163,18 +180,19 @@ const result = await runScript(withTaskUpdateCheckpoints(async ({ sdk, bot }, ch
                 if (!target && ++misses >= 20) throw new Error('No reachable cow after rescanning the Lumbridge pen');
                 if (!target) continue;
             }
+            if (goalReached()) return;
             phase('combat-fight');
             roundStarted = performance.now();
             const attack = await bot.attack(target);
             auditEvent(attack.success ? 'milestone' : 'setback', attack.success ? 'combat-engaged' : 'combat-engage-failed',
-                { target: { id: target.id, index: target.index, x: target.x, z: target.z }, skill: skill.name,
+                { target: { id: target.id, index: target.index, x: target.x, z: target.z }, skill: training,
                     reason: attack.reason, message: attack.message, after: auditFrame(sdk.getState()) });
             if (!attack.success) {
                 await sdk.waitForTicks(3);
                 if (++misses >= 12) throw new Error(`Could not engage a cow: ${attack.message}`);
                 continue;
             }
-            console.log('Attacking', target.name, target.x, target.z, 'for', skill.name);
+            console.log('Attacking', target.name, target.x, target.z, 'for', training);
         }
         phase('combat-fight');
         misses = 0;
@@ -205,5 +223,9 @@ const result = await runScript(withTaskUpdateCheckpoints(async ({ sdk, bot }, ch
         if (after.some(now => before.some(previous => previous.name === now.name && now.experience > previous.experience))) fights++;
         console.log(JSON.stringify({ fightsWithXp: fights, tick: sdk.getState()?.tick, skills: after.map(s => [s.name, s.baseLevel, s.experience]) }));
     }
-}), { printState: false });
-if (!result.success) process.exitCode = 1;
+}
+
+if (import.meta.main) {
+    const result = await runScript(withTaskUpdateCheckpoints(trainCows), { printState: false });
+    if (!result.success) process.exitCode = 1;
+}

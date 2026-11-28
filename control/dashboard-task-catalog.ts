@@ -1,8 +1,10 @@
+import { meleeStylePreferences, meleeTargetSkills, type MeleeGoal } from './melee-training';
 import { miningResources, miningSelection, type MiningTask } from './mining-routes';
 
 export const trainingSkills = ['Hitpoints', 'Thieving', 'Attack', 'Strength', 'Defence', 'Runecraft', 'Mining', 'Fishing', 'Cooking'] as const;
 export type TrainingSkill = typeof trainingSkills[number];
 export type Finish =
+    | MeleeGoal
     | { type: 'complete' }
     | { type: 'essence-exhausted' }
     | { type: 'bank-stock'; quantity: number }
@@ -131,6 +133,7 @@ export const activityCatalog = {
     },
     'train-cows': {
         label: 'Train melee on cows', category: 'Combat', usage: 'repeatable', script: 'train-cows.ts',
+        finishModes: ['minutes', 'level', 'melee-levels', 'forever'],
         requirements: [level('Hitpoints', 15)], trains: ['Attack', 'Strength', 'Defence'],
     },
     'pickpocket-men': pickpocket('Men'),
@@ -198,7 +201,9 @@ export const planCatalog = activityIds.flatMap(id => {
     const selectors = meta.selectors ?? (meta.category === 'Quests' ? [{ label: 'Quest', value: meta.label }]
         : meta.category === 'Combat' ? [{ label: 'Training activity', value: meta.label }] : []);
     return [{
-        id, ...meta, selectors, finishModes, settingsVersion: meta.settingsVersion ?? initialSettingsVersion,
+        id, ...meta, selectors, finishModes,
+        ...(finishModes.includes('melee-levels') && { meleeTraining: { skills: meleeTargetSkills, styles: meleeStylePreferences } }),
+        settingsVersion: meta.settingsVersion ?? initialSettingsVersion,
         // Older dashboard versions interpret this field as a mandatory bank target.
         ...(finishModes.length === 1 && finishModes[0] === 'bank-stock' && { stockTargetItem: meta.bankStockItem }),
     }];

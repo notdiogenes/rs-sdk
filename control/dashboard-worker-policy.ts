@@ -1,13 +1,15 @@
 import { checkStepCompatibility, finished, nextWork } from './dashboard-plan';
 import { activity, activityIds, isActivity, type ActivityOptions } from './dashboard-task-catalog';
 import { handleWorkerRequest } from './dashboard-worker-api';
+import type { MeleeGoal } from './melee-training';
 
 // Increment when the hot-loaded module needs a different supervisor contract.
-export const workerPolicyVersion = 2;
+export const workerPolicyVersion = 3;
 export { activity, activityIds, isActivity, checkStepCompatibility, finished, nextWork, handleWorkerRequest };
 
-export function taskEnvironment(skill?: string, bankTarget?: number, options?: ActivityOptions): Record<`RS_ACTIVITY_${string}`, string> {
+export function taskEnvironment(skill?: string, bankTarget?: number, options?: ActivityOptions, meleeGoal?: MeleeGoal): Record<`RS_ACTIVITY_${string}`, string> {
     return {
+        RS_ACTIVITY_MELEE_GOAL: meleeGoal ? JSON.stringify(meleeGoal) : '',
         RS_ACTIVITY_SKILL: skill ?? '',
         RS_ACTIVITY_BANK_TARGET: bankTarget === undefined ? '' : String(bankTarget),
         RS_ACTIVITY_PICKPOCKET_BANKING: options?.banking ? '1' : '',

@@ -7,6 +7,7 @@ import { finished, nextWork, type Step, type Work } from './dashboard-plan';
 import { activity, type ActivityId, type ActivityOptions } from './dashboard-task-catalog';
 import type { DashboardWorkerUpdates, WorkerRelease } from './dashboard-worker-policy';
 import type { ActiveTaskUpdate } from './dashboard-task-update';
+import type { MeleeGoal } from './melee-training';
 
 export type Plan = {
     bot: string;
@@ -23,7 +24,7 @@ export type PlanBackend = {
     status(): ControllerStatus;
     prepare(signal: AbortSignal): Promise<void>;
     observe(): Promise<BotWorldState | null>;
-    start(task: ActivityId, skill?: string, bankTarget?: number, options?: ActivityOptions, release?: WorkerRelease): Promise<void>;
+    start(task: ActivityId, skill?: string, bankTarget?: number, options?: ActivityOptions, release?: WorkerRelease, meleeGoal?: MeleeGoal): Promise<void>;
     stop(): Promise<void>;
     stopForRuntimeMove?(runId: string): Promise<boolean>;
     activeUpdate?(): ActiveTaskUpdate | undefined;
@@ -76,13 +77,15 @@ function sameStep(first: Step | undefined, second: Step | undefined) {
 }
 
 const workSkill = (work: Work) => work.finish.type === 'level' ? work.finish.skill : undefined;
+const workMeleeGoal = (work: Work) => work.finish.type === 'melee-levels' ? work.finish : undefined;
 const workBankTarget = (work: Work) => work.finish.type === 'bank-stock' ? work.finish.quantity : undefined;
 
 function sameLaunch(first: Work, second: Work) {
     const { finishOnEssenceExhausted: _firstFinishOption, ...firstOptions } = first.options ?? {};
     const { finishOnEssenceExhausted: _secondFinishOption, ...secondOptions } = second.options ?? {};
     return first.task === second.task && workSkill(first) === workSkill(second) &&
-        workBankTarget(first) === workBankTarget(second) && sameOptions(firstOptions, secondOptions);
+        workBankTarget(first) === workBankTarget(second) && JSON.stringify(workMeleeGoal(first)) === JSON.stringify(workMeleeGoal(second)) &&
+        sameOptions(firstOptions, secondOptions);
 }
 
 function verifiedCompletion(work: Work, status: ControllerStatus) {
@@ -341,7 +344,7 @@ export function createPlanManager(directory: string, backendFor: (bot: string, s
                 if (backend.status().task) throw new Error('Stop the current activity before running a plan.');
                 const launchedWork = { ...work };
                 const launchedRelease = release;
-                await backend.start(work.task, workSkill(work), workBankTarget(work), work.options, release);
+                await backend.start(work.task, workSkill(work), workBankTarget(work), work.options, release, workMeleeGoal(work));
                 nextLaunch = undefined;
                 owned = true;
                 let lastLive = Date.now();

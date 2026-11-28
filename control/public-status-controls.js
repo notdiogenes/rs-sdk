@@ -2759,6 +2759,7 @@
     const canEditCompletePlan = () => planCanRemoveCompleted && planState?.status === 'complete' && planState.steps.length > 0;
     const bankItem = meta => meta?.bankStockItem ?? meta?.stockTargetItem;
     const finishLabel = (finish, stockItem) => finish.type === 'level' ? `Until ${finish.skill} ${finish.level}`
+        : finish.type === 'melee-levels' ? (Object.entries(finish.levels ?? {}).map(([skill, level]) => skill + ' ' + level).join(' · ') || 'Choose a target') + ' · ' + (finish.style || 'Balanced')
         : finish.type === 'minutes' ? `${finish.minutes} min`
         : finish.type === 'essence-exhausted' ? 'Until rune essence runs out'
         : finish.type === 'bank-stock' ? `Until ${(Number.isFinite(finish.quantity) ? finish.quantity.toLocaleString('en-US') : '…')} ${stockItem ? stockItem + ' ' : ''}in bank`
@@ -2808,7 +2809,7 @@
     }
 
     const finishNames = {
-        minutes: 'Time spent', level: 'Skill level', 'bank-stock': 'Bank total',
+        minutes: 'Time spent', level: 'Skill level', 'melee-levels': 'Melee level targets', 'bank-stock': 'Bank total',
         'essence-exhausted': 'Rune essence runs out', forever: 'Indefinite grind', complete: 'Quest completion',
     };
     const plannerFamilies = ['Mining', 'Fishing', 'Thieving', 'Combat', 'Runecraft', 'Smithing', 'Quests'];
@@ -2831,6 +2832,7 @@
 
     function defaultFinish(meta, type) {
         if (type === 'minutes') return { type, minutes: 30 };
+        if (type === 'melee-levels') return { type, levels: { Attack: 50, Strength: 50, Defence: 50, Hitpoints: 60 }, style: 'Balanced' };
         if (type === 'level') return { type, skill: meta.trains[0], level: 40 };
         if (type === 'bank-stock') return { type, quantity: 250 };
         return { type };
@@ -3038,7 +3040,30 @@
                 finish.dataset.focusKey = 'finish';
                 stopRow.append(planField('Finish when', finish));
             }
-            if (step.finish.type === 'minutes') {
+            if (step.finish.type === 'melee-levels' && meta.meleeTraining) {
+                const goal = step.finish;
+                const labels = { Balanced: 'Balanced · lowest XP first', Accurate: 'Prefer Accurate · Attack', Aggressive: 'Prefer Aggressive · Strength',
+                    Defensive: 'Prefer Defensive · Defence', Controlled: 'Prefer Controlled · shared XP' };
+                const style = planSelect(meta.meleeTraining.styles.map(key => [key, labels[key] ?? key]), goal.style || 'Balanced', value => { goal.style = value; });
+                stopRow.append(planField('Style preference', style));
+                const levels = node('div', '', 'plan-end plan-melee-levels');
+                let first;
+                function validateTargets() {
+                    first?.setCustomValidity(Object.keys(goal.levels).length ? '' : 'Enter at least one minimum level.');
+                }
+                for (const skill of meta.meleeTraining.skills) {
+                    const input = planNumber(goal.levels[skill], 1, 99, value => {
+                        if (Number.isFinite(value)) goal.levels[skill] = value;
+                        else delete goal.levels[skill];
+                        validateTargets();
+                    });
+                    input.required = false;
+                    first ??= input;
+                    levels.append(planField('Minimum ' + skill, input));
+                }
+                validateTargets();
+                stopRow.append(levels);
+            } else if (step.finish.type === 'minutes') {
                 stopRow.append(planField('Minutes', planNumber(step.finish.minutes, 1, 10080, value => { step.finish.minutes = value; })));
             } else if (step.finish.type === 'level') {
                 stopRow.append(planField('Skill', planSelect((meta.trains ?? []).map(skill => [skill, skill]), step.finish.skill, skill => { step.finish.skill = skill; })),
@@ -3050,7 +3075,9 @@
                     planNumber(step.finish.quantity, 1, 100000, value => { step.finish.quantity = value; })));
             }
             panel.append(stopRow);
-            if (step.finish.type === 'bank-stock' && bankItem(meta)) {
+            if (step.finish.type === 'melee-levels') {
+                panel.append(node('p', 'All specified base levels must be reached. Leave a level blank to skip it. If only Hitpoints remains, melee training continues.', 'plan-quantity-hint'));
+            } else if (step.finish.type === 'bank-stock' && bankItem(meta)) {
                 panel.append(node('p', 'Includes ' + bankItem(meta) + ' already in the bank.', 'plan-quantity-hint'));
             } else if (step.finish.type === 'essence-exhausted') {
                 panel.append(node('p', 'Finishes when rune essence runs out in both inventory and bank.', 'plan-quantity-hint'));
@@ -3106,6 +3133,8 @@
         }
         const skill = finish => finish.type === 'level' ? finish.skill : undefined;
         const bankTarget = finish => finish.type === 'bank-stock' ? finish.quantity : undefined;
+        if (oldStep && (oldStep.finish.type === 'melee-levels' || nextStep.finish.type === 'melee-levels') &&
+            JSON.stringify(oldStep.finish) !== JSON.stringify(nextStep.finish)) return 'Saving will recheck these targets and may relaunch the current activity.';
         if (!oldStep || oldStep.task !== nextStep.task || skill(oldStep.finish) !== skill(nextStep.finish) ||
             bankTarget(oldStep.finish) !== bankTarget(nextStep.finish)) {
             return 'Saving this change may stop the current task and start a different activity.';

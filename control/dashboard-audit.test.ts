@@ -481,7 +481,7 @@ test('reloads a committed Fleet Desk presentation while the same audit writer ke
             'dashboard-presentation-entry.ts', 'dashboard-fleet-page.ts', 'dashboard-fleet-icons.ts', 'dashboard-fleet.css',
             'public-status-controls.js', 'dashboard-fleet-stats.ts', 'dashboard-quests.ts', 'dashboard-task-catalog.ts', 'mining-routes.ts',
             'dashboard-audit-report.ts', 'dashboard-audit-insights-report.ts', 'dashboard-audit-schema.ts', 'bank-locations.ts',
-            'dashboard-pickpocket-activity.ts',
+            'dashboard-pickpocket-activity.ts', 'melee-training.ts',
         ]) copyFileSync(join(import.meta.dir, file), join(source, file));
         git('init', '-q');
         git('add', 'control');
