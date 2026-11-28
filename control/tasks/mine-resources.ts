@@ -4,7 +4,7 @@ import type { ScriptContext } from '../../sdk/runner';
 import type { BotWorldState, InventoryItem, NearbyLoc } from '../../sdk/types';
 import { reportTaskActivity } from '../dashboard-task-activity';
 import { alKharidTollGate, coalTrucks, fishingGuildBank, guildLadder, inMiningGuild, miningBanks, miningDistance,
-    miningResources, miningSelection, miningSiteBanks, miningTravelDistance, miningTravelTimeout, miningTravelVia,
+    miningPathDistance, miningResources, miningSelection, miningSiteBanks, miningTravelDistance, miningTravelTimeout, miningTravelWaypoints,
     rankMiningSites, type MiningSite, type Tile } from '../mining-routes';
 
 const pickaxe = 1275;
@@ -67,12 +67,15 @@ export async function mineResources({ bot, sdk }: ScriptContext, task = process.
         return result;
     }
 
-    async function walkLeg(target: Tile & { name: string }, radius: number, label = `Walking to ${target.name}`) {
-        const distance = miningDistance(tile(current()), target);
+    async function walkLeg(target: Tile & { name: string }, radius: number, label = `Walking to ${target.name}`, measureRoute = false) {
+        const from = tile(current());
+        const distance = miningDistance(from, target);
         if (distance <= radius) return;
-        const timeout = miningTravelTimeout(distance);
+        const path = measureRoute ? await sdk.sendFindPath(target.x, target.z) : undefined;
+        const routeDistance = path?.success ? miningPathDistance(from, path.waypoints) : distance;
+        const timeout = miningTravelTimeout(Math.max(distance, routeDistance));
         reportTaskActivity(label);
-        await act('mining-walk', `Reach ${target.name}`, { ...target, distance, timeout },
+        await act('mining-walk', `Reach ${target.name}`, { ...target, distance, routeDistance, timeout },
             () => bot.walkTo(target.x, target.z, radius, { timeout }));
         if (miningDistance(tile(current()), target) > radius) throw new Error(`Arrival at ${target.name} was not confirmed.`);
     }
@@ -88,10 +91,10 @@ export async function mineResources({ bot, sdk }: ScriptContext, task = process.
     }
 
     async function walk(target: Tile & { name: string }, radius: number, label?: string) {
-        const via = miningTravelVia(tile(current()), target);
+        const waypoints = miningTravelWaypoints(tile(current()), target);
         await dismissTollDialogue();
-        if (via) await walkLeg(via, 0);
-        await walkLeg(target, radius, label);
+        for (const waypoint of waypoints) await walkLeg(waypoint, 0, undefined, true);
+        await walkLeg(target, radius, label, waypoints.length > 0);
     }
 
     async function leaveEssenceMine() {

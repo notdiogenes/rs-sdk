@@ -1,9 +1,10 @@
 import { expect, test } from 'bun:test';
+import { findDoorsAlongPath, findLongPath } from '../sdk/pathfinding';
 import type { ScriptContext } from '../sdk/runner';
 import type { BotWorldState, InventoryItem } from '../sdk/types';
 import { activity, isActivity } from './dashboard-task-catalog';
-import { coalTrucks, fishingGuildBank, miningBanks, miningResources, miningTravelDistance, miningTravelTimeout,
-    miningTravelVia, rankMiningSites } from './mining-routes';
+import { alKharidTollGate, coalTrucks, fishingGuildBank, miningBanks, miningDistance, miningPathDistance, miningResources, miningTravelDistance,
+    miningTravelTimeout, miningTravelWaypoints, rankMiningSites } from './mining-routes';
 import { mineResources } from './tasks/mine-resources';
 
 test('every supported resource has both modes and resource-specific routes', () => {
@@ -26,11 +27,32 @@ test('every supported resource has both modes and resource-specific routes', () 
     expect(miningTravelTimeout(8)).toBeLessThan(150000);
 });
 
+test('the Al Kharid mine and bank are reachable from the Lumbridge swamp without the toll gate', () => {
+    const swamp = { x: 3232, z: 3163 };
+    const mine = { x: 3300, z: 3301 };
+    for (const [from, to] of [[swamp, mine], [mine, swamp], [swamp, miningBanks.kharid], [miningBanks.kharid, swamp]] as const) {
+        const waypoints = miningTravelWaypoints(from, to);
+        expect(waypoints).toHaveLength(2);
+        let previous = from;
+        for (const point of [...waypoints, to]) {
+            const path = findLongPath(0, previous.x, previous.z, point.x, point.z);
+            expect(path.at(-1)).toMatchObject({ x: point.x, z: point.z });
+            expect(findDoorsAlongPath(path).some(door => miningDistance(door, alKharidTollGate) <= 1)).toBe(false);
+            previous = point;
+        }
+    }
+    const first = miningTravelWaypoints(swamp, mine)[0]!;
+    const path = findLongPath(0, swamp.x, swamp.z, first.x, first.z);
+    expect(miningPathDistance(swamp, path)).toBeGreaterThan(miningDistance(swamp, first));
+    expect(miningTravelWaypoints(miningBanks.kharid, mine)).toEqual([]);
+});
+
 for (const firstBankFails of [false, true]) {
     test(`setup resumes west of the toll gate with a bank fallback = ${firstBankFails}`, async () => {
         const gate = { x: 3267, z: 3227 };
-        expect(miningTravelVia(gate, miningBanks.kharid)).toMatchObject({ x: 3275, z: 3306 });
-        expect(miningTravelVia(miningBanks.kharid, gate)).toMatchObject({ x: 3275, z: 3306 });
+        const road = [{ x: 3250, z: 3311 }, { x: 3275, z: 3306 }];
+        expect(miningTravelWaypoints(gate, miningBanks.kharid)).toMatchObject(road);
+        expect(miningTravelWaypoints(miningBanks.kharid, gate)).toMatchObject([...road].reverse());
         expect(miningTravelDistance(gate, miningBanks.draynor)).toBeLessThan(miningTravelDistance(gate, miningBanks.kharid));
         const state = {
             inGame: true,

@@ -75,19 +75,31 @@ export const miningDistance = (a: Tile, b: Tile) => Math.max(Math.abs(a.x - b.x)
 export const miningTravelTimeout = (distance: number) => Math.min(480_000, Math.max(35_000, 25_000 + distance * 950));
 
 export const alKharidTollGate = place('Al Kharid toll gate', 3268, 3227);
-const alKharidNorthApproach = place('the open road north of Al Kharid', 3275, 3306);
+const alKharidWestApproach = place('the west approach to the Al Kharid bypass', 3250, 3311);
+const alKharidEastApproach = place('the east approach to the Al Kharid bypass', 3275, 3306);
 
-export function miningTravelVia(from: Tile, to: Tile) {
+export function miningTravelWaypoints(from: Tile, to: Tile): readonly NamedTile[] {
     const [west, east] = from.x < to.x ? [from, to] : [to, from];
     if (west.x < alKharidTollGate.x && west.z < 3300 &&
-        east.x >= alKharidTollGate.x && east.x <= 3335 && east.z >= 3130 && east.z < 3270) {
-        return alKharidNorthApproach;
+        east.x >= alKharidTollGate.x && east.x <= 3335 && east.z >= 3130 && east.z < alKharidEastApproach.z) {
+        // A single waypoint across the border can still route through the toll gate.
+        return from === west ? [alKharidWestApproach, alKharidEastApproach] : [alKharidEastApproach, alKharidWestApproach];
     }
+    return [];
+}
+
+export function miningPathDistance(from: Tile, points: readonly Tile[]) {
+    let distance = 0;
+    let previous = from;
+    for (const point of points) {
+        distance += miningDistance(previous, point);
+        previous = point;
+    }
+    return distance;
 }
 
 export function miningTravelDistance(from: Tile, to: Tile) {
-    const via = miningTravelVia(from, to);
-    return via ? miningDistance(from, via) + miningDistance(via, to) : miningDistance(from, to);
+    return miningPathDistance(from, [...miningTravelWaypoints(from, to), to]);
 }
 
 export const guildLadder = place('Mining Guild ladders', 3019, 3339);
