@@ -95,7 +95,7 @@ function card(bot: Bot, category: Group, reason: string, managed: ControlActivit
     </div>
     <dl class="facts">
       ${fact('Heartbeat', timeAgo(now, bot.heartbeat))}
-      ${fact('Progress', managed?.startedAt ? timeAgo(now, Date.parse(managed.startedAt)) + ' running' : '—')}
+      ${fact('Progress', managed?.startedAt ? timeAgo(now, Date.parse(managed.startedAt)) + ' running' : '—', 'progress-value')}
       ${fact('Effect', timeAgo(now, bot.lastActivity ? Date.parse(bot.lastActivity.at) : undefined))}
       ${fact('Client', bot.status, 'status-' + bot.status.toLowerCase())}
     </dl>
