@@ -37,3 +37,38 @@ jobs:
 
       - name: Type-check, test, and verify generated docs
         run: bun run check
+
+  pathfinder:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+
+      - name: Verify bundled executables match the native source tree and manifest
+        run: |
+          bundle=server/vendor/native-pathfinder
+          tree=$(git rev-parse HEAD:sdk/native-pathfinder)
+          test "$(jq -er '.sourceTree' "$bundle/manifest.json")" = "$tree"
+          for platform in linux-x64 linux-arm64; do
+            test -x "$bundle/$platform/pathfinder-native"
+            checksum=$(jq -er --arg platform "$platform" '.sha256[$platform]' "$bundle/manifest.json")
+            printf '%s  %s\n' "$checksum" "$bundle/$platform/pathfinder-native" | sha256sum --check --strict
+          done
+          test "$("$bundle/linux-x64/pathfinder-native" --source-tree)" = "$tree"
+
+      - name: Build and test the native pathfinder
+        working-directory: sdk/native-pathfinder
+        run: |
+          cargo test --locked
+          cargo build --release --locked
+
+      - name: Compare the source-built native pathfinder with the legacy server over Unix HTTP
+        run: bun test sdk/integration/pathfinder-parity.test.ts
+
+      - name: Compare the bundled Linux x64 pathfinder with the legacy server over Unix HTTP
+        env:
+          RS_PATHFINDER_TEST_BINARY: server/vendor/native-pathfinder/linux-x64/pathfinder-native
+        run: bun test sdk/integration/pathfinder-parity.test.ts

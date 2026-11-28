@@ -1,0 +1,23 @@
+[package]
+name = "pathfinder-native"
+version = "1.0.0"
+edition = "2021"
+publish = false
+rust-version = "1.85"
+
+[dependencies]
+bytes = "1"
+http-body-util = "0.1"
+hyper = { version = "1", features = ["http1", "server"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+# The prebuilt Wasm in this revision is byte-identical to server/vendor/rsmod-pathfinder/rsmod_bg.wasm.
+rsmod = { package = "rsmod-pathfinder", git = "https://github.com/MaxBittker/rsmod-pathfinder", rev = "e40595327de0b7e4419c23b205fba87e1df20b69" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["io-util", "macros", "net", "rt", "signal", "sync", "time"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = "0.2"
+
+[dev-dependencies]
+hyper = { version = "1", features = ["client"] }

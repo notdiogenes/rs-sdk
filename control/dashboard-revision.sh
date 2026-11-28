@@ -31,7 +31,7 @@ case "$role" in
         # belong here. The worker reloads plan policy and starts task scripts
         # from the selected release on demand.
         files=(
-            "$source_dir/dashboard-worker.ts" "$source_dir/dashboard-supervisor.ts" "$source_dir/dashboard-monitor.ts"
+            "$source_dir/dashboard-worker.ts" "$source_dir/dashboard-pathfinder.ts" "$source_dir/dashboard-supervisor.ts" "$source_dir/dashboard-monitor.ts"
             "$source_dir/dashboard-task-activity.ts" "$source_dir/dashboard-revisions.ts"
             "$source_dir/dashboard-task-update.ts" "$source_dir/task-update-safety.ts"
             "$source_dir/dashboard-activity.ts" "$source_dir/dashboard-session.ts" "$source_dir/dashboard-inventory.ts"
@@ -50,6 +50,12 @@ case "$role" in
             "$source_dir/../server/webclient/src/lite/LiteClient.ts" "$source_dir/../server/webclient/src/lite/actions.ts"
             "$source_dir/../server/webclient/src/lite/protocol/incoming.ts"
             "$source_dir/../server/webclient/src/bot/StateCollector.ts" "$source_dir/../server/webclient/src/bot/quest-journal.ts"
+        )
+        # A release manifest or native source change activates the new pathfinder.
+        native_dir="$source_dir/../sdk/native-pathfinder"
+        files+=("$source_dir/../server/vendor/native-pathfinder/manifest.json" "$native_dir/Cargo.toml" "$native_dir/Cargo.lock")
+        while IFS= read -r -d '' input; do files+=("$input"); done < <(
+            find -L "$native_dir/src" -type f -print0 | LC_ALL=C sort -z
         )
         ;;
     *) exit 2 ;;

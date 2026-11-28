@@ -5,6 +5,7 @@ export type MonitorProcess = {
     bot: string | null;
     pid: number;
     startedAt: string;
+    implementation?: 'native' | 'bun';
     groupName?: string;
     bots?: string[];
 };

@@ -5,11 +5,12 @@ import { dashboardRevisions } from './dashboard-revisions';
 import * as builtInPolicy from './dashboard-worker-policy';
 import type { DashboardWorkerPolicy, DashboardWorkerUpdates } from './dashboard-worker-policy';
 import type { MonitorProcess } from './dashboard-monitor';
+import { bunPathfinder, pathfinderHealthy, selectPathfinder } from './dashboard-pathfinder';
 
 const [botsDir, configDir, socket] = process.argv.slice(2);
 if (!botsDir || !configDir || !socket) throw new Error('Expected the bot directory, control config directory, and private socket');
 const pathfindingSocket = join(dirname(socket), 'pathfinding.sock');
-const pathfindingServer = join(import.meta.dir, '../sdk/pathfinding-server.ts');
+const repo = dirname(import.meta.dir);
 const PATHFINDING_START_TIMEOUT = 60_000;
 let pathfindingReady = false;
 let monitoredPathfinder: MonitorProcess | null = null;
@@ -28,6 +29,7 @@ const updates: DashboardWorkerUpdates = {
 };
 
 async function supervisePathfinding() {
+    let useRollback = false;
     for (;;) {
         try {
             // A worker that was stopped abruptly may leave its socket behind.
@@ -36,27 +38,48 @@ async function supervisePathfinding() {
                 if (!staleSocket.isSocket()) throw new Error('The pathfinder socket path is already in use.');
                 unlinkSync(pathfindingSocket);
             }
-            const child = Bun.spawn([process.execPath, '--no-env-file', pathfindingServer, pathfindingSocket], {
-                stdin: 'ignore', stdout: 'inherit', stderr: 'inherit',
-                ipc(message: unknown) {
-                    if (message && typeof message === 'object' && 'type' in message && message.type === 'ready') {
-                        pathfindingReady = true;
-                        clearTimeout(startup);
-                    }
-                },
-            });
-            monitoredPathfinder = {
-                kind: 'pathfinder', bot: null, pid: child.pid, startedAt: new Date().toISOString(),
-            };
-            const startup = setTimeout(() => {
-                console.error('[fleet-pathfinding] The pathfinder did not become ready. Restarting it.');
-                child.kill('SIGKILL');
-            }, PATHFINDING_START_TIMEOUT);
+            const launch = useRollback ? bunPathfinder(repo, pathfindingSocket)
+                : await selectPathfinder(repo, configDir!, pathfindingSocket);
+            console.log(`[fleet-pathfinding] Starting ${launch.implementation} pathfinder.`);
+            let child;
             try {
-                const code = await child.exited;
-                console.error(`[fleet-pathfinding] The pathfinder exited (${code}). Restarting it.`);
+                child = Bun.spawn(launch.command, {
+                    stdin: 'ignore', stdout: 'inherit', stderr: 'inherit',
+                    ...(launch.implementation === 'native' && { env: { ...process.env, RS_PATHFINDING_PARENT_PID: String(process.pid) } }),
+                    // The legacy Bun child exits on IPC disconnect if its parent dies.
+                    ...(launch.implementation === 'bun' && { ipc() {} }),
+                });
+            } catch (error) {
+                if (launch.implementation === 'native') {
+                    useRollback = true;
+                    console.error('[fleet-pathfinding] Native release failed to launch. Falling back to Bun.', error);
+                }
+                throw error;
+            }
+            monitoredPathfinder = {
+                kind: 'pathfinder', implementation: launch.implementation, bot: null, pid: child.pid, startedAt: new Date().toISOString(),
+            };
+            try {
+                let running = true;
+                const exited = child.exited.then(code => { running = false; return code; });
+                const deadline = performance.now() + PATHFINDING_START_TIMEOUT;
+                while (running && performance.now() < deadline) {
+                    if (await pathfinderHealthy(pathfindingSocket) && running) {
+                        pathfindingReady = true;
+                        break;
+                    }
+                    await Bun.sleep(100);
+                }
+                if (!pathfindingReady) {
+                    if (launch.implementation === 'native') {
+                        useRollback = true;
+                        console.error('[fleet-pathfinding] Native release failed its startup health check. Falling back to Bun.');
+                    }
+                    if (running) child.kill('SIGKILL');
+                }
+                const code = await exited;
+                console.error(`[fleet-pathfinding] The ${launch.implementation} pathfinder exited (${code}). Restarting it.`);
             } finally {
-                clearTimeout(startup);
                 pathfindingReady = false;
                 monitoredPathfinder = null;
             }

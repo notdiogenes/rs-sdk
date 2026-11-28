@@ -363,6 +363,54 @@ Use `GET /bots/activity?view=monitor&window=30` with a dashboard session or
 control Bearer credential. The window is in seconds and accepts `30`, `300`,
 or `3600`. Samples include timestamps for matching PIDs against `atop`.
 
+### Shared pathfinder
+
+Fleet Desk starts one native Rust pathfinder for the fleet. The Linux x64 and
+arm64 executables ship with the synced checkout. Each loads the existing
+`sdk/collision-data.json` and serves the SDK's private Unix socket. The worker
+checks the bundle's native source revision and SHA-256 before launch, then
+waits for `GET /health` to return `{"status":"ok"}`. The worker journal records
+the implementation on each start. The shared pathfinder row in
+`GET /bots/activity?view=monitor` exposes `implementation` with the running
+process PID. If the matching executable is unavailable
+or native startup fails, the worker starts the existing Bun service.
+
+To publish updated Linux binaries, stage the Rust crate changes, install the
+Rust musl targets listed in `control/build-native-release.sh`, and run that script
+from the checkout. Commit both executables and their generated manifest together.
+
+On another architecture, build an optional native release as the Fleet Desk
+service user in the sync checkout:
+
+```sh
+bash control/install-native-pathfinder.sh
+```
+
+This requires Cargo and a C linker. The helper builds the committed crate with
+its lockfile and atomically installs the executable under
+`~/.config/rs-sdk-control/pathfinder-releases/<source-tree>/`. A matching
+prebuilt executable can instead be installed with
+`bash control/install-native-pathfinder.sh --binary /absolute/path/to/pathfinder-native`.
+The worker prefers an installed release for its exact source revision; the
+installer checks the executable's embedded source tree.
+
+To force the Bun implementation, add a `rs-sdk-fleet-workers.service` systemd
+drop-in with `sudo systemctl edit rs-sdk-fleet-workers.service`:
+
+```ini
+[Service]
+Environment=RS_PATHFINDER_IMPLEMENTATION=bun
+```
+
+Restart the Fleet Desk worker with its existing controlled restart action.
+For a shell-managed restart, run `sudo systemctl restart rs-sdk-fleet-workers.service`.
+To switch back, change the value to `native` and restart the worker. Check
+`journalctl -u rs-sdk-fleet-workers.service -n 60` and the socket from the host:
+
+```sh
+curl --unix-socket /run/rs-sdk-fleet-workers/pathfinding.sock http://pathfinding/health
+```
+
 ### Fleet Desk updates
 
 Fleet Desk loads its page, browser assets, and read-only audit reports from one
