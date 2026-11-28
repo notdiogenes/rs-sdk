@@ -2460,9 +2460,19 @@
     const planEditStatus = planDialog.querySelector('#plan-edit-status');
     const planSave = planDialog.querySelector('#plan-save');
     const planClose = planDialog.querySelector('#plan-close');
+    const registerBotOpen = planDialog.querySelector('#register-bot-open');
+    const registerBotDialog = document.querySelector('#register-bot-dialog');
+    const registerBotForm = registerBotDialog.querySelector('form');
+    const registerBotFields = registerBotDialog.querySelector('#register-bot-fields');
+    const registerBotName = registerBotDialog.querySelector('#register-bot-name');
+    const registerBotPassword = registerBotDialog.querySelector('#register-bot-password');
+    const registerBotStatus = registerBotDialog.querySelector('#register-bot-status');
+    const registerBotSubmit = registerBotDialog.querySelector('#register-bot-submit');
+    const registerBotClose = registerBotDialog.querySelector('#register-bot-close');
     let planBot = null;
     let planState = null;
     let planCanRemoveCompleted = false;
+    let planCanRegisterExisting;
     let planCatalog = [];
     let planSkills = [];
     let draft = [];
@@ -2478,6 +2488,7 @@
     let planWatch;
     let planReview;
     let planReviewBaseline;
+    let registeredBot = false;
 
     const planUrl = () => '/bots/activity?view=plan' + (planBot ? '&bot=' + encodeURIComponent(planBot) : '');
     const metaFor = id => planCatalog.find(entry => entry.id === id);
@@ -2699,6 +2710,8 @@
     function renderPlanActions() {
         planNameField.hidden = !!planBot || !editing;
         planName.disabled = planNameField.hidden || planSubmitting;
+        registerBotOpen.hidden = !!planBot;
+        registerBotOpen.disabled = planSubmitting || planCanRegisterExisting === undefined;
         planSteps.inert = planSubmitting;
         planAdd.hidden = !editing || !!planReview;
         planAdd.disabled = planSubmitting || draft.length >= 12;
@@ -2785,6 +2798,7 @@
             planSkills = data.skills;
             planState = data.plan;
             planCanRemoveCompleted = data.canRemoveCompleted === true;
+            planCanRegisterExisting = data.canRegisterExisting === true;
             let reviewChanged = false;
             if (initialLoad) {
                 editing = planState ? null : 'new';
@@ -2815,6 +2829,7 @@
         planReviewBaseline = undefined;
         planState = null;
         planCanRemoveCompleted = false;
+        planCanRegisterExisting = undefined;
         draft = [];
         editing = planEditBase = null;
         removedCompletedIndexes = [];
@@ -2854,6 +2869,60 @@
         await sessionReady;
         if (!signedIn) { openSignIn(button); return; }
         openPlan(button.dataset.planBot || null);
+    });
+
+    registerBotOpen.addEventListener('click', () => {
+        if (!signedIn) { openSignIn(registerBotOpen); return; }
+        registeredBot = false;
+        registerBotForm.reset();
+        registerBotFields.hidden = registerBotSubmit.hidden = !planCanRegisterExisting;
+        registerBotStatus.textContent = planCanRegisterExisting ? ''
+            : 'Restart the Fleet Desk worker from Updates to enable registration.';
+        registerBotDialog.showModal();
+        (planCanRegisterExisting ? registerBotName : registerBotClose).focus();
+    });
+    registerBotClose.addEventListener('click', () => registerBotDialog.close());
+    registerBotDialog.addEventListener('cancel', event => {
+        if (registerBotClose.disabled) event.preventDefault();
+    });
+    registerBotDialog.addEventListener('close', () => {
+        registerBotForm.reset();
+        if (registeredBot) {
+            planChanged = true;
+            planDialog.close();
+        }
+    });
+    registerBotForm.addEventListener('submit', async event => {
+        event.preventDefault();
+        if (registerBotSubmit.hidden || registerBotSubmit.disabled) return;
+        const name = registerBotName.value.trim();
+        if (!name) {
+            registerBotStatus.textContent = 'Enter the name of the game account.';
+            registerBotName.focus();
+            return;
+        }
+        const result = request(planUrl(), { action: 'register', name, password: registerBotPassword.value });
+        registerBotPassword.value = '';
+        registerBotSubmit.disabled = registerBotClose.disabled = registerBotName.disabled = registerBotPassword.disabled = true;
+        registerBotStatus.textContent = 'Registering bot…';
+        try {
+            const { bot } = await result;
+            registeredBot = true;
+            registerBotForm.reset();
+            registerBotFields.hidden = registerBotSubmit.hidden = true;
+            registerBotStatus.textContent = `Registered ${bot}.`;
+        } catch (error) {
+            if (error.status === 401) {
+                setSignedIn(false);
+                registerBotDialog.close();
+                openSignIn(registerBotOpen);
+            } else {
+                registerBotStatus.textContent = error.message;
+            }
+        } finally {
+            registerBotSubmit.disabled = registerBotClose.disabled = registerBotName.disabled = registerBotPassword.disabled = false;
+            if (registerBotDialog.open) (registeredBot ? registerBotClose : registerBotPassword).focus();
+        }
     });
 
     planAdd.addEventListener('click', () => { draft.push(defaultStep()); renderPlan(); });

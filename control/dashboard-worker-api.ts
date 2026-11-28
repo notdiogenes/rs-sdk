@@ -16,7 +16,7 @@ type BotWorker = ReturnType<typeof dashboardDemo>;
 
 export type DashboardWorkerApiRuntime = {
     botProfile(name: string): Promise<ManagedProfile | null>;
-    botRoster: Pick<ReturnType<typeof dashboardRoster>, 'create'>;
+    botRoster: Pick<ReturnType<typeof dashboardRoster>, 'create'> & Partial<Pick<ReturnType<typeof dashboardRoster>, 'register'>>;
     plans: Pick<ReturnType<typeof createPlanManager>, 'get' | 'list' | 'pause' | 'resume' | 'start' | 'update' | 'queueMining' |
         'activeUpdate' | 'requestUpdate' | 'cancelUpdate'> & { supportsCompletedRemoval?: true };
     updateSource?: ActivityUpdateSource;
@@ -44,16 +44,28 @@ async function handlePlan(request: Request, name: string | null, session: string
     const headers = { 'Cache-Control': 'no-store', ...(session ? { 'Set-Cookie': session } : {}) };
     const reply = (body: object, status = 200) => Response.json(body, { status, headers });
     const canRemoveCompleted = plans.supportsCompletedRemoval === true;
+    const canRegisterExisting = typeof botRoster.register === 'function';
     if (!session && !await demo.allowed(request)) return reply({ error: 'Sign in to manage activity plans.' }, 401);
     if (request.method === 'GET') {
         const profile = name === null ? null : await botProfile(name);
         if (name !== null && !profile) return reply({ error: 'Bot profile not found.' }, 404);
-        return reply({ catalog: planCatalog, skills: trainingSkills, plan: profile && plans.get(profile.name), canRemoveCompleted });
+        return reply({ catalog: planCatalog, skills: trainingSkills, plan: profile && plans.get(profile.name), canRemoveCompleted, canRegisterExisting });
     }
     if (request.method !== 'POST') return new Response(null, { status: 405, headers: { ...headers, Allow: 'GET, POST' } });
     const body = await request.json().catch(() => null);
     if (!body || typeof body !== 'object') return reply({ error: 'Invalid activity plan.' }, 400);
     if (name === null) {
+        if (body.action === 'register') {
+            if (!session) return reply({ error: 'Sign in to Fleet Desk to register an existing bot.' }, 401);
+            if (!botRoster.register) return reply({ error: 'Restart the Fleet Desk worker from Updates to enable registration.' }, 503);
+            try {
+                const profile = await botRoster.register(body.name, body.password, (await demo.profile())?.name);
+                invalidateSnapshot();
+                return reply({ bot: profile.name }, 201);
+            } catch (error) {
+                return reply({ error: error instanceof Error ? error.message : 'Could not register the bot.' }, 400);
+            }
+        }
         if (body.action !== 'create') return reply({ error: 'Choose a bot to manage.' }, 400);
         try {
             const steps = parseSteps(body.steps);

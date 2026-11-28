@@ -6,9 +6,11 @@ import type { BotWorldState } from '../sdk/types';
 import { nextWork, parseSteps } from './dashboard-plan';
 import { createPlanManager, PlanEditConflict, type PlanBackend } from './dashboard-plan-runner';
 import { dashboardRoster } from './dashboard-roster';
+import { dashboardSessions } from './dashboard-session';
 import { planCatalog } from './dashboard-task-catalog';
 import { handleWorkerRequest, type DashboardWorkerApiRuntime } from './dashboard-worker-api';
 import * as builtInPolicy from './dashboard-worker-policy';
+import { botCredentials } from './hosted-bot';
 import { selectFishingStage } from './tasks/fish-sharks';
 
 function world(thieving: number, hp: number, cook = false, tutorial = false) {
@@ -138,6 +140,93 @@ test('creates private profiles and rejects duplicate names case-insensitively', 
         await expect(roster.create('newtest')).rejects.toThrow('already exists');
         await expect(roster.create('../newtest')).rejects.toThrow('alphanumeric');
     } finally {
+        rmSync(scratch, { recursive: true, force: true });
+    }
+});
+
+test('registers existing credentials privately and rejects duplicates across profile creation methods', async () => {
+    const scratch = mkdtempSync(join(process.cwd(), '.plan-test-'));
+    try {
+        const legacy = join(scratch, 'legacy');
+        mkdirSync(join(legacy, 'Legacy Scout'), { recursive: true });
+        await Bun.write(join(legacy, 'Legacy Scout', 'bot.env'), 'BOT_USERNAME=Legacy Scout\n');
+        const roster = dashboardRoster(legacy, scratch);
+        const password = 'Sh#arp =$w0rd';
+        const bot = await roster.register('Manual Scout', password);
+        const env = join(bot.directory, 'bot.env');
+        expect(await botCredentials(bot.name, bot.directory)).toEqual({ username: 'Manual Scout', password });
+        expect(statSync(bot.directory).mode & 0o777).toBe(0o700);
+        expect(statSync(env).mode & 0o777).toBe(0o600);
+        expect(await roster.list()).toContainEqual(bot);
+        await expect(roster.register('manual scout', 'different')).rejects.toThrow('already exists');
+        await expect(roster.register('legacy scout', 'different')).rejects.toThrow('already exists');
+        await expect(roster.register('Demo Scout', 'different', 'demo scout')).rejects.toThrow('already exists');
+        const created = await roster.create('NewScout');
+        await expect(roster.register('newscout', 'different')).rejects.toThrow('already exists');
+        await expect(roster.register('../Escape', password)).rejects.toThrow();
+        for (const invalid of ['', ' leading', 'trailing ', 'line\nSERVER=changed', 'a\x00b', 'x'.repeat(21)]) {
+            await expect(roster.register('Invalid', invalid)).rejects.toThrow();
+        }
+        expect((await roster.list()).map(profile => profile.name).sort()).toEqual(['Legacy Scout', 'Manual Scout', created.name].sort());
+        expect(await botCredentials(bot.name, bot.directory)).toEqual({ username: 'Manual Scout', password });
+    } finally {
+        rmSync(scratch, { recursive: true, force: true });
+    }
+});
+
+test('the plan API registers an existing bot only from a same-origin dashboard session', async () => {
+    const scratch = mkdtempSync(join(process.cwd(), '.plan-test-'));
+    const manager = createPlanManager(scratch, async () => { throw new Error('Registration must not start a task.'); });
+    try {
+        const origin = 'https://127-0-0-1.sslip.io';
+        const sessions = dashboardSessions(scratch, async () => origin, join(scratch, 'enrollment.json'));
+        const dashboardPassword = 'local-registration-fixture';
+        const hash = await Bun.password.hash(dashboardPassword, { algorithm: 'argon2id' });
+        await Bun.write(join(scratch, 'password.json'), JSON.stringify({ hash, origin }));
+        const login = await sessions.handle(new Request(origin, {
+            method: 'POST', headers: { 'Content-Type': 'application/json', Origin: origin },
+            body: JSON.stringify({ password: dashboardPassword }),
+        }), 'login');
+        expect(login.status).toBe(200);
+        const cookie = login.headers.get('Set-Cookie')!.split(';')[0]!;
+        const roster = dashboardRoster(join(scratch, 'legacy'), scratch);
+        const { register: _register, ...legacy } = roster;
+        let refreshes = 0;
+        const runtime = {
+            botRoster: legacy, plans: manager, sessions, invalidateSnapshot: () => { refreshes++; },
+            demo: { allowed: async (request: Request) => request.headers.get('Authorization') === 'Bearer delegated', profile: async () => null },
+        } as unknown as DashboardWorkerApiRuntime;
+        const password = 'Manual $ecret=#pw';
+        const endpoint = `${origin}/bots/activity?view=plan`;
+        const read = () => handleWorkerRequest(new Request(endpoint, { headers: { Cookie: cookie } }), runtime);
+        const post = (headers: Record<string, string> = {}, name = 'Manual Scout', secret = password) => handleWorkerRequest(new Request(endpoint, {
+            method: 'POST', headers: { 'Content-Type': 'application/json', ...headers },
+            body: JSON.stringify({ action: 'register', name, password: secret }),
+        }), runtime);
+        const signedIn = { Cookie: cookie, Origin: origin };
+
+        expect(await (await read()).json()).toMatchObject({ canRegisterExisting: false });
+        expect((await post(signedIn)).status).toBe(503);
+        runtime.botRoster = roster;
+        expect(await (await read()).json()).toMatchObject({ canRegisterExisting: true });
+        expect((await post()).status).toBe(401);
+        expect((await post({ Cookie: cookie, Origin: 'https://other.example' })).status).toBe(401);
+        expect((await post({ Authorization: 'Bearer delegated', Origin: origin })).status).toBe(401);
+        expect(await roster.list()).toEqual([]);
+
+        const saved = await post(signedIn);
+        expect(saved.status).toBe(201);
+        expect(saved.headers.get('Cache-Control')).toBe('no-store');
+        expect(await saved.json()).toEqual({ bot: 'Manual Scout' });
+        const duplicate = await post(signedIn, 'manual scout', 'replacement password');
+        expect([400, 409]).toContain(duplicate.status);
+        expect(await duplicate.text()).not.toContain('replacement password');
+        expect(refreshes).toBe(1);
+        expect(manager.list()).toEqual([]);
+        const [bot] = await roster.list();
+        expect(await botCredentials(bot!.name, bot!.directory)).toEqual({ username: 'Manual Scout', password });
+    } finally {
+        manager.close();
         rmSync(scratch, { recursive: true, force: true });
     }
 });

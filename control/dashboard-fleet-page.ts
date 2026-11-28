@@ -363,6 +363,7 @@ export function fleetPage({ nonce, revision = '', data, taskActivity, questCatal
   <div class="dialog-header plan-header"><h2 id="plan-title">Activity plan</h2><button type="button" id="plan-close" autofocus>Close</button></div>
   <div class="plan-content">
     <label id="plan-name-field" hidden>Bot name <input id="plan-bot-name" maxlength="12" pattern="[A-Za-z0-9]{1,12}" placeholder="Random name" autocomplete="off"></label>
+    <button type="button" id="register-bot-open" aria-haspopup="dialog" aria-controls="register-bot-dialog" hidden>Register existing bot</button>
     <p id="plan-error" role="status" aria-live="polite"></p>
     <p id="plan-edit-status" role="status" aria-live="polite" aria-atomic="true"></p>
     <div id="plan-review-settings" hidden></div>
@@ -377,6 +378,15 @@ export function fleetPage({ nonce, revision = '', data, taskActivity, questCatal
       <button type="submit" id="plan-save">Start plan</button>
     </div>
   </div>
+</form></dialog>
+<dialog id="register-bot-dialog" aria-labelledby="register-bot-title"><form class="dialog-body" autocomplete="off">
+  <div class="dialog-header"><h2 id="register-bot-title">Register existing bot</h2><button type="button" id="register-bot-close">Close</button></div>
+  <div class="register-bot-fields" id="register-bot-fields" hidden>
+    <label>Bot name <input id="register-bot-name" maxlength="12" pattern="[A-Za-z0-9_ ]{1,12}" autocomplete="off" autocapitalize="none" spellcheck="false" required></label>
+    <label>Game password <input id="register-bot-password" type="password" maxlength="20" autocomplete="off" required></label>
+  </div>
+  <p id="register-bot-status" role="status" aria-atomic="true"></p>
+  <button type="submit" id="register-bot-submit" hidden>Register bot</button>
 </form></dialog>
 <dialog id="dashboard-sign-in" aria-labelledby="sign-in-title"><form class="dialog-body">
   <h2 id="sign-in-title">Dashboard sign-in</h2>

@@ -360,6 +360,12 @@ dialog h3{margin-top:12px}
 .plan-header h2{font-size:clamp(20px,3.5vw,25px);letter-spacing:-.025em;overflow-wrap:anywhere}
 .plan-content{display:grid;align-content:start;gap:11px;min-height:0;padding:14px 18px;overflow:auto;overscroll-behavior:contain}
 #plan-name-field{max-width:300px}
+#register-bot-open,#register-bot-submit{justify-self:start}
+#register-bot-dialog{max-width:min(430px,calc(100vw - 24px))}
+#register-bot-dialog .dialog-header{margin:0;align-items:center}
+.register-bot-fields{display:grid;gap:12px}
+#register-bot-status{font-size:13px;overflow-wrap:anywhere}
+#register-bot-status:empty{display:none}
 #plan-error,#plan-edit-status{font-size:13px;overflow-wrap:anywhere}
 #plan-error:empty,#plan-edit-status:empty{display:none}
 #plan-edit-status{border:1px solid #57503d;border-radius:8px;background:#2b271e;padding:9px 11px;color:#dbcead}

@@ -224,6 +224,10 @@ The dashboard stores new profiles under its private runtime `bots/` directory
 and starts their lite clients. A first-login setup step verifies arrival in
 Lumbridge before the requested activities start.
 
+To add a game account you created yourself, sign in and choose **New bot**,
+then **Register existing bot**. Fleet Desk saves the profile in its private
+runtime directory. Open its card to assign an activity plan when ready.
+
 Plans are ordered. Quests finish when the live journal confirms completion.
 Repeatable activities can run for a duration, until a supported skill reaches
 a target level, or indefinitely as the last step. Add quest or level

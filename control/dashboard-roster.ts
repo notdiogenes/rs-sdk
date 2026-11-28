@@ -1,5 +1,5 @@
 import { randomBytes } from 'node:crypto';
-import { mkdir, readdir, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, rename, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { hostedBotName } from './hosted-bot';
 
@@ -28,13 +28,9 @@ export function dashboardRoster(botsDir: string, runtimeDir: string) {
         return [...new Map([...created, ...legacy].map(profile => [profile.name.toLowerCase(), profile])).values()];
     }
 
-    async function create(requested: unknown, reservedName?: string) {
-        const name = typeof requested === 'string' && requested.trim() ? requested.trim() : 'B' + randomBytes(4).toString('hex');
-        if ((requested !== undefined && typeof requested !== 'string') || !/^[a-zA-Z0-9]{1,12}$/.test(name)) {
-            throw new Error('Use an alphanumeric name of up to 12 characters, or leave it blank.');
-        }
+    async function saveProfile(name: string, password: string, reservedName?: string) {
         const key = name.toLowerCase();
-        if (reserved.has(key)) throw new Error('A bot with that name is being created.');
+        if (reserved.has(key)) throw new Error('A bot with that name is being added.');
         reserved.add(key);
         try {
             const profiles = await list();
@@ -43,14 +39,14 @@ export function dashboardRoster(botsDir: string, runtimeDir: string) {
             }
             const directory = join(createdDir, name);
             await mkdir(createdDir, { recursive: true, mode: 0o700 });
-            await mkdir(directory, { mode: 0o700 });
+            const pending = await mkdtemp(join(createdDir, '.profile-'));
             try {
-                const password = randomBytes(6).toString('hex');
-                await writeFile(join(directory, 'bot.env'),
+                await writeFile(join(pending, 'bot.env'),
                     `BOT_USERNAME=${name}\nPASSWORD=${password}\nSERVER=rs-sdk.maxbittker.com\nSHOW_CHAT=false\n`,
                     { flag: 'wx', mode: 0o600 });
+                await rename(pending, directory);
             } catch (error) {
-                await rm(directory, { recursive: true, force: true });
+                await rm(pending, { recursive: true, force: true });
                 throw error;
             }
             return { name, directory, created: true };
@@ -59,5 +55,25 @@ export function dashboardRoster(botsDir: string, runtimeDir: string) {
         }
     }
 
-    return { list, create };
+    async function create(requested: unknown, reservedName?: string) {
+        const name = typeof requested === 'string' && requested.trim() ? requested.trim() : 'B' + randomBytes(4).toString('hex');
+        if ((requested !== undefined && typeof requested !== 'string') || !/^[a-zA-Z0-9]{1,12}$/.test(name)) {
+            throw new Error('Use an alphanumeric name of up to 12 characters, or leave it blank.');
+        }
+        return saveProfile(name, randomBytes(6).toString('hex'), reservedName);
+    }
+
+    async function register(requested: unknown, password: unknown, reservedName?: string) {
+        const name = typeof requested === 'string' ? requested.replaceAll('_', ' ').trim() : '';
+        if (!hostedBotName.test(name)) {
+            throw new Error('Enter a game username with 1–12 characters using letters, digits, or spaces.');
+        }
+        // The game login uses single-byte strings, and bot.env readers trim values.
+        if (typeof password !== 'string' || password !== password.trim() || !/^[\x20-\x7e\u00a0-\u00ff]{1,20}$/.test(password)) {
+            throw new Error('Enter a 1–20 character game password with supported characters and no leading or trailing spaces.');
+        }
+        return saveProfile(name, password, reservedName);
+    }
+
+    return { list, create, register };
 }
