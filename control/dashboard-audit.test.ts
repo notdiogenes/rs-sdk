@@ -134,8 +134,8 @@ test('renders named task activity with its own timestamp and ignores reports fro
         expect(starting).not.toContain('Moved to X 2635, Z 3381');
         bot.control = { ...bot.control, transitioning: false, startedAt: new Date(now).toISOString() };
         expect(await render()).toContain('<span>Current activity</span><strong>Waiting for fishing activity details</strong>');
-        recording.append(fishingRun, { kind: 'task-event', name: 'fleet-activity', label: 'Cooking sharks at the Catherby range - 26 raw left' });
-        expect(await render()).toContain('<strong>Cooking sharks at the Catherby range - 26 raw left</strong>');
+        recording.append(fishingRun, { kind: 'task-event', name: 'fleet-activity', label: 'Cooking sharks at the Catherby range' });
+        expect(await render()).toContain('<strong>Cooking sharks at the Catherby range</strong>');
     } finally {
         reports.close();
         recording.close();

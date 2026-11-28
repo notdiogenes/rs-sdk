@@ -270,7 +270,7 @@ export async function fishSharks({ bot, sdk }: ScriptContext, cook = cookingActi
             const { id, name } = item;
             const count = quantity(current(), id);
             const action = misses ? 'Retrying cooking' : 'Cooking';
-            reportTaskActivity(`${action} ${recipe.name} at ${site.range.name} - ${count} raw left`);
+            reportTaskActivity(`${action} ${recipe.name} at ${site.range.name}`);
             const result = await bot.useItemOnLoc(item, range, { timeout: 5_000 });
             // Both a cook and a burn consume the raw fish. Reconcile the
             // inventory even when the SDK could not confirm the interaction.
@@ -389,7 +389,7 @@ export async function fishSharks({ bot, sdk }: ScriptContext, cook = cookingActi
                     missed = 0;
                     xp = gained;
                     caught = count;
-                    reportTaskActivity(`${activityLabel} - ${caught} fish in backpack`);
+                    reportTaskActivity(activityLabel);
                 }
                 if (batchComplete(state)) return;
                 if (closingPreviousDialog && state.tick > before.tick && !state.dialog.isOpen) {
