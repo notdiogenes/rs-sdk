@@ -106,7 +106,7 @@ test('renders named task activity with its own timestamp and ignores reports fro
         const page = await render();
         expect(page).toContain('<span>Last activity</span><time datetime="2026-11-27T23:22:00.000Z">Nov 27, 2026, 6:22 PM EST</time><strong>Walking to Fishing Guild Bank</strong>');
         expect(page).toContain('<dt>Elapsed</dt><dd class="elapsed-value">2m</dd>');
-        expect(page).toContain('<dt>Effect</dt><dd class="">2m</dd>');
+        expect(page).toContain('<dt>Last Action</dt><dd class="">2m</dd>');
         recording.append(run, { kind: 'task-event', name: 'fleet-activity', label: 'Walking to test-secret' });
         expect(await render()).not.toContain('Walking to test-secret');
         expect(await render()).not.toContain('Walking to [redacted]');

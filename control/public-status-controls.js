@@ -1,7 +1,8 @@
 (() => {
-    const refreshMs = Number(document.currentScript.dataset.refresh) * 1000;
+    const controlsScript = document.currentScript;
+    const refreshMs = Number(controlsScript.dataset.refresh) * 1000;
     const diagnosticClock = new Intl.DateTimeFormat('en-US', {
-        timeZone: document.currentScript.dataset.timeZone,
+        timeZone: controlsScript.dataset.timeZone,
         year: 'numeric', month: 'short', day: 'numeric',
         hour: 'numeric', minute: '2-digit', second: '2-digit', timeZoneName: 'short',
     });
@@ -25,6 +26,7 @@
     const submit = form.querySelector('button[type="submit"]');
     const close = form.querySelector('#activity-close');
     let refresh;
+    let fleetRefresh;
     let selected;
     let signedIn = false;
     let configured = true;
@@ -32,7 +34,8 @@
     let setupCode = /^#setup=([a-f0-9]{64})$/.exec(window.location.hash)?.[1];
     if (setupCode) history.replaceState(null, '', window.location.pathname + window.location.search);
 
-    const { rows: roster, skills, questCatalog } = JSON.parse(document.querySelector('#fleet-roster').textContent);
+    const { rows: initialRoster, skills, questCatalog } = JSON.parse(document.querySelector('#fleet-roster').textContent);
+    let roster = initialRoster;
     const tabs = [...document.querySelectorAll('[role="tab"]')];
     const search = document.querySelector('#search');
     const statusFilter = document.querySelector('#status-filter');
@@ -79,8 +82,10 @@
     let inventoryLoading = false;
     let inventoryPending = false;
     let inventoryDropItem;
-    const cards = [...document.querySelectorAll('[data-bot-row]')];
-    const groupElements = [...document.querySelectorAll('[data-group]')];
+    const fleetPanel = document.querySelector('#fleet-panel');
+    const refreshStatus = document.querySelector('#fleet-refresh-status');
+    let cards = [...fleetPanel.querySelectorAll('[data-bot-row]')];
+    let groupElements = [...fleetPanel.querySelectorAll('[data-group]')];
     const fleetEmpty = document.querySelector('#fleet-empty');
     const num = new Intl.NumberFormat('en-US');
     const escape = value => String(value).replace(/[&<>"']/g, character => (
@@ -121,42 +126,136 @@
         return roster.filter(({ name, category }) => matches(name, category));
     }
 
+    function setText(element, value) {
+        if (element.textContent !== value) element.textContent = value;
+    }
+
+    function setHidden(element, hidden) {
+        if (element.hidden !== hidden) element.hidden = hidden;
+    }
+
+    function replaceChanged(current, next) {
+        if (!current.isEqualNode(next)) current.replaceWith(next);
+    }
+
+    function updateCardContent(card, incoming) {
+        if (card.dataset.status !== incoming.dataset.status) card.dataset.status = incoming.dataset.status;
+        for (const selector of ['.bot-status', '.card-task', '[data-plan-bot]']) {
+            replaceChanged(card.querySelector(selector), incoming.querySelector(selector));
+        }
+        const action = card.querySelector('.last-activity strong');
+        setText(action, incoming.querySelector('.last-activity strong').textContent);
+        const time = card.querySelector('.last-activity time');
+        const nextTime = incoming.querySelector('.last-activity time');
+        if (time && nextTime) {
+            if (time.dateTime !== nextTime.dateTime) time.dateTime = nextTime.dateTime;
+            setText(time, nextTime.textContent);
+        } else if (time) time.remove();
+        else if (nextTime) action.before(nextTime);
+
+        const facts = incoming.querySelectorAll('.facts dd');
+        card.querySelectorAll('.facts dd').forEach((fact, index) => {
+            setText(fact, facts[index].textContent);
+            if (fact.className !== facts[index].className) fact.className = facts[index].className;
+        });
+        setText(card.querySelector('.location-line strong'), incoming.querySelector('.location-line strong').textContent);
+
+        const primary = card.querySelector('.card-primary-actions');
+        const nextPrimary = incoming.querySelector('.card-primary-actions');
+        if (primary && nextPrimary) replaceChanged(primary, nextPrimary);
+        else if (primary) primary.remove();
+        else if (nextPrimary) card.querySelector('.card-footer').append(nextPrimary);
+    }
+
+    function updateFleetSnapshot(next) {
+        const nextPanel = next.querySelector('#fleet-panel');
+        const nextEmpty = nextPanel.querySelector('#fleet-empty');
+        const nextRoster = JSON.parse(next.querySelector('#fleet-roster').textContent).rows;
+        replaceChanged(document.querySelector('.brand'), next.querySelector('.brand'));
+        replaceChanged(document.querySelector('#audit-bots'), next.querySelector('#audit-bots'));
+        const metrics = next.querySelectorAll('.summary .metric');
+        document.querySelectorAll('.summary .metric').forEach((metric, index) => {
+            if (!metric.querySelector('#quest-total')) replaceChanged(metric, metrics[index]);
+        });
+
+        const previousCards = new Map(cards.map(card => [card.dataset.name, card]));
+        const previousGroups = new Map(groupElements.map(group => [group.dataset.group, group]));
+        cards = [];
+        groupElements = [];
+        let nextGroupPosition = fleetPanel.firstElementChild;
+        for (const incoming of nextPanel.querySelectorAll('[data-group]')) {
+            const existing = previousGroups.get(incoming.dataset.group);
+            const group = existing ?? incoming.cloneNode(true);
+            previousGroups.delete(incoming.dataset.group);
+            const grid = group.querySelector('.grid');
+            if (!existing) grid.replaceChildren();
+            if (group !== nextGroupPosition) fleetPanel.insertBefore(group, nextGroupPosition);
+            nextGroupPosition = group.nextElementSibling;
+            groupElements.push(group);
+
+            let nextCardPosition = grid.firstElementChild;
+            for (const incomingCard of incoming.querySelectorAll('[data-bot-row]')) {
+                const name = incomingCard.dataset.name;
+                const existingCard = previousCards.get(name);
+                const card = existingCard ?? incomingCard;
+                previousCards.delete(name);
+                if (existingCard) updateCardContent(existingCard, incomingCard);
+                if (card !== nextCardPosition) grid.insertBefore(card, nextCardPosition);
+                nextCardPosition = card.nextElementSibling;
+                cards.push(card);
+            }
+        }
+        for (const card of previousCards.values()) card.remove();
+        for (const group of previousGroups.values()) group.remove();
+        roster = nextRoster;
+        setText(fleetEmpty, nextEmpty.textContent);
+        renderView();
+    }
+
+    function onButtonClick(selector, action) {
+        document.addEventListener('click', event => {
+            const button = event.target.closest(selector);
+            if (button) void action(button);
+        });
+    }
+
     function updateCards() {
         for (const card of cards) {
             const { name, status } = card.dataset;
-            card.hidden = !matches(name, status);
+            setHidden(card, !matches(name, status));
             const stored = stats.get(name);
             const levels = card.querySelector('[data-card-levels]');
             const badges = card.querySelector('[data-card-skills]');
             const xp = card.querySelector('[data-card-xp]');
             const points = quests[name]?.points;
-            levels.textContent = [Number.isFinite(points) && `${number(points)} QP`, stored?.skills?.combat != null &&
-                `Cb ${number(stored.skills.combat)}`].filter(Boolean).join(' · ');
-            levels.hidden = !levels.textContent;
+            setText(levels, [Number.isFinite(points) && `${number(points)} QP`, stored?.skills?.combat != null &&
+                `Cb ${number(stored.skills.combat)}`].filter(Boolean).join(' · '));
+            setHidden(levels, !levels.textContent);
             let hasSkills = false;
             for (const badge of badges.querySelectorAll('[data-card-skill]')) {
                 const skill = badge.dataset.cardSkill;
                 const level = stored?.skills?.levels[skill];
-                badge.hidden = !Number.isFinite(level);
+                setHidden(badge, !Number.isFinite(level));
                 if (badge.hidden) continue;
                 const value = number(level);
-                badge.querySelector('[data-skill-level]').textContent = value;
-                badge.title = `${skill} ${value}`;
+                setText(badge.querySelector('[data-skill-level]'), value);
+                const label = `${skill} ${value}`;
+                if (badge.title !== label) badge.title = label;
                 hasSkills = true;
             }
-            badges.hidden = !hasSkills;
-            xp.hidden = stored?.xpGained == null;
-            xp.textContent = xp.hidden ? '' : `${number(stored.xpGained)} XP · last hour`;
+            setHidden(badges, !hasSkills);
+            setHidden(xp, stored?.xpGained == null);
+            setText(xp, xp.hidden ? '' : `${number(stored.xpGained)} XP · last hour`);
         }
         for (const group of groupElements) {
             const count = group.querySelectorAll('[data-bot-row]:not([hidden])').length;
-            group.hidden = count === 0;
-            group.querySelector('.count').textContent = count;
+            setHidden(group, count === 0);
+            setText(group.querySelector('.count'), String(count));
         }
-        fleetEmpty.hidden = cards.some(card => !card.hidden);
+        setHidden(fleetEmpty, cards.some(card => !card.hidden));
         const reported = Object.values(quests).map(entry => entry.points).filter(Number.isFinite);
-        document.querySelector('#quest-total').textContent = reported.length
-            ? number(reported.reduce((sum, points) => sum + points, 0)) : '—';
+        setText(document.querySelector('#quest-total'), reported.length
+            ? number(reported.reduce((sum, points) => sum + points, 0)) : '—');
     }
 
     function questColumnsFor(panel) {
@@ -276,18 +375,23 @@
         } catch { /* The dashboard also works when browser storage is disabled. */ }
     }
 
-    function loadFleetData() {
+    function loadFleetData(background = false) {
         const version = ++dataVersion;
-        updating = true;
-        questsLoading = true;
-        dataError = '';
-        questsError = '';
-        renderView();
+        if (!background) {
+            updating = true;
+            questsLoading = true;
+            dataError = '';
+            questsError = '';
+            renderView();
+        }
         const snapshotsReady = request('/bots/activity?view=fleet-data').then(snapshots => {
                 if (version !== dataVersion) return;
                 stats = new Map(snapshots.map(entry => [entry.name, entry]));
+                dataError = '';
             }).catch(error => {
-                if (version === dataVersion) dataError = error.message;
+                if (version !== dataVersion) return;
+                if (error.status === 401) setSignedIn(false);
+                else if (!background) dataError = error.message;
             }).finally(() => {
                 if (version !== dataVersion) return;
                 updating = false;
@@ -297,8 +401,11 @@
             if (version !== dataVersion) return;
             quests = result.scores;
             journals = result.journals;
+            questsError = '';
         }).catch(error => {
-            if (version === dataVersion) questsError = error.message;
+            if (version !== dataVersion) return;
+            if (error.status === 401) setSignedIn(false);
+            else if (!background) questsError = error.message;
         }).finally(() => {
             if (version !== dataVersion) return;
             questsLoading = false;
@@ -698,7 +805,7 @@
         if (saved?.auto === 'false') auto.setAttribute('aria-pressed', 'false');
         if (Number.isInteger(saved?.sort?.key) && saved.sort.key >= 0 && saved.sort.key < skills.length + 5) sort = saved.sort;
         selectTab(tabs.find(tab => tab.getAttribute('aria-controls') === saved?.view) || tabs[0]);
-        document.querySelector('#refresh').addEventListener('click', () => window.location.reload());
+        document.querySelector('#refresh').addEventListener('click', () => void refreshFleet());
         window.addEventListener('resize', () => {
             if (view !== 'quests-panel') return;
             const panel = document.getElementById(view);
@@ -821,12 +928,50 @@
         scheduleRefresh();
     }
 
+    function refreshFleet(afterChange = false) {
+        if (fleetRefresh) return afterChange ? fleetRefresh.then(() => refreshFleet()) : fleetRefresh;
+        clearTimeout(refresh);
+        fleetRefresh = (async () => {
+            const response = await fetch(window.location.pathname + window.location.search, {
+                credentials: 'same-origin', cache: 'no-store', redirect: 'error', signal: AbortSignal.timeout(15000),
+            });
+            if (!response.ok) throw new Error('Fleet refresh failed');
+            const next = new DOMParser().parseFromString(await response.text(), 'text/html');
+            const nextScript = next.querySelector('script[data-revision]');
+            if (!nextScript) throw new Error('Fleet presentation is unavailable');
+            if (document.querySelector('dialog[open]')) return;
+            if (nextScript.dataset.revision !== controlsScript.dataset.revision) {
+                window.location.reload();
+                return;
+            }
+            updateFleetSnapshot(next);
+            refreshStatus.hidden = true;
+            if (signedIn) {
+                fleetDataReady = loadFleetData(true);
+                await fleetDataReady;
+            } else {
+                const state = await request('/bots/activity?session=status').catch(() => null);
+                if (state) {
+                    configured = state.configured;
+                    if (state.signedIn && !signedIn) setSignedIn(true);
+                }
+            }
+        })().catch(() => {
+            setText(refreshStatus, 'Refresh unavailable');
+            refreshStatus.hidden = false;
+        }).finally(() => {
+            fleetRefresh = undefined;
+            scheduleRefresh();
+        });
+        return fleetRefresh;
+    }
+
     function scheduleRefresh() {
         clearTimeout(refresh);
         if (auto.getAttribute('aria-pressed') === 'true') {
             refresh = setTimeout(() => {
                 if (document.querySelector('dialog[open]') || document.activeElement === search) scheduleRefresh();
-                else window.location.reload();
+                else void refreshFleet();
             }, refreshMs);
         }
     }
@@ -1298,11 +1443,11 @@
         showAuditRun();
         auditViewButtons.find(button => button.dataset.auditMode === auditMode)?.focus();
     });
-    document.querySelectorAll('#audit-open,[data-audit-bot]').forEach(button => button.addEventListener('click', async () => {
+    onButtonClick('#audit-open,[data-audit-bot]', async button => {
         await sessionReady;
         if (!signedIn) return openSignIn(button);
         openAudit(new URLSearchParams(button.dataset.auditBot ? { bot: button.dataset.auditBot } : {}));
-    }));
+    });
 
     const sessionReady = request('/bots/activity?session=status')
         .then(state => {
@@ -1365,23 +1510,21 @@
         }
     });
 
-    for (const button of document.querySelectorAll('[data-bot][data-action]')) {
-        button.addEventListener('click', async () => {
-            await sessionReady;
-            if (!signedIn) {
-                openSignIn(button);
-                return;
-            }
-            clearTimeout(refresh);
-            selected = button;
-            const label = button.getAttribute('aria-label') || button.textContent;
-            title.textContent = label + ' for ' + button.dataset.bot;
-            submit.textContent = label;
-            submit.disabled = false;
-            message.textContent = '';
-            dialog.showModal();
-        });
-    }
+    onButtonClick('[data-bot][data-action]', async button => {
+        await sessionReady;
+        if (!signedIn) {
+            openSignIn(button);
+            return;
+        }
+        clearTimeout(refresh);
+        selected = button;
+        const label = button.getAttribute('aria-label') || button.textContent;
+        title.textContent = label + ' for ' + button.dataset.bot;
+        submit.textContent = label;
+        submit.disabled = false;
+        message.textContent = '';
+        dialog.showModal();
+    });
     close.addEventListener('click', () => dialog.close());
     dialog.addEventListener('cancel', event => {
         if (close.disabled) event.preventDefault();
@@ -1510,7 +1653,8 @@
         try {
             const bot = selected.dataset.bot;
             await request('/bots/activity?bot=' + encodeURIComponent(bot), { bot, action: 'stop' });
-            window.location.reload();
+            dialog.close();
+            void refreshFleet(true);
         } catch (error) {
             if (error.status === 401) {
                 setSignedIn(false);
@@ -1739,23 +1883,21 @@
         }
     }
 
-    for (const button of document.querySelectorAll('#new-bot, [data-plan-bot]')) {
-        button.addEventListener('click', async () => {
-            await sessionReady;
-            if (!signedIn) { openSignIn(button); return; }
-            clearTimeout(refresh);
-            planBot = button.dataset.planBot || null;
-            planState = null;
-            draft = [];
-            editing = planChanged = false;
-            planName.value = '';
-            planTitle.textContent = planBot ? `Activity plan · ${planBot}` : 'New bot';
-            planError.textContent = 'Loading activities…';
-            renderPlan();
-            planDialog.showModal();
-            void refreshPlan(++planVersion, true);
-        });
-    }
+    onButtonClick('#new-bot, [data-plan-bot]', async button => {
+        await sessionReady;
+        if (!signedIn) { openSignIn(button); return; }
+        clearTimeout(refresh);
+        planBot = button.dataset.planBot || null;
+        planState = null;
+        draft = [];
+        editing = planChanged = false;
+        planName.value = '';
+        planTitle.textContent = planBot ? `Activity plan · ${planBot}` : 'New bot';
+        planError.textContent = 'Loading activities…';
+        renderPlan();
+        planDialog.showModal();
+        void refreshPlan(++planVersion, true);
+    });
 
     planAdd.addEventListener('click', () => { draft.push(defaultStep()); renderPlan(); });
     planEdit.addEventListener('click', () => {
@@ -1769,7 +1911,7 @@
     planDialog.addEventListener('close', () => {
         planVersion++;
         clearTimeout(planWatch);
-        if (planChanged) window.location.reload();
+        if (planChanged) void refreshFleet(true);
         else scheduleRefresh();
     });
     planForm.addEventListener('submit', async event => {

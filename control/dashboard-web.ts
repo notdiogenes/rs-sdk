@@ -152,7 +152,7 @@ export function dashboardWebHandler(worker: CallSupervisor, presentation: LoadPr
             }
         } catch { /* Render the unavailable page until the supervisor is reachable. */ }
         const nonce = crypto.randomUUID();
-        const { fleetPage, fleetStyle, controls } = await presentation();
+        const { fleetPage, fleetStyle, controls, revision } = await presentation();
         if (request.method === 'GET') {
             for (const bot of data?.bots ?? []) {
                 const control = bot.control;
@@ -166,7 +166,7 @@ export function dashboardWebHandler(worker: CallSupervisor, presentation: LoadPr
             }
         }
         return new Response(request.method === 'HEAD' ? null : fleetPage({
-            nonce, data, taskActivity, questCatalog, fleetStyle, controls, refreshSeconds, displayTimeZone,
+            nonce, revision, data, taskActivity, questCatalog, fleetStyle, controls, refreshSeconds, displayTimeZone,
         }), {
             status: data ? 200 : 503,
             headers: {

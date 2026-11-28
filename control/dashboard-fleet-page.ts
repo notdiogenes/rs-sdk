@@ -104,15 +104,17 @@ function card(bot: Bot, category: Group, reason: string, managed: ControlActivit
     <div class="bot-header">
       <div class="bot-identity"><h3>${name}</h3><span class="badge bot-status ${category}" title="${escape(reason)}">${groups[category]}</span></div>
       <span class="quest-count" data-card-levels hidden></span></div>
-    ${bot.activity === '—' ? '' : `<p class="task-line" data-activity>${escape(bot.activity)}</p>`}
-    ${showReason ? `<p class="reason">${escape(reason)}</p>` : ''}
+    <div class="card-task">
+      ${bot.activity === '—' ? '' : `<p class="task-line" data-activity>${escape(bot.activity)}</p>`}
+      ${showReason ? `<p class="reason">${escape(reason)}</p>` : ''}
+    </div>
     <div class="last-activity">
       <span>Last activity</span>${timestamp}<strong>${escape(activityDetail)}</strong>
     </div>
     <dl class="facts">
       ${fact('Heartbeat', timeAgo(now, bot.heartbeat))}
       ${fact('Elapsed', elapsedTime(now, managed?.startedAt), 'elapsed-value')}
-      ${fact('Effect', timeAgo(now, bot.lastActivity ? Date.parse(bot.lastActivity.at) : undefined))}
+      ${fact('Last Action', timeAgo(now, bot.lastActivity ? Date.parse(bot.lastActivity.at) : undefined))}
       ${fact('Client', bot.status, 'status-' + bot.status.toLowerCase())}
     </dl>
     <div class="location-line"><strong>${escape(bot.location ?? 'Location unavailable')}</strong><small data-card-xp hidden></small></div>
@@ -136,10 +138,10 @@ function card(bot: Bot, category: Group, reason: string, managed: ControlActivit
     </article>`;
 }
 
-type Page = { nonce: string; data?: Snapshot; taskActivity?: ReadonlyMap<string, LastActivity>;
+type Page = { nonce: string; revision?: string; data?: Snapshot; taskActivity?: ReadonlyMap<string, LastActivity>;
     questCatalog: QuestColumn[]; fleetStyle: string; controls: string; refreshSeconds: number; displayTimeZone: string };
 
-export function fleetPage({ nonce, data, taskActivity, questCatalog, fleetStyle, controls, refreshSeconds, displayTimeZone }: Page) {
+export function fleetPage({ nonce, revision = '', data, taskActivity, questCatalog, fleetStyle, controls, refreshSeconds, displayTimeZone }: Page) {
     const now = data ? Date.parse(data.checkedAt) : Date.now();
     const roster = (data?.bots ?? []).map(bot => {
         const managed = bot.control;
@@ -156,7 +158,7 @@ export function fleetPage({ nonce, data, taskActivity, questCatalog, fleetStyle,
     const sections = Object.entries(groups).map(([id, label]) => {
         const members = roster.filter(({ category }) => category === id);
         if (!members.length) return '';
-        return `<section class="group" data-group><div class="group-title">
+        return `<section class="group" data-group="${id}"><div class="group-title">
           <h2 class="${id}">${label}</h2><span class="count">${members.length}</span>
           ${id === 'attention' ? '<small>Review activity and connection status</small>' : ''}
           </div><div class="grid">${members.map(({ bot, category, reason, managed }) =>
@@ -190,6 +192,7 @@ export function fleetPage({ nonce, data, taskActivity, questCatalog, fleetStyle,
     <button type="button" id="refresh">Refresh</button>
     <button type="button" id="auto" aria-pressed="true">Auto</button>
     <button type="button" id="dashboard-account">Sign in</button>
+    <small id="fleet-refresh-status" role="status" hidden></small>
   </div>
 </header>
 <main>
@@ -347,6 +350,6 @@ export function fleetPage({ nonce, data, taskActivity, questCatalog, fleetStyle,
   </div>
 </div></dialog>
 <script nonce="${nonce}" type="application/json" id="fleet-roster">${JSON.stringify({ rows: rowList, skills: fleetSkills, questCatalog }).replaceAll('<', '\\u003c')}</script>
-<script nonce="${nonce}" data-refresh="${refreshSeconds}" data-time-zone="${displayTimeZone}">${controls}</script>
+<script nonce="${nonce}" data-revision="${revision}" data-refresh="${refreshSeconds}" data-time-zone="${displayTimeZone}">${controls}</script>
 </body></html>`;
 }
