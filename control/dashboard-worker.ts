@@ -24,6 +24,7 @@ const updates: DashboardWorkerUpdates = {
     },
     current: () => policy,
     pinTask: revisions.pinTask,
+    changedPaths: revisions.changedPaths,
 };
 
 async function supervisePathfinding() {

@@ -1,4 +1,4 @@
-import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
+import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { createDashboardActivity, type ControllerStatus } from './dashboard-activity';
@@ -13,6 +13,10 @@ import type { MonitorProcess } from './dashboard-monitor';
 import { taskActivityLabel } from './dashboard-task-activity';
 import { activity, activityIds, isActivity, type ActivityId, type ActivityOptions } from './dashboard-task-catalog';
 import { taskEnvironment, type DashboardWorkerUpdates, type WorkerRelease } from './dashboard-worker-policy';
+import { taskUpdateChannel } from './dashboard-task-update';
+import { isSafeTaskUpdateState } from './task-update-safety';
+import type { BotWorldState } from '../sdk/types';
+import type { Step } from './dashboard-plan';
 
 const taskName = 'pickpocket-men';
 export const isBundledTask = isActivity;
@@ -42,6 +46,11 @@ type Task = Process & {
     completion?: NonNullable<ControllerStatus['lastTask']>['completion'];
     bankTarget?: number;
     settled?: Promise<void>;
+    runId: string;
+    revision?: string;
+    script: string;
+    update: ReturnType<typeof taskUpdateChannel>;
+    standalone?: Step;
 };
 
 async function stopProcess(handle: Process | undefined, signal: 'SIGINT' | 'SIGTERM') {
@@ -78,10 +87,11 @@ export function dashboardDemo(runtimeDir: string, botsDir: string, configDir: st
     let client: (Process & { inventory: ReturnType<typeof inventoryControls>; feed: ReturnType<typeof dashboardClientFeed> }) | undefined;
     let task: Task | undefined;
     let clientExit: Exit | null = null;
-    let taskExit: (Exit & { name: DemoTaskName; completion?: Task['completion'] }) | null = null;
+    let taskExit: (Exit & { name: DemoTaskName; completion?: Task['completion']; updateId?: string }) | null = null;
     let busy = false;
     let taskStopped = false;
     let startingPlanTask = false;
+    let standaloneUpdate: { runId: string; switching: boolean; cancelled: boolean } | undefined;
 
     function event(stage: string, data: Record<string, unknown> = {}) {
         events.push({ ...data, stage, id: nextEventId++, at: new Date().toISOString() });
@@ -245,17 +255,20 @@ export function dashboardDemo(runtimeDir: string, botsDir: string, configDir: st
         const script = pinned?.path ?? join(import.meta.dir, 'tasks', definition.script);
         let auditId: string | undefined;
         let child: Bun.Subprocess<'ignore', 'pipe', 'pipe'>;
+        const launchRevision = pinned?.revision ?? selected?.revision ?? revision;
+        const update = taskUpdateChannel(command => child.send(command));
         try {
             const scriptSha = pinned?.sha ?? (audit ? await Bun.file(script).arrayBuffer()
                 .then(bytes => createHash('sha256').update(new Uint8Array(bytes)).digest('hex')).catch(() => null) : null);
             if (!activeClient || client !== activeClient || activeClient.stopping || activeClient.process.exitCode !== null) {
                 throw new Error('The managed client stopped before the activity could start.');
             }
-            auditId = audit?.begin(bot, name, pinned?.revision ?? selected?.revision ?? revision ?? null, scriptSha, [credentials.password, token]);
+            auditId = audit?.begin(bot, name, launchRevision ?? null, scriptSha, [credentials.password, token]);
             const activityEnv = (selected?.value.taskEnvironment ?? taskEnvironment)(skill, bankTarget, options);
             child = Bun.spawn([process.execPath, '--no-env-file', script], {
                 cwd: writableDir,
                 stdin: 'ignore', stdout: 'pipe', stderr: 'pipe',
+                ipc: update.receive,
                 env: {
                     ...process.env, ...activityEnv, BOT_USERNAME: credentials.username, PASSWORD: credentials.password,
                     SERVER: 'rs-sdk.maxbittker.com', SHOW_CHAT: 'false', GATEWAY_DIRECT: 'false',
@@ -271,7 +284,14 @@ export function dashboardDemo(runtimeDir: string, botsDir: string, configDir: st
             }
             throw error;
         }
-        const running: Task = { bot, auditId, process: child, startedAt: new Date().toISOString(), name, activity: definition.label, bankTarget };
+        const running: Task = {
+            bot, auditId, process: child, startedAt: new Date().toISOString(), name, activity: definition.label, bankTarget,
+            runId: auditId ?? randomUUID(), revision: launchRevision, script: definition.script, update,
+            standalone: planned ? undefined : {
+                task: name, finish: { type: definition.usage === 'once' ? 'complete' : 'forever' },
+                requirements: [], options, configurationVersion: definition.settingsVersion ?? 1,
+            },
+        };
         task = running;
         taskExit = null;
         taskStopped = false;
@@ -283,13 +303,15 @@ export function dashboardDemo(runtimeDir: string, botsDir: string, configDir: st
         running.settled = child.exited.then(async exitCode => {
             const errorOutput = await readErrors;
             await readEvents;
-            taskExit = { name, exitCode, at: new Date().toISOString(), completion: running.completion };
+            const checkpoint = running.update.state().checkpoint;
+            const updateId = exitCode === 0 && checkpoint?.phase === 'accepted' ? checkpoint.id : undefined;
+            taskExit = { name, exitCode, at: new Date().toISOString(), completion: running.completion, updateId };
             if (task === running) task = undefined;
             event('task-exited', { exitCode });
             if (auditId) {
                 if (exitCode !== 0 && errorOutput?.message) audit?.append(auditId, { kind: 'failure', name: 'runtime-stderr', ...errorOutput });
-                audit?.append(auditId, { kind: 'worker', name: 'task-exited', exitCode, stopped: running.stopping });
-                audit?.finish(auditId, exitCode, !!running.stopping);
+                audit?.append(auditId, { kind: 'worker', name: 'task-exited', exitCode, stopped: running.stopping, updateId });
+                audit?.finish(auditId, exitCode, !!running.stopping || !!updateId);
             }
         }).catch(() => { event('task-observer-failed'); }).finally(async () => {
             await pinned?.release().catch(() => { event('task-release-cleanup-failed'); });
@@ -330,7 +352,7 @@ export function dashboardDemo(runtimeDir: string, botsDir: string, configDir: st
             client: client ? { startedAt: client.startedAt, stopping: Boolean(client.stopping) } : null,
             task: task ? { name: task.name, startedAt: task.startedAt, stopping: Boolean(task.stopping), activity: task.activity, recovery: task.recovery } : null,
             lastTask: taskExit && !taskStopped ? { name: taskExit.name, exitCode: taskExit.exitCode,
-                finishedAt: taskExit.at, completion: taskExit.completion } : null,
+                finishedAt: taskExit.at, completion: taskExit.completion, updateId: taskExit.updateId } : null,
         };
     }
 
@@ -359,7 +381,7 @@ export function dashboardDemo(runtimeDir: string, botsDir: string, configDir: st
                 return json({ error: 'Demo credentials or game gateway state are unavailable' }, 503);
             }
         }
-        if (busy) return json({ error: 'Another demo command is in progress' }, 409);
+        if (busy || startingPlanTask || standaloneUpdate?.switching) return json({ error: 'Another demo command is in progress' }, 409);
         busy = true;
         try {
             if (route === 'client/start') {
@@ -389,6 +411,10 @@ export function dashboardDemo(runtimeDir: string, botsDir: string, configDir: st
                 await startTask(bot, name, false, undefined, undefined, undefined, release);
                 return json({ bot, task: name, phase: 'starting' }, 202);
             }
+            if (standaloneUpdate) {
+                standaloneUpdate.cancelled = true;
+                task?.update.cancel();
+            }
             if (task) taskStopped = true;
             await stopTask();
             if (route === 'client/stop') await stopProcess(client, 'SIGINT');
@@ -413,7 +439,74 @@ export function dashboardDemo(runtimeDir: string, botsDir: string, configDir: st
         }
     }
 
+    const taskUpdateInfo = (running: Task) => ({
+        runId: running.runId, revision: running.revision, script: running.script, ...running.update.state(),
+    });
+
+    function standaloneActivity() {
+        if (!task?.standalone || task.stopping) return;
+        return {
+            bot: task.bot, step: task.standalone, running: taskUpdateInfo(task),
+            waiting: standaloneUpdate?.runId === task.runId,
+        };
+    }
+
+    function cancelStandaloneUpdate(runId: string) {
+        const pending = standaloneUpdate;
+        if (!pending || pending.runId !== runId || pending.switching) throw new Error('This update can no longer be cancelled.');
+        pending.cancelled = true;
+        task?.update.cancel();
+    }
+
+    async function requestStandaloneUpdate(runId: string, release: WorkerRelease, mode: 'safe' | 'now') {
+        const running = task;
+        const activeClient = client;
+        if (!running?.standalone || running.runId !== runId || !activeClient || busy || standaloneUpdate) {
+            throw new Error('The running activity changed. Reload updates before retrying.');
+        }
+        const compatibility = release.value.checkStepCompatibility(running.standalone);
+        if (compatibility.status === 'review') throw new Error(compatibility.reason);
+        const safe = async () => {
+            const sample = await hostedBotState(running.bot, workingDir);
+            return isSafeTaskUpdateState(sample?.state, sample?.stateAge ?? Infinity);
+        };
+        if (mode === 'safe' && !running.update.state().supported) throw new Error('This run does not provide safe checkpoints.');
+        if (mode === 'now' && !await safe()) throw new Error('Wait for fresh game state outside combat with enough health and all game windows closed.');
+        if (task !== running || client !== activeClient || busy || standaloneUpdate) throw new Error('The running activity changed.');
+        const pending = standaloneUpdate = { runId, switching: mode === 'now', cancelled: false };
+        void (async () => {
+            let attempt: string | undefined;
+            if (mode === 'now') {
+                await stopTask();
+            } else {
+                while (!pending.cancelled && client === activeClient) {
+                    if (task !== running) {
+                        if (!attempt || taskExit?.updateId !== attempt) return;
+                        break;
+                    }
+                    const checkpoint = running.update.state().checkpoint;
+                    if (!checkpoint) {
+                        const id = randomUUID();
+                        if (running.update.request(id)) attempt = id;
+                        pending.switching = false;
+                    } else if (checkpoint.phase === 'ready' && await safe() && !pending.cancelled && task === running) {
+                        pending.switching = true;
+                        running.update.commit(checkpoint.id);
+                    }
+                    await Bun.sleep(500);
+                }
+            }
+            if (pending.cancelled || client !== activeClient || task || busy || startingPlanTask) return;
+            pending.switching = true;
+            await startTask(running.bot, running.name, false, undefined, undefined, compatibility.step.options, release);
+        })().catch(error => event('task-update-failed', { message: error instanceof Error ? error.message : String(error) })).finally(() => {
+            running.update.cancel();
+            if (standaloneUpdate === pending) standaloneUpdate = undefined;
+        });
+    }
+
     function planBackend(bot: string) {
+        let observation: { state: BotWorldState; at: number } | undefined;
         return {
             status: () => status(bot),
             async prepare(signal: AbortSignal) {
@@ -430,7 +523,11 @@ export function dashboardDemo(runtimeDir: string, botsDir: string, configDir: st
             async observe() {
                 const sample = await hostedBotState(bot, workingDir);
                 if (!client || client.stopping || client.process.exitCode !== null || !sample?.state?.inGame ||
-                    sample.botStatus === 'dead' || sample.botStatus === 'stale' || !isFreshBotState(sample.stateAge)) return null;
+                    sample.botStatus === 'dead' || sample.botStatus === 'stale' || !isFreshBotState(sample.stateAge)) {
+                    observation = undefined;
+                    return null;
+                }
+                observation = { state: sample.state, at: Date.now() - sample.stateAge };
                 return sample.state;
             },
             async start(name: ActivityId, skill?: string, bankTarget?: number, options?: ActivityOptions, release?: WorkerRelease) {
@@ -440,6 +537,11 @@ export function dashboardDemo(runtimeDir: string, botsDir: string, configDir: st
                 finally { startingPlanTask = false; }
             },
             stop: () => planCommand(bot, 'task/stop', true),
+            activeUpdate: () => task && !task.stopping ? taskUpdateInfo(task) : undefined,
+            safeForUpdate: () => observation ? isSafeTaskUpdateState(observation.state, Date.now() - observation.at) : false,
+            requestCheckpoint: (runId: string, id: string) => task?.runId === runId && task.update.request(id),
+            commitCheckpoint: (runId: string, id: string) => { if (task?.runId === runId) task.update.commit(id); },
+            cancelCheckpoint: (runId: string) => { if (task?.runId === runId) task.update.cancel(); },
         };
     }
 
@@ -508,6 +610,6 @@ export function dashboardDemo(runtimeDir: string, botsDir: string, configDir: st
 
     return {
         handle, profile, status, allowed, recentEvents, planBackend, inventoryClient, fleetState,
-        monitoredProcesses, monitorTimeline, ...actions,
+        monitoredProcesses, monitorTimeline, standaloneActivity, requestStandaloneUpdate, cancelStandaloneUpdate, ...actions,
     };
 }

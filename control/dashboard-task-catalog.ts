@@ -9,12 +9,19 @@ export type Requirement =
 type ActivityOptionId = 'banking';
 type ActivityOption = { id: ActivityOptionId; type: 'checkbox'; label: string };
 export type ActivityOptions = Partial<Record<ActivityOptionId, true>>;
+export type ActivitySettingsContract = {
+    settingsVersion?: number;
+    /** Each migration preserves behavior when moving from its key to the next settings version. */
+    settingsMigrations?: Readonly<Record<number, (savedOptions: unknown) => unknown>>;
+};
+
+export const initialSettingsVersion = 1;
 
 const pickpocketOptions = [
     { id: 'banking', type: 'checkbox', label: 'Bank loot and restock food' },
 ] satisfies readonly ActivityOption[];
 
-type Activity = {
+type Activity = ActivitySettingsContract & {
     label: string;
     category: 'Quests' | 'Combat' | 'Thieving' | 'Runecraft' | 'Mining' | 'Fishing' | 'Setup' | 'Legacy';
     usage: 'once' | 'repeatable';
@@ -141,16 +148,17 @@ export function parseActivityOptions(task: ActivityId, value: unknown): Activity
     const values = value as Record<string, unknown>;
     const options = activity(task).options;
     for (const [id, enabled] of Object.entries(values)) {
-        if (!options?.some(option => option.id === id) || typeof enabled !== 'boolean') {
-            throw new Error('Choose a valid option for this activity.');
-        }
+        if (!options?.some(option => option.id === id)) throw new Error(`Choose a valid option for this activity. "${id}" is unavailable.`);
+        if (typeof enabled !== 'boolean') throw new Error(`Choose a valid option value for "${id}".`);
     }
     return activityOptionsFor(task, values);
 }
 
 export const planCatalog = activityIds.flatMap(id => {
-    const { script, ...meta } = activity(id);
-    return meta.category === 'Legacy' || meta.category === 'Setup' ? [] : [{ id, ...meta }];
+    const { script, settingsMigrations, ...meta } = activity(id);
+    return meta.category === 'Legacy' || meta.category === 'Setup' ? [] : [{
+        id, ...meta, settingsVersion: meta.settingsVersion ?? initialSettingsVersion,
+    }];
 });
 
 export function onTutorial(x: number, z: number) {

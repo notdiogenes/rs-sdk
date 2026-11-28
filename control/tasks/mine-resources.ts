@@ -1,6 +1,7 @@
 import { auditEvent, auditFrame, auditOperation } from '../../sdk/audit-trace';
 import { throwIfExecutionAborted } from '../../sdk/execution-context';
 import type { ScriptContext } from '../../sdk/runner';
+import { TaskUpdateAccepted, withTaskUpdateCheckpoints, type TaskCheckpoint } from './update-checkpoint';
 import type { BotWorldState, InventoryItem, NearbyLoc } from '../../sdk/types';
 import { reportTaskActivity } from '../dashboard-task-activity';
 import { alKharidTollGate, coalTrucks, fishingGuildBank, guildLadder, inMiningGuild, miningBanks, miningDistance,
@@ -17,7 +18,8 @@ const fishingLevel = (state: BotWorldState) => state.skills.find(entry => entry.
 const hasPick = (state: BotWorldState) => [...state.inventory, ...state.equipment].some(item => item.id === pickaxe);
 
 export async function mineResources({ bot, sdk }: ScriptContext, task = process.env.RS_ACTIVITY ?? 'mine-iron-bank',
-    bankTarget = process.env.RS_ACTIVITY_BANK_TARGET ? Number(process.env.RS_ACTIVITY_BANK_TARGET) : undefined) {
+    bankTarget = process.env.RS_ACTIVITY_BANK_TARGET ? Number(process.env.RS_ACTIVITY_BANK_TARGET) : undefined,
+    checkpoint?: TaskCheckpoint) {
     const selection = miningSelection(task);
     if (bankTarget !== undefined && (selection.mode !== 'bank' || !Number.isSafeInteger(bankTarget) || bankTarget < 1 || bankTarget > 100_000)) {
         throw new Error('A bank stock target must be between 1 and 100,000 and requires banking mode.');
@@ -214,6 +216,7 @@ export async function mineResources({ bot, sdk }: ScriptContext, task = process.
     }
     if (!hasPick(current())) throw new Error('The game did not confirm possession of the rune pickaxe.');
     auditEvent('milestone', 'mining-pickaxe-ready', { id: pickaxe, level });
+    await checkpoint?.();
 
     const isRock = (loc: NearbyLoc) => loc.reachable !== false && rockIds.includes(loc.id) &&
         loc.optionsWithIndex.some(option => /^mine$/i.test(option.text));
@@ -340,6 +343,7 @@ export async function mineResources({ bot, sdk }: ScriptContext, task = process.
                     }
                     if (state.inventory.length >= capacity || quantity(state) >= remaining) {
                         if (await unload(site)) return;
+                        await checkpoint?.();
                         await travel(site);
                         phase('mining-extract', { site: site.mine.name });
                     }
@@ -377,6 +381,8 @@ export async function mineResources({ bot, sdk }: ScriptContext, task = process.
                         failedRocks.clear();
                         productiveRocks.add(rockKey(rock));
                         if (resource !== 'essence') retryAfter.set(rockKey(rock), Date.now() + settings.respawn * 1000);
+                        // A banking run can recover this confirmed ore from its backpack on launch.
+                        if (selection.mode === 'bank') await checkpoint?.();
                     } else {
                         attemptsWithoutOre++;
                         failedRocks.add(rockKey(rock));
@@ -386,8 +392,12 @@ export async function mineResources({ bot, sdk }: ScriptContext, task = process.
                         await sdk.waitForTicks(2);
                     }
                 }
-                if (selection.mode === 'bank' && quantity(current()) > 0 && await unload(site)) return;
+                if (selection.mode === 'bank' && quantity(current()) > 0) {
+                    if (await unload(site)) return;
+                    await checkpoint?.();
+                }
             } catch (error) {
+                if (error instanceof TaskUpdateAccepted) throw error;
                 if (!hasPick(current()) || current().player!.hp <= 8) throw error;
                 auditEvent('setback', 'mining-route-failed', { site: site.mine.name, message: error instanceof Error ? error.message : String(error) });
                 await closeBank();
@@ -402,5 +412,5 @@ export async function mineResources({ bot, sdk }: ScriptContext, task = process.
 
 if (import.meta.main) {
     const { runScript } = await import('../../sdk/runner');
-    await runScript(mineResources);
+    await runScript(withTaskUpdateCheckpoints((context, checkpoint) => mineResources(context, undefined, undefined, checkpoint)));
 }

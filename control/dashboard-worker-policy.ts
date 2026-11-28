@@ -1,10 +1,10 @@
-import { finished, nextWork } from './dashboard-plan';
+import { checkStepCompatibility, finished, nextWork } from './dashboard-plan';
 import { activity, activityIds, isActivity, type ActivityOptions } from './dashboard-task-catalog';
 import { handleWorkerRequest } from './dashboard-worker-api';
 
 // Increment when the hot-loaded module needs a different supervisor contract.
-export const workerPolicyVersion = 1;
-export { activity, activityIds, isActivity, finished, nextWork, handleWorkerRequest };
+export const workerPolicyVersion = 2;
+export { activity, activityIds, isActivity, checkStepCompatibility, finished, nextWork, handleWorkerRequest };
 
 export function taskEnvironment(skill?: string, bankTarget?: number, options?: ActivityOptions): Record<`RS_ACTIVITY_${string}`, string> {
     return {
@@ -21,6 +21,7 @@ export type DashboardWorkerPolicy = {
     isActivity: typeof isActivity;
     finished: typeof finished;
     nextWork: typeof nextWork;
+    checkStepCompatibility: typeof checkStepCompatibility;
     handleWorkerRequest: typeof handleWorkerRequest;
     taskEnvironment: typeof taskEnvironment;
 };
@@ -36,6 +37,7 @@ export type DashboardWorkerUpdates = {
     load(): Promise<WorkerRelease>;
     current(): DashboardWorkerPolicy;
     pinTask(revision: string | undefined, script: string): Promise<TaskRelease>;
+    changedPaths?(from: string, to: string): Promise<readonly string[]>;
 };
 
 export function isWorkerPolicy(value: unknown): value is DashboardWorkerPolicy {
@@ -43,6 +45,6 @@ export function isWorkerPolicy(value: unknown): value is DashboardWorkerPolicy {
     const policy = value as Partial<DashboardWorkerPolicy>;
     return policy.workerPolicyVersion === workerPolicyVersion && Array.isArray(policy.activityIds) &&
         typeof policy.activity === 'function' && typeof policy.isActivity === 'function' &&
-        typeof policy.finished === 'function' && typeof policy.nextWork === 'function' &&
+        typeof policy.finished === 'function' && typeof policy.nextWork === 'function' && typeof policy.checkStepCompatibility === 'function' &&
         typeof policy.handleWorkerRequest === 'function' && typeof policy.taskEnvironment === 'function';
 }

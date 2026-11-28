@@ -1,6 +1,7 @@
 import { auditEnabled, auditEvent, auditFrame } from '../../sdk/audit-trace';
 import { runScript } from '../../sdk/runner';
 import { readFileSync } from 'node:fs';
+import { withTaskUpdateCheckpoints } from './update-checkpoint';
 
 const planned = process.env.RS_PLANNED === '1';
 const melee = ['Attack', 'Strength', 'Defence'] as const;
@@ -26,7 +27,7 @@ function isStackable(name: string, count: number) {
     return stackable.get(name);
 }
 
-const result = await runScript(async ({ sdk, bot }) => {
+const result = await runScript(withTaskUpdateCheckpoints(async ({ sdk, bot }, checkpoint) => {
     let current = '';
     const phase = (name: string) => {
         if (!auditEnabled || current === name) return;
@@ -145,6 +146,7 @@ const result = await runScript(async ({ sdk, bot }) => {
             await sdk.waitForCondition(s => s.combatStyle?.currentStyle === style.index, 6000);
             auditEvent('milestone', 'combat-style-confirmed', { skill: skill.name, index: style.index });
         }
+        await checkpoint?.();
         let roundStarted = performance.now();
         if (!sdk.getState()?.player?.combat.inCombat) {
             let target = sdk.findNearbyNpc(cow, { reachable: true });
@@ -203,5 +205,5 @@ const result = await runScript(async ({ sdk, bot }) => {
         if (after.some(now => before.some(previous => previous.name === now.name && now.experience > previous.experience))) fights++;
         console.log(JSON.stringify({ fightsWithXp: fights, tick: sdk.getState()?.tick, skills: after.map(s => [s.name, s.baseLevel, s.experience]) }));
     }
-}, { printState: false });
+}), { printState: false });
 if (!result.success) process.exitCode = 1;

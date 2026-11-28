@@ -5,7 +5,7 @@ import { dirname, join } from 'node:path';
 function rolloutFixture(run: (fixture: {
     worker: (operation: 'changed' | 'record') => number;
     web: (operation: 'changed' | 'record') => number;
-    legacyWorker: () => void;
+    legacyWorker: (stamp?: string) => void;
     update: (path: string) => void;
 }) => void) {
     const directory = mkdtempSync(join(process.cwd(), '.fleet-revision-test-'));
@@ -29,7 +29,7 @@ function rolloutFixture(run: (fixture: {
         run({
             worker: operation => revision('worker', operation),
             web: operation => revision('web', operation),
-            legacyWorker: () => writeFileSync(join(directory, 'worker'), 'old worker checksum\n'),
+            legacyWorker: stamp => writeFileSync(join(directory, 'worker'), (stamp ?? 'old worker checksum') + '\n'),
             update(path) {
                 const file = join(source, path);
                 mkdirSync(dirname(file), { recursive: true });
@@ -47,6 +47,8 @@ test('the first live-update deployment leaves an unstamped or legacy worker runn
         expect(worker('changed')).toBe(1);
         legacyWorker();
         update('dashboard-worker.ts');
+        expect(worker('changed')).toBe(1);
+        legacyWorker('Fleet Desk worker restart inputs v2');
         expect(worker('changed')).toBe(1);
         expect(worker('record')).toBe(0);
         expect(worker('changed')).toBe(1);

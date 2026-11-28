@@ -184,6 +184,7 @@ export function fleetPage({ nonce, revision = '', data, taskActivity, questCatal
   <div class="toolbar">
     <nav role="tablist" aria-label="Dashboard views">${tab('fleet', 'Fleet')}${tab('stats', 'Stats')}${tab('quests', 'Quests')}</nav>
     <input id="search" type="search" aria-label="Search accounts" placeholder="Search accounts" autocomplete="off">
+    <button type="button" id="updates-open" aria-haspopup="dialog" aria-controls="updates-dialog">Updates <span id="updates-count" hidden></span></button>
     <button type="button" id="monitor-open" aria-haspopup="dialog">Monitor</button>
     <button type="button" id="new-bot">New bot</button>
     <button type="button" id="banks">Check banks</button>
@@ -209,6 +210,18 @@ export function fleetPage({ nonce, revision = '', data, taskActivity, questCatal
   <div id="stats-panel" role="tabpanel" aria-labelledby="stats-tab" hidden></div>
   <div id="quests-panel" role="tabpanel" aria-labelledby="quests-tab" hidden></div>
 </main>
+<dialog id="updates-dialog" aria-labelledby="updates-title"><div class="dialog-body">
+  <div class="dialog-header">
+    <h2 id="updates-title">Activity updates</h2>
+    <button type="button" id="updates-close" autofocus>Close</button>
+  </div>
+  <div class="updates-toolbar">
+    <p id="updates-summary"></p>
+    <button type="button" id="updates-all" disabled>Update all compatible runs</button>
+  </div>
+  <p id="updates-status" role="status" aria-atomic="true"></p>
+  <ul id="updates-list" aria-label="Running and queued activities"></ul>
+</div></dialog>
 <dialog id="monitor-dialog" aria-labelledby="monitor-title"><div class="dialog-body">
   <div class="dialog-header monitor-header">
     <div class="monitor-heading"><h2 id="monitor-title">Resource monitor</h2>
@@ -335,6 +348,7 @@ export function fleetPage({ nonce, revision = '', data, taskActivity, questCatal
     <label id="plan-name-field" hidden>Bot name <input id="plan-bot-name" maxlength="12" pattern="[A-Za-z0-9]{1,12}" placeholder="Random name" autocomplete="off"></label>
     <p id="plan-error" role="status" aria-live="polite"></p>
     <p id="plan-edit-status" role="status" aria-live="polite" aria-atomic="true"></p>
+    <div id="plan-review-settings" hidden></div>
     <ol id="plan-steps" aria-label="Activity steps"></ol>
   </div>
   <div class="plan-toolbar">

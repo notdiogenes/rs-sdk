@@ -21,7 +21,7 @@ case "$role" in
         # The old service is still running from before live updates were installed.
         # Activate this worker with a controlled restart. ExecStartPost writes
         # the new stamp only after the service has started.
-        worker_stamp_version='Fleet Desk worker restart inputs v2'
+        worker_stamp_version='Fleet Desk worker restart inputs v3'
         if [[ "$3" == changed ]]; then
             if [[ ! -r "$stamp" ]] || ! IFS= read -r installed_version < "$stamp" ||
                 [[ "$installed_version" != "$worker_stamp_version" ]]; then
@@ -34,6 +34,7 @@ case "$role" in
         files=(
             "$source_dir/dashboard-worker.ts" "$source_dir/dashboard-supervisor.ts" "$source_dir/dashboard-monitor.ts"
             "$source_dir/dashboard-task-activity.ts" "$source_dir/dashboard-revisions.ts"
+            "$source_dir/dashboard-task-update.ts" "$source_dir/task-update-safety.ts"
             "$source_dir/dashboard-activity.ts" "$source_dir/dashboard-session.ts" "$source_dir/dashboard-inventory.ts"
             "$source_dir/dashboard-diagnostics.ts" "$source_dir/dashboard-live-state.ts" "$source_dir/dashboard-audit.ts" "$source_dir/dashboard-audit-schema.ts"
             "$source_dir/dashboard-audit-insights.ts" "$source_dir/dashboard-last-activity.ts" "$source_dir/hosted-bot.ts"

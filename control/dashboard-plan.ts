@@ -1,5 +1,6 @@
 import type { BotWorldState } from '../sdk/types';
-import { activity, activityIds, activityOptionsFor, isActivity, inTutorialDestination, onTutorial, parseActivityOptions, trainingSkills,
+import { upgradeActivityOptions } from './dashboard-activity-compatibility';
+import { activity, activityIds, activityOptionsFor, initialSettingsVersion, isActivity, inTutorialDestination, onTutorial, parseActivityOptions, trainingSkills,
     type ActivityId, type ActivityOptions, type Requirement, type TrainingSkill } from './dashboard-task-catalog';
 
 export type Finish =
@@ -9,8 +10,15 @@ export type Finish =
     | { type: 'minutes'; minutes: number }
     | { type: 'level'; skill: TrainingSkill; level: number }
     | { type: 'forever' };
-export type Step = { task: ActivityId; finish: Finish; requirements: Requirement[]; options?: ActivityOptions };
+export type Step = { task: ActivityId; finish: Finish; requirements: Requirement[]; options?: ActivityOptions; configurationVersion?: number };
 export type Work = { task: ActivityId; finish: Finish; inserted: boolean; reason?: string; options?: ActivityOptions };
+
+export class PlanConfigurationConflict extends Error {
+    constructor(message: string) {
+        super(message);
+        this.name = 'PlanConfigurationConflict';
+    }
+}
 
 const isLevel = (value: unknown): value is number =>
     typeof value === 'number' && Number.isSafeInteger(value) && value >= 1 && value <= 99;
@@ -46,7 +54,10 @@ export function parseSteps(value: unknown): Step[] {
         const ending = fields(finish);
         const meta = activity(task);
         const enabled = parseActivityOptions(task, options);
-        const step = { task, requirements: parsed, ...(enabled && { options: enabled }) };
+        const step = {
+            task, requirements: parsed, configurationVersion: meta.settingsVersion ?? initialSettingsVersion,
+            ...(enabled && { options: enabled }),
+        };
         if (meta.usage === 'once' && ending.type === 'complete') return { ...step, finish: { type: 'complete' } };
         if (meta.usage === 'repeatable') {
             if (ending.type === 'bank-stock' && meta.category === 'Mining' && task.endsWith('-bank') &&
@@ -71,6 +82,18 @@ export function parseSteps(value: unknown): Step[] {
         }
         throw new Error('Choose a valid finish condition for each activity. Durations must be 1–10,080 minutes.');
     });
+}
+
+export function checkStepCompatibility(saved: Step): { status: 'compatible'; step: Step; migrated: boolean } | { status: 'review'; reason: string } {
+    if (!isActivity(saved.task)) return { status: 'review', reason: 'This activity is no longer available. Choose another activity.' };
+    const meta = activity(saved.task);
+    try {
+        const options = upgradeActivityOptions(meta.label, meta, saved.configurationVersion, saved.options);
+        const step = parseSteps([{ ...saved, options }])[0]!;
+        return { status: 'compatible', step, migrated: (saved.configurationVersion ?? initialSettingsVersion) !== step.configurationVersion };
+    } catch (error) {
+        return { status: 'review', reason: error instanceof Error ? error.message : 'Review the saved activity settings before continuing.' };
+    }
 }
 
 function skillLevel(state: BotWorldState, name: TrainingSkill) {
@@ -100,7 +123,10 @@ function met(req: Requirement, state: BotWorldState) {
         : isActivity(req.task) && questComplete(state, req.task);
 }
 
-export function nextWork(step: Step, state: BotWorldState, elapsedMs = 0): Work | null {
+export function nextWork(saved: Step, state: BotWorldState, elapsedMs = 0): Work | null {
+    const compatibility = checkStepCompatibility(saved);
+    if (compatibility.status === 'review') throw new PlanConfigurationConflict(compatibility.reason);
+    const { step } = compatibility;
     const player = state.player;
     if (!player) throw new Error('Waiting for live player data.');
     if (onTutorial(player.worldX, player.worldZ)) {

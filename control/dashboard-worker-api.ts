@@ -1,4 +1,5 @@
-import { parseSteps } from './dashboard-plan';
+import { checkStepCompatibility, parseSteps, type Step } from './dashboard-plan';
+import { handleActivityUpdates, type ActivityUpdateSource, type StandaloneUpdates } from './dashboard-activity-updates';
 import { planCatalog, trainingSkills } from './dashboard-task-catalog';
 import type { dashboardDemo } from './dashboard-demo';
 import type { dashboardDiagnostics } from './dashboard-diagnostics';
@@ -16,7 +17,10 @@ type BotWorker = ReturnType<typeof dashboardDemo>;
 export type DashboardWorkerApiRuntime = {
     botProfile(name: string): Promise<ManagedProfile | null>;
     botRoster: Pick<ReturnType<typeof dashboardRoster>, 'create'>;
-    plans: Pick<ReturnType<typeof createPlanManager>, 'get' | 'pause' | 'resume' | 'start' | 'update' | 'queueMining'>;
+    plans: Pick<ReturnType<typeof createPlanManager>, 'get' | 'list' | 'pause' | 'resume' | 'start' | 'update' | 'queueMining' |
+        'activeUpdate' | 'requestUpdate' | 'cancelUpdate'>;
+    updateSource?: ActivityUpdateSource;
+    standaloneUpdates?: StandaloneUpdates;
     invalidateSnapshot(): void;
     isPlanEditConflict(error: unknown): boolean;
     demo: Pick<BotWorker, 'allowed' | 'cancelStart' | 'handle' | 'profile'>;
@@ -36,7 +40,7 @@ export type DashboardWorkerApiRuntime = {
 };
 
 async function handlePlan(request: Request, name: string | null, session: string | undefined,
-    { demo, botProfile, botRoster, plans, invalidateSnapshot, isPlanEditConflict }: DashboardWorkerApiRuntime) {
+    { demo, botProfile, botRoster, plans, invalidateSnapshot, isPlanEditConflict, updateSource }: DashboardWorkerApiRuntime) {
     const headers = { 'Cache-Control': 'no-store', ...(session ? { 'Set-Cookie': session } : {}) };
     const reply = (body: object, status = 200) => Response.json(body, { status, headers });
     if (!session && !await demo.allowed(request)) return reply({ error: 'Sign in to manage activity plans.' }, 401);
@@ -71,7 +75,32 @@ async function handlePlan(request: Request, name: string | null, session: string
             if (typeof body.expectedRevision !== 'string' || !body.expectedRevision) {
                 return reply({ error: 'Reload the current plan before saving changes.' }, 400);
             }
-            plan = plans.update(profile.name, parseSteps(body.steps), body.expectedRevision);
+            const saved = plans.get(profile.name);
+            if (!saved || saved.revision !== body.expectedRevision) {
+                return reply({ error: 'The saved plan changed. Reload it before saving your edits.' }, 409);
+            }
+            if (body.reviewedStep !== undefined) {
+                const index = body.reviewedStep;
+                if (!Number.isSafeInteger(index) || index < saved.index || index >= saved.steps.length) {
+                    return reply({ error: 'Choose an unfinished step to review.' }, 400);
+                }
+                const release = await updateSource?.load();
+                if (body.reviewedRevision && release?.revision !== body.reviewedRevision) {
+                    return reply({ error: 'The release changed. Reopen activity updates before reviewing this step.' }, 409);
+                }
+                const reviewed = parseSteps([body.steps?.[index]])[0]!;
+                const steps = saved.steps.map((step, i) => i === index ? reviewed : step);
+                checkPlanOrder(steps);
+                const active = plans.activeUpdate(profile.name).running;
+                if (active && index === saved.index && saved.status === 'running') {
+                    if (!release) return reply({ error: 'Activity updates are unavailable on this worker.' }, 503);
+                    plans.requestUpdate(profile.name, index, saved.revision, active.runId, release, 'safe', reviewed);
+                    return reply({ bot: profile.name, plan: saved, awaitingCheckpoint: true }, 202);
+                }
+                plan = plans.update(profile.name, steps, saved.revision);
+            } else {
+                plan = plans.update(profile.name, editSteps(body.steps, saved.steps), saved.revision);
+            }
         } else if (body.action === 'queue-mining') plan = plans.queueMining(profile.name, parseSteps([body.step])[0]!);
         else return reply({ error: 'Choose start, update, pause, resume, or queue mining.' }, 400);
         invalidateSnapshot();
@@ -80,6 +109,28 @@ async function handlePlan(request: Request, name: string | null, session: string
         return reply({ error: error instanceof Error ? error.message : 'Could not update the plan.' },
             isPlanEditConflict(error) ? 409 : 400);
     }
+}
+
+function checkPlanOrder(steps: Step[]) {
+    if (steps.some((step, index) => step.finish.type === 'forever' && index !== steps.length - 1)) {
+        throw new Error('An indefinite grind must be the final activity.');
+    }
+}
+
+function editSteps(value: unknown, saved: Step[]) {
+    if (!Array.isArray(value) || !value.length || value.length > 12) throw new Error('Add between 1 and 12 activities.');
+    const existing = new Map(saved.map(step => [JSON.stringify(step), step]));
+    const result = value.map((entry, index) => {
+        const unchanged = existing.get(JSON.stringify(entry));
+        if (unchanged) return unchanged;
+        const before = saved[index];
+        if (before && entry?.task === before.task && checkStepCompatibility(before).status === 'review') {
+            throw new Error('Open Activity updates to review the changed settings for this step.');
+        }
+        return parseSteps([entry])[0]!;
+    });
+    checkPlanOrder(result);
+    return result;
 }
 
 export async function handleWorkerRequest(request: Request, runtime: DashboardWorkerApiRuntime) {
@@ -113,6 +164,12 @@ export async function handleWorkerRequest(request: Request, runtime: DashboardWo
         const session = await sessions.authenticate(request).catch(() => undefined);
         const view = searchParams.get('view');
         const bot = searchParams.get('bot');
+        if (view === 'updates') {
+            if (!session && !await demo.allowed(request)) {
+                return Response.json({ error: 'Sign in to manage activity updates.' }, { status: 401, headers: { 'Cache-Control': 'no-store' } });
+            }
+            return handleActivityUpdates(request, runtime.plans, runtime.updateSource, session, runtime.standaloneUpdates);
+        }
         if (view === 'monitor') {
             const headers: Record<string, string> = { 'Cache-Control': 'no-store' };
             if (request.method !== 'GET') return new Response(null, { status: 405, headers: { ...headers, Allow: 'GET' } });

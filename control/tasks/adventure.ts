@@ -3,6 +3,7 @@ import { throwIfExecutionAborted } from '../../sdk/execution-context';
 import type { ScriptContext } from '../../sdk/runner';
 import type { InventoryItem, NearbyNpc } from '../../sdk/types';
 import { activity } from '../dashboard-task-catalog';
+import type { TaskCheckpoint } from './update-checkpoint';
 
 const swords = [
     [30, 'Adamant longsword'], [20, 'Mithril longsword'], [5, 'Steel longsword'], [1, 'Iron longsword'],
@@ -50,7 +51,7 @@ function npcEvidence(npc: NearbyNpc, action = pocket) {
         distance: npc.distance, reachable: npc.reachable, option: option?.text, optionIndex: option?.opIndex };
 }
 
-export function adventure({ bot, sdk }: ScriptContext) {
+export function adventure({ bot, sdk }: ScriptContext, checkpoint?: TaskCheckpoint) {
     const world = () => sdk.getState();
     const actionResult = (result: { success: boolean; message: string; reason?: string }) =>
         ({ outcome: result.success ? 'confirmed' : 'failed', sdk: { success: result.success, message: result.message, reason: result.reason } });
@@ -243,6 +244,8 @@ export function adventure({ bot, sdk }: ScriptContext) {
                 await rest(minimum, undefined, auditEnabled);
                 await equipBest();
                 await trainStyle();
+                await checkpoint?.();
+                if (sdk.getState()?.player?.combat.inCombat) continue;
                 const target = closest(targetName, attackable, true);
                 if (!target) {
                     phase('combat-search');
@@ -409,6 +412,7 @@ export function adventure({ bot, sdk }: ScriptContext) {
         let nextBank = 0;
         let successes = 0;
         let successesAtBank = 0;
+        let attemptSettled = true;
         let lastTarget = '';
         const auditing = auditEnabled;
         let currentPhase = '';
@@ -509,6 +513,7 @@ export function adventure({ bot, sdk }: ScriptContext) {
                 await goToArea();
             }
 
+            if (attemptSettled) await checkpoint?.();
             if (sdk.getState()?.tick !== rejectedAtTick) rejectedTargets.clear();
             const thieving = level('Thieving');
             const adaptive = focus === 'adaptive';
@@ -647,6 +652,7 @@ export function adventure({ bot, sdk }: ScriptContext) {
                     return { success, action, after, outcome, evidence };
                 }, result => ({ outcome: result.outcome, ...result.evidence }));
             if (success) successes++;
+            attemptSettled = success || action.reason === 'stunned' || isMissingPickpocketTarget(action.reason);
             log('pickpocket', { npc: target.name, success, reason: action.reason, successes, ...after });
             if (isMissingPickpocketTarget(action.reason)) continue;
             if (action.reason === 'stunned') phase('thieving-stun');

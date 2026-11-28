@@ -295,8 +295,22 @@ the script and tracked dependencies from their launch revision. The next
 task launch uses the updated compatible release. An operator edit that
 changes launch arguments can still relaunch the affected task.
 
+The Fleet Desk **Updates** panel compares managed runs with the latest
+release and checks saved settings for unfinished steps. **Update all
+compatible runs** schedules each eligible task at its next safe checkpoint.
+Mining, fishing, pickpocketing, and combat training can report checkpoints.
+The worker waits for the old task to exit before launching its replacement
+on the connected client. **Update now** checks fresh game state, health,
+combat, and open game windows before stopping a task on request.
+
+An incompatible queued step waits for a settings review at launch. A
+running step keeps its release until the user reviews its settings and the
+task reaches a safe checkpoint. For behavior changes to saved options,
+increase the activity's `settingsVersion`. Declare a `settingsMigrations`
+entry only when it can preserve the previous behavior.
+
 On an existing host, the first update to this worker leaves the old process
-and its bots running. Activate live updates during a maintenance window by
+and its bots running. Activate the checkpoint-capable worker during a maintenance window by
 restarting `rs-sdk-fleet-workers.service` once after the checkout syncs.
 Fleet Desk restores saved running plans after that restart. Subsequent
 changes to the process supervisor, game client, or shared pathfinder still

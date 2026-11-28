@@ -2,6 +2,7 @@ import { auditOperation } from '../../sdk/audit-trace';
 import { runScript } from '../../sdk/runner';
 import { adventure, type PickpocketTarget } from './adventure';
 import { leaveTutorial } from './tutorial';
+import { withTaskUpdateCheckpoints } from './update-checkpoint';
 
 const targets: Record<string, PickpocketTarget> = {
     'pickpocket-men': 'men', 'pickpocket-guards': 'guards',
@@ -10,7 +11,7 @@ const targets: Record<string, PickpocketTarget> = {
 };
 const target = targets[process.env.RS_ACTIVITY ?? ''];
 
-const result = await runScript(async ctx => {
+const result = await runScript(withTaskUpdateCheckpoints(async (ctx, checkpoint) => {
     if (!target) throw new Error('Choose a supported pickpocket target.');
     await auditOperation('prepare-pickpocket-client', 'Wait for a live client and finish the required tutorial setup before choosing targets',
         { target, tutorialSetup: target === 'men' }, () => ctx.sdk.getState(),
@@ -18,7 +19,7 @@ const result = await runScript(async ctx => {
             if (target === 'men') await leaveTutorial(ctx);
             else await ctx.sdk.waitForReady();
         }, () => ({ outcome: 'ready' }));
-    await adventure(ctx).pickpocket(target, process.env.RS_ACTIVITY_PICKPOCKET_BANKING === '1');
-}, { printState: false });
+    await adventure(ctx, checkpoint).pickpocket(target, process.env.RS_ACTIVITY_PICKPOCKET_BANKING === '1');
+}), { printState: false });
 
 if (!result.success) process.exitCode = 1;

@@ -1,3 +1,7 @@
+import { bankLocations as miningBanks, place, type NamedTile, type Tile } from './bank-locations';
+
+export { miningBanks, type Tile };
+
 export const miningResources = {
     clay: { label: 'Clay', level: 1, items: [434], rocks: [2108, 2109, 2137, 2138, 4994, 4995, 4996], respawn: 4 },
     copper: { label: 'Copper', level: 1, items: [436], rocks: [2090, 2091, 2119, 2120, 4976, 4977, 4978], respawn: 6 },
@@ -16,8 +20,6 @@ export const miningResources = {
 export type MiningResource = keyof typeof miningResources;
 export type MiningMode = 'power' | 'bank';
 export type MiningTask = `mine-${MiningResource}-${MiningMode}`;
-export type Tile = { x: number; z: number };
-type NamedTile = Tile & { name: string };
 export type MiningSite = {
     mine: NamedTile;
     bank: NamedTile;
@@ -26,18 +28,6 @@ export type MiningSite = {
     guild?: true;
 };
 
-const place = (name: string, x: number, z: number): NamedTile => ({ name, x, z });
-export const miningBanks = {
-    west: place('Varrock West Bank', 3185, 3436),
-    east: place('Varrock East Bank', 3253, 3420),
-    kharid: place('Al Kharid Bank', 3269, 3167),
-    draynor: place('Draynor Bank', 3092, 3243),
-    falador: place('Falador East Bank', 3012, 3355),
-    seers: place('Seers’ Village Bank', 2725, 3493),
-    yanille: place('Yanille Bank', 2612, 3093),
-    ardougne: place('Ardougne North Bank', 2615, 3332),
-    shilo: place('Shilo Village Bank', 2852, 2954),
-};
 export const fishingGuildBank = place('Fishing Guild Bank', 2586, 3420);
 export const coalTrucks: MiningSite = {
     mine: place('Coal Trucks', 2581, 3474), bank: miningBanks.seers, rocks: { coal: 18 },

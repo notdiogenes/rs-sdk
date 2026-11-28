@@ -371,7 +371,23 @@ export async function createDashboardSupervisor(botsDir: string, configDir: stri
 
     const apiRuntime: DashboardWorkerApiRuntime = {
         botProfile, botRoster, plans, demo, sessions, monitor, managedWorkers, inventory, inventoryController,
-        parseInventoryCommand, recordStats, botDiagnostics, diagnostics, dashboardQuestPoints, handleBotActivity,
+        parseInventoryCommand, recordStats, botDiagnostics, diagnostics, dashboardQuestPoints, handleBotActivity, updateSource: updates,
+        standaloneUpdates: {
+            list: () => managedWorkers().flatMap(worker => {
+                const active = worker.standaloneActivity();
+                return active ? [active] : [];
+            }),
+            request: async (runId, release, mode) => {
+                const worker = managedWorkers().find(worker => worker.standaloneActivity()?.running.runId === runId);
+                if (!worker) throw new PlanEditConflict('The running activity changed.');
+                await worker.requestStandaloneUpdate(runId, release, mode);
+            },
+            cancel: runId => {
+                const worker = managedWorkers().find(worker => worker.standaloneActivity()?.running.runId === runId);
+                if (!worker) throw new PlanEditConflict('The running activity changed.');
+                worker.cancelStandaloneUpdate(runId);
+            },
+        },
         invalidateSnapshot: () => { expiresAt = 0; },
         isPlanEditConflict: error => error instanceof PlanEditConflict,
         snapshot(after, fresh) {

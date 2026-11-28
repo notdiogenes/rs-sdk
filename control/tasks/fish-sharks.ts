@@ -2,7 +2,8 @@ import { auditEvent } from '../../sdk/audit-trace';
 import { runScript, type ScriptContext } from '../../sdk/runner';
 import type { BotWorldState } from '../../sdk/types';
 import { reportTaskActivity } from '../dashboard-task-activity';
-import { miningBanks, type Tile } from '../mining-routes';
+import { bankLocations, type Tile } from '../bank-locations';
+import { withTaskUpdateCheckpoints, type TaskCheckpoint } from './update-checkpoint';
 
 const catherbyBank = { name: 'Catherby Bank', x: 2809, z: 3441 };
 const catherbyRange = { name: 'the Catherby range', x: 2817, z: 3444 };
@@ -11,7 +12,7 @@ const beach = { name: 'the Catherby fishing spots', x: 2845, z: 3433 };
 // Land tiles beside the four groups of NPC movement tiles on the beach.
 const shoreline = [{ x: 2837, z: 3432 }, beach, { x: 2853, z: 3425 }, { x: 2859, z: 3427 }];
 const shorelineSearchTimeout = 240_000;
-const banks = [catherbyBank, { name: 'the bank', x: 2655, z: 3284 }, ...Object.values(miningBanks)];
+const banks = [catherbyBank, { name: 'the bank', x: 2655, z: 3284 }, ...Object.values(bankLocations)];
 const capacity = 28;
 const coins = 995;
 
@@ -64,7 +65,8 @@ export function selectFishingStage(state: BotWorldState, cook: boolean) {
 const quantity = (state: BotWorldState, id: number) =>
     state.inventory.reduce((count, item) => count + (item.id === id ? item.count : 0), 0);
 
-export async function fishSharks({ bot, sdk }: ScriptContext, cook = process.env.RS_ACTIVITY === 'fish-sharks-cook') {
+export async function fishSharks({ bot, sdk }: ScriptContext, cook = process.env.RS_ACTIVITY === 'fish-sharks-cook',
+    checkpoint?: TaskCheckpoint) {
     await sdk.waitForReady();
 
     function current() {
@@ -203,6 +205,8 @@ export async function fishSharks({ bot, sdk }: ScriptContext, cook = process.env
                 processed += count - remaining;
                 if (misses) auditEvent('milestone', 'cooking-retry-recovered', { fish: id, misses });
                 misses = 0;
+                // Relaunching at the range resumes cooking any raw fish left in the backpack.
+                await checkpoint?.();
                 continue;
             }
             const message = result.success ? 'No raw fish was consumed.' : result.message;
@@ -348,12 +352,14 @@ export async function fishSharks({ bot, sdk }: ScriptContext, cook = process.env
             previousStage = stage;
         }
         await prepareTool(stage.tool);
+        // The bank closed and the next cast has not been sent.
+        await checkpoint?.();
         await fishBackpack(stage);
         if (cook) await cookBackpack();
     }
 }
 
 if (import.meta.main) {
-    await runScript(context => fishSharks(context,
-        process.env.RS_ACTIVITY === 'fish-sharks-cook' || process.argv.includes('--cook')));
+    await runScript(withTaskUpdateCheckpoints((context, checkpoint) => fishSharks(context,
+        process.env.RS_ACTIVITY === 'fish-sharks-cook' || process.argv.includes('--cook'), checkpoint)));
 }

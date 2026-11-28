@@ -42,6 +42,13 @@
     const filterFields = [search];
     const monitorButton = document.querySelector('#monitor-open');
     const monitorDialog = document.querySelector('#monitor-dialog');
+    const updatesButton = document.querySelector('#updates-open');
+    const updatesDialog = document.querySelector('#updates-dialog');
+    const updatesCount = document.querySelector('#updates-count');
+    const updatesSummary = document.querySelector('#updates-summary');
+    const updatesStatus = document.querySelector('#updates-status');
+    const updatesAll = document.querySelector('#updates-all');
+    const updatesList = document.querySelector('#updates-list');
     const auto = document.querySelector('#auto');
     const banks = document.querySelector('#banks');
     const banksDialog = document.querySelector('#banks-dialog');
@@ -962,6 +969,7 @@
             refreshStatus.hidden = true;
             if (signedIn) {
                 fleetDataReady = loadFleetData(true);
+                void loadActivityUpdates();
                 await fleetDataReady;
             } else {
                 const state = await request('/bots/activity?session=status').catch(() => null);
@@ -995,8 +1003,14 @@
         account.textContent = value ? 'Sign out' : 'Sign in';
         if (value) {
             fleetDataReady = loadFleetData();
+            void loadActivityUpdates();
         } else {
             if (monitorDialog.open) monitorDialog.close();
+            if (updatesDialog.open) updatesDialog.close();
+            clearTimeout(updatesPoll);
+            updatesRead?.abort();
+            updatesRead = undefined;
+            setActivityUpdates(undefined);
             dataVersion++;
             updating = false;
             stats.clear();
@@ -1018,7 +1032,8 @@
         password.disabled = needsLink;
         signInMessage.textContent = needsLink ? 'Open your one-time dashboard setup link.'
             : auditPending || button?.matches('#audit-open,[data-audit-bot]') ? 'Sign in to open the audit history.'
-            : button === monitorButton ? 'Sign in to open the resource monitor.' : '';
+            : button === monitorButton ? 'Sign in to open the resource monitor.'
+            : button === updatesButton ? 'Sign in to review activity updates.' : '';
         signIn.showModal();
     }
 
@@ -1582,6 +1597,204 @@
         return value ? diagnosticClock.format(new Date(value)) : '—';
     }
 
+    const updatesUrl = '/bots/activity?view=updates';
+    const updateLabels = { review: 'Review required', available: 'Update available', current: 'Current' };
+    let updatesData;
+    let updatesRendered;
+    let updatesRead;
+    let updatesPoll;
+    let updatesBusy = false;
+    let updatesLoadFailed = false;
+
+    const canRequestUpdate = row => row.state === 'running' && row.status === 'available' && row.checkpoint === 'supported';
+
+    function updateSettingsList(settings) {
+        const list = node('dl', '', 'update-settings');
+        const { finish, requirements, options, configurationVersion: _version, ...other } = settings ?? {};
+        const values = {
+            ...(finish && { 'Finish when': finishLabel(finish) }),
+            ...(requirements?.length && { Prerequisites: requirements.map(requirementLabel).join(' · ') }),
+            ...other, ...options,
+        };
+        for (const [key, value] of Object.entries(values)) {
+            const words = key.replace(/([a-z\d])([A-Z])/g, '$1 $2').replace(/[-_]/g, ' ');
+            const label = key === 'banking' ? 'Bank loot and restock food' : words.charAt(0).toUpperCase() + words.slice(1);
+            const displayValue = typeof value === 'boolean' ? (value ? 'On' : 'Off')
+                : value === null ? 'None' : typeof value === 'object' ? JSON.stringify(value) : String(value);
+            list.append(node('dt', label), node('dd', displayValue));
+        }
+        return list;
+    }
+
+    function setUpdatesStatus(message = '', error = false) {
+        setText(updatesStatus, message);
+        updatesStatus.dataset.error = String(error);
+    }
+
+    function activityUpdateError(error) {
+        const open = updatesDialog.open;
+        if (error.status === 401) {
+            setSignedIn(false);
+            if (open && !signIn.open) openSignIn(updatesButton);
+        } else if (open) {
+            setUpdatesStatus(error.message, true);
+        }
+    }
+
+    function renderUpdates() {
+        const rows = updatesData?.rows ?? [];
+        updatesAll.disabled = updatesBusy || !rows.some(canRequestUpdate);
+        updatesList.setAttribute('aria-busy', String(updatesBusy));
+        if (updatesRendered === updatesData) {
+            for (const button of updatesList.querySelectorAll('button')) button.disabled = updatesBusy;
+            return;
+        }
+        updatesRendered = updatesData;
+        const affected = rows.filter(row => row.status !== 'current').length;
+        setText(updatesSummary, !updatesData ? '' : !rows.length ? 'No running or queued activities.'
+            : affected ? `${affected} ${affected === 1 ? 'activity needs' : 'activities need'} attention` : 'All activities are current.');
+        const focus = updatesList.contains(document.activeElement) ? document.activeElement : undefined;
+        const context = focus?.dataset;
+        const order = Object.keys(updateLabels);
+        const items = [...rows].sort((a, b) => order.indexOf(a.status) - order.indexOf(b.status) ||
+            a.bot.localeCompare(b.bot) || a.index - b.index).map(row => {
+            const item = node('li', '', 'update-row');
+            const heading = node('div', '', 'update-heading');
+            const badge = node('span', updateLabels[row.status], 'update-status');
+            badge.dataset.updateStatus = row.status;
+            heading.append(node('h3', `${row.bot} · ${row.label}`), badge);
+            const meta = node('p', row.standalone ? 'Running' : `${row.state === 'running' ? 'Running' : 'Queued'} · Step ${row.index + 1}`, 'update-meta');
+            if (row.fromRevision) {
+                meta.append(' · ', node('code', row.fromRevision.slice(0, 8)));
+                if (row.status !== 'current') meta.append(' → ', node('code', updatesData.revision.slice(0, 8)));
+            }
+            item.append(heading, meta);
+            if (row.reason) item.append(node('p', row.reason, 'update-reason'));
+            if (row.status === 'review') {
+                const settings = updateSettingsList(row.settings);
+                if (settings.childElementCount) item.append(node('small', 'Saved settings'), settings);
+            }
+            const actions = node('div', '', 'update-actions');
+            const action = (label, command, run) => {
+                const button = planButton(label, run, `${label} for ${row.bot}, step ${row.index + 1}`);
+                button.dataset.updateAction = command;
+                button.dataset.updateRow = JSON.stringify([row.bot, row.index, row.state]);
+                button.disabled = updatesBusy;
+                actions.append(button);
+            };
+            if (row.status === 'review' && row.checkpoint !== 'waiting') {
+                action(row.standalone ? 'Open plan' : 'Review settings', 'review', () => {
+                    updatesDialog.close();
+                    openPlan(row.bot, row.standalone ? undefined : { ...row, revision: updatesData.revision });
+                });
+            } else if (row.state === 'running' && row.checkpoint === 'waiting') {
+                actions.append(node('small', 'Waiting for a safe point'));
+                action('Cancel update', 'cancel', () => void submitActivityUpdate('cancel', row));
+            } else if (row.state === 'running' && row.status === 'available') {
+                if (canRequestUpdate(row)) action('Update when safe', 'request', () => void submitActivityUpdate('request', row));
+                else actions.append(node('small', 'Manual update required'));
+                action('Update now', 'now', () => {
+                    if (window.confirm(`Restart the ${row.label} activity for ${row.bot} now?`)) void submitActivityUpdate('now', row);
+                });
+            }
+            if (actions.childNodes.length) item.append(actions);
+            return item;
+        });
+        updatesList.replaceChildren(...items);
+        if (context?.updateAction && updatesDialog.open) {
+            const button = [...updatesList.querySelectorAll('button')].find(candidate =>
+                candidate.dataset.updateAction === context.updateAction && candidate.dataset.updateRow === context.updateRow);
+            (button ?? updatesDialog.querySelector('#updates-close')).focus({ preventScroll: true });
+        }
+    }
+
+    function setActivityUpdates(data) {
+        if (data && (typeof data.revision !== 'string' || !Array.isArray(data.rows))) {
+            throw new Error('Activity updates become available after the Fleet Desk worker is activated.');
+        }
+        if (JSON.stringify(data) !== JSON.stringify(updatesData)) updatesData = data;
+        const rows = updatesData?.rows ?? [];
+        const affected = rows.filter(row => row.status !== 'current').length;
+        updatesButton.dataset.updateStatus = rows.some(row => row.status === 'review') ? 'review' : affected ? 'available' : '';
+        updatesButton.setAttribute('aria-label', affected ? `Updates (${affected})` : 'Updates');
+        setText(updatesCount, affected ? String(affected) : '');
+        setHidden(updatesCount, !affected);
+        if (updatesDialog.open) renderUpdates();
+    }
+
+    function scheduleUpdatesPoll() {
+        clearTimeout(updatesPoll);
+        if (updatesDialog.open && signedIn) {
+            const delay = updatesData?.rows.some(row => row.checkpoint === 'waiting') ? 3000 : refreshMs;
+            updatesPoll = setTimeout(loadActivityUpdates, delay);
+        }
+    }
+
+    async function loadActivityUpdates() {
+        if (!signedIn || updatesBusy || updatesRead) return;
+        const read = new AbortController();
+        updatesRead = read;
+        try {
+            const data = await request(updatesUrl, undefined, read.signal);
+            if (updatesRead !== read || !signedIn) return;
+            setActivityUpdates(data);
+            if (updatesLoadFailed || updatesStatus.textContent === 'Checking for updates…') setUpdatesStatus();
+            updatesLoadFailed = false;
+        } catch (error) {
+            if (read.signal.aborted || updatesRead !== read) return;
+            updatesLoadFailed = updatesDialog.open;
+            activityUpdateError(error);
+        } finally {
+            if (updatesRead === read) {
+                updatesRead = undefined;
+                scheduleUpdatesPoll();
+            }
+        }
+    }
+
+    async function submitActivityUpdate(action, row) {
+        if (updatesBusy || !updatesData) return;
+        const payload = { action, revision: updatesData.revision,
+            ...(row && { bot: row.bot, index: row.index, planRevision: row.planRevision, runId: row.runId }) };
+        updatesRead?.abort();
+        updatesRead = undefined;
+        clearTimeout(updatesPoll);
+        updatesBusy = true;
+        updatesLoadFailed = false;
+        renderUpdates();
+        setUpdatesStatus(action === 'now' ? 'Restarting the activity…' : 'Requesting updates…');
+        try {
+            const data = await request(updatesUrl, payload);
+            if (!signedIn) return;
+            setActivityUpdates(data);
+            setUpdatesStatus(action === 'now' ? 'Restart requested.' : action === 'cancel' ? 'Update cancelled.' : 'Updates requested.');
+        } catch (error) {
+            activityUpdateError(error);
+        } finally {
+            updatesBusy = false;
+            if (updatesDialog.open) renderUpdates();
+            void loadActivityUpdates();
+        }
+    }
+
+    updatesButton.addEventListener('click', async () => {
+        await sessionReady;
+        if (!signedIn) { openSignIn(updatesButton); return; }
+        if (updatesDialog.open) return;
+        clearTimeout(refresh);
+        updatesLoadFailed = false;
+        setUpdatesStatus(updatesData ? '' : 'Checking for updates…');
+        updatesDialog.showModal();
+        renderUpdates();
+        void loadActivityUpdates();
+    });
+    updatesAll.addEventListener('click', () => void submitActivityUpdate('compatible'));
+    updatesDialog.querySelector('#updates-close').addEventListener('click', () => updatesDialog.close());
+    updatesDialog.addEventListener('close', () => {
+        clearTimeout(updatesPoll);
+        scheduleRefresh();
+    });
+
     const monitorField = name => monitorDialog.querySelector(`#monitor-${name}`);
     const monitorSubject = monitorField('subject');
     const monitorPathfinderOption = monitorSubject.querySelector('option[value="shared"]');
@@ -2110,6 +2323,7 @@
     const planNameField = planDialog.querySelector('#plan-name-field');
     const planError = planDialog.querySelector('#plan-error');
     const planSteps = planDialog.querySelector('#plan-steps');
+    const planReviewSettings = planDialog.querySelector('#plan-review-settings');
     const planAdd = planDialog.querySelector('#plan-add');
     const planEdit = planDialog.querySelector('#plan-edit');
     const planCancelEdit = planDialog.querySelector('#plan-cancel-edit');
@@ -2130,6 +2344,8 @@
     let planChanged = false;
     let planVersion = 0;
     let planWatch;
+    let planReview;
+    let planReviewBaseline;
 
     const planUrl = () => '/bots/activity?view=plan' + (planBot ? '&bot=' + encodeURIComponent(planBot) : '');
     const metaFor = id => planCatalog.find(entry => entry.id === id);
@@ -2211,6 +2427,7 @@
         const meta = metaFor(step.task);
         const row = node('li', '', 'plan-step');
         const select = node('select');
+        select.required = true;
         for (const category of [...new Set(planCatalog.map(entry => entry.category))]) {
             const group = node('optgroup');
             group.label = category;
@@ -2227,19 +2444,22 @@
             draft[index] = replacement;
             renderPlan();
         });
-        const ordering = node('div', '', 'plan-order');
-        for (const [symbol, offset, title] of [['↑', -1, 'Move activity up'], ['↓', 1, 'Move activity down']]) {
-            const button = planButton(symbol, () => {
-                const next = index + offset;
-                [draft[index], draft[next]] = [draft[next], draft[index]];
-                renderPlan();
-            }, title);
-            button.disabled = index + offset < (planEditBase?.index ?? 0) || index + offset >= draft.length;
-            ordering.append(button);
-        }
-        ordering.append(planButton('Remove', () => { draft.splice(index, 1); renderPlan(); }, 'Remove this activity'));
         const head = node('div', '', 'plan-step-head');
-        head.append(planField('Activity', select), ordering);
+        head.append(planField('Activity', select));
+        if (!planReview) {
+            const ordering = node('div', '', 'plan-order');
+            for (const [symbol, offset, title] of [['↑', -1, 'Move activity up'], ['↓', 1, 'Move activity down']]) {
+                const button = planButton(symbol, () => {
+                    const next = index + offset;
+                    [draft[index], draft[next]] = [draft[next], draft[index]];
+                    renderPlan();
+                }, title);
+                button.disabled = index + offset < (planEditBase?.index ?? 0) || index + offset >= draft.length;
+                ordering.append(button);
+            }
+            ordering.append(planButton('Remove', () => { draft.splice(index, 1); renderPlan(); }, 'Remove this activity'));
+            head.append(ordering);
+        }
         row.append(head);
         for (const option of checkboxOptionsFor(step.task)) {
             const input = node('input');
@@ -2263,12 +2483,14 @@
                 ...(step.task === 'craft-body-runes' ? [['essence-exhausted', 'Rune essence runs out']] : []),
                 ...(meta.category === 'Mining' && step.task.endsWith('-bank') ? [['bank-stock', 'Bank stock']] : []),
                 ['forever', 'Indefinite grind']];
-            stopRow.append(planField('Finish when', planSelect(modes, step.finish.type, type => {
+            const finish = planSelect(modes, step.finish.type, type => {
                 step.finish = type === 'minutes' ? { type, minutes: 30 }
                     : type === 'level' ? { type, skill: meta.trains[0], level: 40 }
                     : type === 'bank-stock' ? { type, quantity: 100 } : { type };
                 renderPlan();
-            })));
+            });
+            finish.required = true;
+            stopRow.append(planField('Finish when', finish));
             if (step.finish.type === 'minutes') {
                 stopRow.append(planField('Minutes', planNumber(step.finish.minutes, 1, 10080, value => { step.finish.minutes = value; })));
             } else if (step.finish.type === 'level') {
@@ -2302,6 +2524,11 @@
     function planEditMessage() {
         if (editing !== 'update') return planSaved ? 'Changes saved.' : '';
         if (planConflict) return 'Cancel edits to load the latest plan.';
+        if (planReview) {
+            if (planReview.state === 'queued') return 'Saving approves these settings for the next launch.';
+            return planReview.checkpoint === 'unsupported' ? 'Pause this activity before saving reviewed settings.'
+                : 'Saving applies the reviewed settings at a safe point.';
+        }
         if (planEditBase.status !== 'running') return 'Save changes to this plan. Resume when ready.';
         const oldStep = planEditBase.steps[planEditBase.index];
         const nextStep = draft[planEditBase.index];
@@ -2328,7 +2555,7 @@
         planNameField.hidden = !!planBot || !editing;
         planName.disabled = planNameField.hidden || planSubmitting;
         planSteps.inert = planSubmitting;
-        planAdd.hidden = !editing;
+        planAdd.hidden = !editing || !!planReview;
         planAdd.disabled = planSubmitting || draft.length >= 12;
         planEdit.hidden = !!editing || !planState;
         planEdit.disabled = planSubmitting || planReloading;
@@ -2338,20 +2565,28 @@
         planClose.disabled = planSubmitting;
         planSave.hidden = !editing && (!planState || planState.status === 'complete');
         planSave.disabled = planSubmitting || planReloading || (!!editing && !draft.length) ||
-            (editing === 'update' && (!planDraftDirty() || planConflict));
-        planSave.textContent = editing === 'update' ? 'Save changes' : editing ? planBot ? 'Start plan' : 'Create bot and start'
+            (editing === 'update' && ((!planDraftDirty() && !planReview) || planConflict));
+        planSave.textContent = editing === 'update' ? planReview ? 'Save reviewed settings' : 'Save changes' : editing ? planBot ? 'Start plan' : 'Create bot and start'
             : planState?.status === 'running' ? 'Pause plan' : 'Resume plan';
         setText(planEditStatus, planEditMessage());
         setHidden(planEditStatus, !planEditStatus.textContent);
     }
 
     function renderPlan() {
+        setHidden(planReviewSettings, !planReview || editing !== 'update');
+        if (!planReviewSettings.hidden) {
+            const saved = updateSettingsList(planReview.settings);
+            planReviewSettings.replaceChildren(node('strong', `Review step ${planReview.index + 1}`));
+            if (planReview.reason) planReviewSettings.append(node('p', planReview.reason));
+            if (saved.childElementCount) planReviewSettings.append(node('small', 'Saved settings'), saved);
+        }
         const list = editing ? draft : planState?.steps ?? [];
         const current = (planEditBase ?? planState)?.index;
         planSteps.replaceChildren(...list.map((step, index) => {
             const state = index < current ? 'done' : index === current ? 'current' : 'queued';
-            const canEdit = editing && (editing !== 'update' || state !== 'done');
+            const canEdit = editing && (editing !== 'update' || state !== 'done' && (!planReview || index === planReview.index));
             const row = canEdit ? renderStep(step, index) : node('li', '', 'plan-step plan-readonly');
+            if (canEdit && planReview) row.dataset.review = 'true';
             if (!canEdit) {
                 row.append(node('strong', labelFor(step.task)), node('small', finishLabel(step.finish)));
                 for (const option of checkboxOptionsFor(step.task)) {
@@ -2385,23 +2620,34 @@
             planCatalog = data.catalog;
             planSkills = data.skills;
             planState = data.plan;
+            let reviewChanged = false;
             if (initialLoad) {
                 editing = planState ? null : 'new';
                 draft = editing ? [defaultStep()] : [];
                 planError.textContent = '';
+                if (planReview) {
+                    if (planState?.revision === planReview.planRevision && planReview.index >= planState.index &&
+                        planState.steps[planReview.index]) {
+                        beginPlanEdit();
+                        return;
+                    }
+                    planReview = undefined;
+                    reviewChanged = true;
+                }
             }
             renderPlan();
+            if (reviewChanged) planError.textContent = 'This plan changed. Open Activity updates to review the latest settings.';
             if (!editing && planState?.status === 'running') planWatch = setTimeout(() => void refreshPlan(version), 3000);
         } catch (error) {
             if (version === planVersion) planError.textContent = error.message;
         }
     }
 
-    onButtonClick('#new-bot, [data-plan-bot]', async button => {
-        await sessionReady;
-        if (!signedIn) { openSignIn(button); return; }
+    function openPlan(bot, review) {
         clearTimeout(refresh);
-        planBot = button.dataset.planBot || null;
+        planBot = bot;
+        planReview = review;
+        planReviewBaseline = undefined;
         planState = null;
         draft = [];
         editing = planEditBase = null;
@@ -2412,10 +2658,9 @@
         renderPlan();
         planDialog.showModal();
         void refreshPlan(++planVersion, true);
-    });
+    }
 
-    planAdd.addEventListener('click', () => { draft.push(defaultStep()); renderPlan(); });
-    planEdit.addEventListener('click', () => {
+    function beginPlanEdit() {
         if (!planState || planSubmitting) return;
         clearTimeout(planWatch);
         planVersion++;
@@ -2423,14 +2668,33 @@
         editing = replacing ? 'new' : 'update';
         planEditBase = replacing ? null : planState;
         draft = replacing ? [defaultStep()] : structuredClone(planState.steps);
+        if (planReview) {
+            const step = draft[planReview.index];
+            if (step.options) {
+                const supported = new Set((metaFor(step.task)?.options ?? []).map(option => option.id));
+                const remaining = Object.entries(step.options).filter(([id]) => supported.has(id));
+                step.options = remaining.length ? Object.fromEntries(remaining) : undefined;
+            }
+            planReviewBaseline = JSON.stringify(step);
+        }
         planConflict = planSaved = false;
         planError.textContent = '';
         renderPlan();
-        planSteps.querySelector('select')?.focus();
+        (planReview ? planSteps.children[planReview.index] : planSteps)?.querySelector('select')?.focus();
+    }
+
+    onButtonClick('#new-bot, [data-plan-bot]', async button => {
+        await sessionReady;
+        if (!signedIn) { openSignIn(button); return; }
+        openPlan(button.dataset.planBot || null);
     });
+
+    planAdd.addEventListener('click', () => { draft.push(defaultStep()); renderPlan(); });
+    planEdit.addEventListener('click', beginPlanEdit);
     planCancelEdit.addEventListener('click', async () => {
         if (planSubmitting) return;
         editing = planEditBase = null;
+        planReview = undefined;
         planConflict = false;
         planReloading = true;
         draft = [];
@@ -2457,6 +2721,8 @@
     planForm.addEventListener('submit', async event => {
         event.preventDefault();
         if (planSave.disabled || planSave.hidden) return;
+        if (planReview && planReviewBaseline === JSON.stringify(draft[planReview.index]) &&
+            !window.confirm(`Use the displayed settings for step ${planReview.index + 1} with the new release?`)) return;
         if (editing && draft.some((step, index) => step.finish.type === 'forever' && index !== draft.length - 1)) {
             planError.textContent = 'Move the indefinite grind to the end of the plan.';
             return;
@@ -2465,7 +2731,8 @@
         const version = ++planVersion;
         const action = editing === 'update' ? 'update' : editing ? planBot ? 'start' : 'create'
             : planState.status === 'running' ? 'pause' : 'resume';
-        const payload = action === 'update' ? { action, steps: draft, expectedRevision: planEditBase.revision }
+        const payload = action === 'update' ? { action, steps: draft, expectedRevision: planEditBase.revision,
+            ...(planReview && { reviewedStep: planReview.index, reviewedRevision: planReview.revision }) }
             : editing ? { action, steps: draft, ...(!planBot ? { name: planName.value.trim() } : {}) } : { action };
         planSubmitting = true;
         renderPlanActions();
@@ -2478,8 +2745,10 @@
             planSaved = action === 'update';
             planTitle.textContent = `Activity plan · ${planBot}`;
             editing = planEditBase = null;
+            planReview = undefined;
             planConflict = false;
             renderPlan();
+            if (data.awaitingCheckpoint) planError.textContent = 'Waiting for a safe point to apply the reviewed settings.';
             if (planState?.status === 'running') planWatch = setTimeout(() => void refreshPlan(version), 1500);
         } catch (error) {
             if (version === planVersion) {

@@ -6,6 +6,7 @@ import type { ControllerStatus } from './dashboard-activity';
 import { finished, nextWork, type Step, type Work } from './dashboard-plan';
 import { activity, type ActivityId, type ActivityOptions } from './dashboard-task-catalog';
 import type { DashboardWorkerUpdates, WorkerRelease } from './dashboard-worker-policy';
+import type { ActiveTaskUpdate } from './dashboard-task-update';
 
 export type Plan = {
     bot: string;
@@ -24,9 +25,33 @@ export type PlanBackend = {
     observe(): Promise<BotWorldState | null>;
     start(task: ActivityId, skill?: string, bankTarget?: number, options?: ActivityOptions, release?: WorkerRelease): Promise<void>;
     stop(): Promise<void>;
+    activeUpdate?(): ActiveTaskUpdate | undefined;
+    safeForUpdate?(): boolean;
+    requestCheckpoint?(runId: string, id: string): boolean;
+    commitCheckpoint?(runId: string, id: string): void;
+    cancelCheckpoint?(runId: string): void;
 };
 
 export class PlanEditConflict extends Error {}
+
+type PendingUpdate = {
+    index: number;
+    planRevision: string;
+    runId: string;
+    release: WorkerRelease;
+    mode: 'safe' | 'now';
+    reviewed?: Step;
+    attempt?: string;
+    applying?: boolean;
+};
+type PlanJob = {
+    plan: Plan;
+    cancel: AbortController;
+    done: Promise<void>;
+    backend?: PlanBackend;
+    pending?: PendingUpdate;
+    updateMessage?: string;
+};
 
 const initial = (bot: string, steps: Step[]): Plan => ({ bot, steps, revision: randomUUID(), index: 0, elapsedMs: 0, status: 'running' });
 const interval = 2500;
@@ -44,7 +69,8 @@ const sameOptions = (first?: ActivityOptions, second?: ActivityOptions) =>
 function sameStep(first: Step | undefined, second: Step | undefined) {
     if (!first || !second) return first === second;
     return first.task === second.task && JSON.stringify(first.finish) === JSON.stringify(second.finish) &&
-        JSON.stringify(first.requirements) === JSON.stringify(second.requirements) && sameOptions(first.options, second.options);
+        JSON.stringify(first.requirements) === JSON.stringify(second.requirements) && sameOptions(first.options, second.options) &&
+        (first.configurationVersion ?? 1) === (second.configurationVersion ?? 1);
 }
 
 const workSkill = (work: Work) => work.finish.type === 'level' ? work.finish.skill : undefined;
@@ -61,7 +87,9 @@ export function createPlanManager(directory: string, backendFor: (bot: string, s
     db.exec('CREATE TABLE IF NOT EXISTS activity_plan (bot TEXT PRIMARY KEY COLLATE NOCASE, data TEXT NOT NULL)');
     const read = db.query<{ data: string }, [string]>('SELECT data FROM activity_plan WHERE bot = ?');
     const write = db.query('INSERT OR REPLACE INTO activity_plan (bot, data) VALUES (?, ?)');
-    const jobs = new Map<string, { plan: Plan; cancel: AbortController; done: Promise<void> }>();
+    const jobs = new Map<string, PlanJob>();
+    const list = () => db.query<{ data: string }, []>('SELECT data FROM activity_plan ORDER BY bot').all()
+        .map(({ data }) => readPlan(data));
     const get = (bot: string): Plan | null => {
         const row = read.get(bot);
         return row ? readPlan(row.data) : null;
@@ -81,6 +109,94 @@ export function createPlanManager(directory: string, backendFor: (bot: string, s
 
     const active = (bot: string) => jobs.has(bot.toLowerCase()) || get(bot)?.status === 'running';
 
+    function cancelPending(job: PlanJob) {
+        if (job.pending) job.backend?.cancelCheckpoint?.(job.pending.runId);
+        job.pending = undefined;
+    }
+
+    function requestUpdate(bot: string, index: number, planRevision: string, runId: string,
+        release: WorkerRelease, mode: 'safe' | 'now', reviewed?: Step) {
+        const job = jobs.get(bot.toLowerCase());
+        const running = job?.backend?.activeUpdate?.();
+        if (!job || job.plan.index !== index || job.plan.revision !== planRevision || job.cancel.signal.aborted || running?.runId !== runId) {
+            throw new PlanEditConflict('The running activity changed. Reload updates before retrying.');
+        }
+        if (job.pending) throw new PlanEditConflict('An update is already waiting for this activity.');
+        const step = reviewed ?? job.plan.steps[index]!;
+        const compatibility = release.value.checkStepCompatibility(step);
+        if (compatibility.status === 'review') throw new PlanEditConflict(compatibility.reason);
+        if (mode === 'safe' && !running.supported) {
+            throw new PlanEditConflict('This run does not provide safe checkpoints. Pause it before reviewing settings or use Update now when available.');
+        }
+        if (mode === 'now' && !job.backend?.safeForUpdate?.()) {
+            throw new PlanEditConflict('Wait for fresh game state outside combat with enough health and all game windows closed.');
+        }
+        job.pending = { index, planRevision, runId, release, mode, reviewed };
+        job.updateMessage = undefined;
+    }
+
+    function activeUpdate(bot: string) {
+        const job = jobs.get(bot.toLowerCase());
+        return {
+            running: job?.backend?.activeUpdate?.(),
+            waiting: !!job?.pending,
+            message: job?.updateMessage,
+        };
+    }
+
+    function cancelUpdate(bot: string, runId: string) {
+        const job = jobs.get(bot.toLowerCase());
+        if (!job?.pending || job.pending.runId !== runId) throw new PlanEditConflict('This update is no longer pending.');
+        const phase = job.backend?.activeUpdate?.()?.checkpoint?.phase;
+        if (job.pending.applying || phase === 'committed' || phase === 'accepted') {
+            throw new PlanEditConflict('The activity is already switching releases.');
+        }
+        cancelPending(job);
+    }
+
+    async function applyPending(job: PlanJob, backend: PlanBackend, status: ControllerStatus): Promise<WorkerRelease | undefined> {
+        const { plan, pending } = job;
+        if (!pending) return;
+        const running = backend.activeUpdate?.();
+        if (plan.index !== pending.index || plan.revision !== pending.planRevision) {
+            cancelPending(job);
+            return;
+        }
+        if (!status.task && pending.attempt && status.lastTask?.updateId === pending.attempt) {
+            // The script verified the checkpoint again and exited voluntarily.
+        } else if (running?.runId !== pending.runId) {
+            cancelPending(job);
+            return;
+        } else if (pending.mode === 'now') {
+            if (!backend.safeForUpdate?.()) {
+                job.updateMessage = 'The bot is busy or needs recovery. Try again at a safe point.';
+                cancelPending(job);
+                return;
+            }
+            pending.applying = true;
+            await backend.stop();
+            job.cancel.signal.throwIfAborted();
+            if (job.pending !== pending || plan.revision !== pending.planRevision) return;
+        } else {
+            const checkpoint = running.checkpoint;
+            if (!checkpoint) {
+                const id = randomUUID();
+                if (backend.requestCheckpoint?.(running.runId, id)) pending.attempt = id;
+            } else if (checkpoint.id === pending.attempt && checkpoint.phase === 'ready' && backend.safeForUpdate?.()) {
+                backend.commitCheckpoint?.(running.runId, checkpoint.id);
+            }
+            return;
+        }
+        if (pending.reviewed) {
+            const old = plan.steps[pending.index];
+            plan.steps[pending.index] = pending.reviewed;
+            if (old?.task !== pending.reviewed.task) plan.elapsedMs = 0;
+            saveRevision(plan);
+        }
+        job.pending = undefined;
+        return pending.release;
+    }
+
     async function waitReady(backend: PlanBackend, signal: AbortSignal) {
         const until = Date.now() + 90_000;
         let tick: number | undefined;
@@ -97,11 +213,15 @@ export function createPlanManager(directory: string, backendFor: (bot: string, s
         throw new Error('No fresh game state arrived for the managed client.');
     }
 
-    async function run(plan: Plan, signal: AbortSignal) {
+    async function run(job: PlanJob) {
+        const { plan } = job;
+        const { signal } = job.cancel;
         let backend: PlanBackend | undefined;
         let owned = false;
+        let nextRelease: WorkerRelease | undefined;
         try {
             backend = await backendFor(plan.bot, signal);
+            job.backend = backend;
             signal.throwIfAborted();
             if (backend.status().task) throw new Error('Stop the current activity before running a plan.');
             await backend.prepare(signal);
@@ -113,7 +233,7 @@ export function createPlanManager(directory: string, backendFor: (bot: string, s
                 let work: Work | null;
                 let release: WorkerRelease | undefined;
                 try {
-                    release = await updates?.load();
+                    release = nextRelease ?? await updates?.load();
                     signal.throwIfAborted();
                     // A plan edit can arrive while a new revision is loading.
                     if (step !== plan.steps[plan.index]) continue;
@@ -121,6 +241,7 @@ export function createPlanManager(directory: string, backendFor: (bot: string, s
                     missingSince = 0;
                 } catch (error) {
                     signal.throwIfAborted();
+                    if (error instanceof Error && error.name === 'PlanConfigurationConflict') throw error;
                     missingSince ||= Date.now();
                     if (Date.now() - missingSince > 20_000) throw error;
                     await Bun.sleep(interval);
@@ -128,6 +249,7 @@ export function createPlanManager(directory: string, backendFor: (bot: string, s
                     continue;
                 }
                 if (!work) {
+                    nextRelease = undefined;
                     advance(plan);
                     continue;
                 }
@@ -137,6 +259,7 @@ export function createPlanManager(directory: string, backendFor: (bot: string, s
                 if (backend.status().task) throw new Error('Stop the current activity before running a plan.');
                 const launchedWork = { ...work };
                 await backend.start(work.task, workSkill(work), workBankTarget(work), work.options, release);
+                nextRelease = undefined;
                 owned = true;
                 let lastLive = Date.now();
                 let previous = lastLive;
@@ -171,6 +294,7 @@ export function createPlanManager(directory: string, backendFor: (bot: string, s
                             missingEditSince = 0;
                         } catch (error) {
                             signal.throwIfAborted();
+                            if (error instanceof Error && error.name === 'PlanConfigurationConflict') throw error;
                             missingEditSince ||= now;
                             if (now - missingEditSince > 20_000) throw error;
                             previous = now;
@@ -206,6 +330,8 @@ export function createPlanManager(directory: string, backendFor: (bot: string, s
                         if (!work.inserted) advance(plan);
                         break;
                     }
+                    nextRelease = await applyPending(job, backend, status);
+                    if (nextRelease) break;
                     if (!status.task) {
                         const exit = status.lastTask;
                         if ((work.finish.type === 'essence-exhausted' || work.finish.type === 'bank-stock') &&
@@ -222,6 +348,7 @@ export function createPlanManager(directory: string, backendFor: (bot: string, s
                         }
                     }
                 }
+                cancelPending(job);
                 if (backend.status().task) await backend.stop();
                 owned = false;
                 signal.throwIfAborted();
@@ -232,6 +359,7 @@ export function createPlanManager(directory: string, backendFor: (bot: string, s
             plan.message = undefined;
             saveRevision(plan);
         } catch (error) {
+            cancelPending(job);
             if (owned && backend?.status().task) {
                 try { await backend.stop(); }
                 catch {
@@ -249,9 +377,9 @@ export function createPlanManager(directory: string, backendFor: (bot: string, s
 
     function launch(plan: Plan) {
         const key = plan.bot.toLowerCase();
-        const cancel = new AbortController();
-        const done = run(plan, cancel.signal).finally(() => jobs.delete(key));
-        jobs.set(key, { plan, cancel, done });
+        const job: PlanJob = { plan, cancel: new AbortController(), done: Promise.resolve() };
+        jobs.set(key, job);
+        job.done = run(job).finally(() => jobs.delete(key));
         return plan;
     }
 
@@ -276,6 +404,10 @@ export function createPlanManager(directory: string, backendFor: (bot: string, s
         const plan = job?.plan ?? get(bot);
         if (!plan || plan.revision !== expectedRevision || job?.cancel.signal.aborted) {
             throw new PlanEditConflict('The saved plan changed. Reload it before saving your edits.');
+        }
+        const checkpoint = job?.backend?.activeUpdate?.()?.checkpoint?.phase;
+        if (job?.pending?.applying || checkpoint === 'committed' || checkpoint === 'accepted') {
+            throw new PlanEditConflict('The activity is switching releases.');
         }
         for (let index = 0; index < plan.index; index++) {
             if (!sameStep(plan.steps[index], steps[index])) {
@@ -303,6 +435,7 @@ export function createPlanManager(directory: string, backendFor: (bot: string, s
             else if (proposed.status === 'complete') proposed.status = 'paused';
         }
         save(proposed);
+        if (job) cancelPending(job);
         Object.assign(plan, proposed);
         return plan;
     }
@@ -335,12 +468,10 @@ export function createPlanManager(directory: string, backendFor: (bot: string, s
     }
 
     function restore() {
-        const rows = db.query<{ data: string }, []>('SELECT data FROM activity_plan').all();
-        for (const { data } of rows) {
-            const plan = readPlan(data);
+        for (const plan of list()) {
             if (plan.status === 'running' && !jobs.has(plan.bot.toLowerCase())) launch(plan);
         }
     }
 
-    return { get, active, start, resume, update, pause, queueMining, restore, close: () => db.close() };
+    return { get, list, active, activeUpdate, requestUpdate, cancelUpdate, start, resume, update, pause, queueMining, restore, close: () => db.close() };
 }

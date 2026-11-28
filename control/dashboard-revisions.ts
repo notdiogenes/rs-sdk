@@ -14,6 +14,7 @@ export function dashboardRevisions(sourceDirectory: string, runtimeDirectory: st
     const root = dirname(source);
     const gitDirectory = join(root, '.git');
     const snapshots = new Map<string, Snapshot>();
+    const comparisons = new Map<string, Promise<string[]>>();
 
     async function git(...args: string[]) {
         const child = Bun.spawn(['git', ...args], { cwd: root, stdout: 'pipe', stderr: 'pipe' });
@@ -36,6 +37,20 @@ export function dashboardRevisions(sourceDirectory: string, runtimeDirectory: st
             throw new Error('The Fleet Desk source is not a Git checkout.');
         }
         return revision;
+    }
+
+    async function changedPaths(from: string, to: string): Promise<readonly string[]> {
+        if (!commitHash.test(from) || !commitHash.test(to)) throw new Error('Unknown task release.');
+        if (from === to) return [];
+        const key = `${from}:${to}`;
+        let result = comparisons.get(key);
+        if (!result) {
+            result = git('diff', '--name-only', '-z', from, to, '--').then(body => body.split('\0').filter(Boolean));
+            comparisons.set(key, result);
+            if (comparisons.size > 32) comparisons.delete(comparisons.keys().next().value!);
+        }
+        try { return await result; }
+        catch (error) { comparisons.delete(key); throw error; }
     }
 
     async function build<T>(entry: string, revision: string, valid: (module: unknown) => boolean, label: string): Promise<Loaded<T>> {
@@ -171,5 +186,5 @@ export function dashboardRevisions(sourceDirectory: string, runtimeDirectory: st
         }
     }
 
-    return { head, load, pinTask };
+    return { head, load, pinTask, changedPaths };
 }
