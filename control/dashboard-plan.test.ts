@@ -7,6 +7,7 @@ import { nextWork, parseSteps } from './dashboard-plan';
 import { createPlanManager, PlanEditConflict, type PlanBackend } from './dashboard-plan-runner';
 import { dashboardRoster } from './dashboard-roster';
 import { planCatalog } from './dashboard-task-catalog';
+import * as builtInPolicy from './dashboard-worker-policy';
 
 function world(thieving: number, hp: number, cook = false, tutorial = false) {
     return {
@@ -331,6 +332,62 @@ test('editing the active banking option relaunches the child and persists throug
         manager.resume('Bot');
         await until(() => launched.length === 3);
         expect(launched).toEqual([false, true, true]);
+    } finally {
+        await manager.pause('Bot');
+        manager.close();
+        rmSync(directory, { recursive: true, force: true });
+    }
+}, 20_000);
+
+test('keeps a running child on its release and launches the next step from the updated policy', async () => {
+    const directory = mkdtempSync(join(process.cwd(), '.plan-test-'));
+    const game = world(1, 99);
+    const status: ReturnType<PlanBackend['status']> = { bot: 'Bot', tasks: [], client: null, task: null };
+    const revisions: Array<string | undefined> = [];
+    let stops = 0;
+    let newPolicyChecks = 0;
+    let release = { revision: 'a'.repeat(40), value: builtInPolicy };
+    const backend: PlanBackend = {
+        status: () => status,
+        async prepare() { status.client = { startedAt: new Date().toISOString(), stopping: false }; },
+        async observe() { game.tick++; return game; },
+        async start(name, _skill, _target, _options, selected) {
+            expect(status.task).toBeNull();
+            revisions.push(selected?.revision);
+            status.task = { name, startedAt: new Date().toISOString(), stopping: false };
+        },
+        async stop() { stops++; status.task = null; },
+    };
+    const manager = createPlanManager(directory, async () => backend, {
+        async load() { return release; },
+        current: () => release.value,
+    });
+    try {
+        manager.start('Bot', parseSteps([
+            { task: 'pickpocket-men', finish: { type: 'level', skill: 'Thieving', level: 2 } },
+            { task: 'pickpocket-men', finish: { type: 'forever' } },
+        ]));
+        await until(() => revisions.length === 1);
+        const client = status.client;
+        const task = status.task;
+        const firstRevision = release.revision;
+        release = { revision: 'b'.repeat(40), value: {
+            ...builtInPolicy,
+            finished(...args: Parameters<typeof builtInPolicy.finished>) {
+                newPolicyChecks++;
+                return builtInPolicy.finished(...args);
+            },
+        } };
+        const updatedAtTick = game.tick;
+        await until(() => game.tick > updatedAtTick);
+        expect(status.task).toBe(task);
+        expect(stops).toBe(0);
+        expect(newPolicyChecks).toBe(0);
+        game.skills.find(skill => skill.name === 'Thieving')!.baseLevel = 2;
+        await until(() => revisions.length === 2);
+        expect(revisions).toEqual([firstRevision, release.revision]);
+        expect(status.client).toBe(client);
+        expect(stops).toBe(1);
     } finally {
         await manager.pause('Bot');
         manager.close();

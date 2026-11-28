@@ -14,8 +14,9 @@ import { dashboardFleetStats } from './dashboard-fleet-stats';
 import { dashboardQuestPoints } from './dashboard-quests';
 import { dashboardAudit } from './dashboard-audit';
 import { dashboardDemo, isBundledTask, type DashboardPathfinding } from './dashboard-demo';
-import { activity, planCatalog, trainingSkills } from './dashboard-task-catalog';
-import { parseSteps } from './dashboard-plan';
+import { activity } from './dashboard-task-catalog';
+import { handleWorkerRequest, type DashboardWorkerApiRuntime } from './dashboard-worker-api';
+import type { DashboardWorkerUpdates } from './dashboard-worker-policy';
 import { createPlanManager, PlanEditConflict, type Plan } from './dashboard-plan-runner';
 import { dashboardRoster, type BotProfile } from './dashboard-roster';
 
@@ -41,10 +42,11 @@ export type ControlActivity = {
     waiting?: string;
 };
 export type Snapshot = { bots: Bot[]; checkedAt: string };
-type ManagedProfile = BotProfile & { worker?: ReturnType<typeof dashboardDemo> };
+export type ManagedProfile = BotProfile & { worker?: ReturnType<typeof dashboardDemo> };
 type PrimaryFleet = { status: ControllerStatus; frame?: FleetStateFrame };
 
-export async function createDashboardSupervisor(botsDir: string, configDir: string, pathfinding?: DashboardPathfinding) {
+export async function createDashboardSupervisor(botsDir: string, configDir: string, pathfinding?: DashboardPathfinding,
+    updates?: DashboardWorkerUpdates) {
     const token = (await Bun.file(join(configDir, 'token')).text()).trim();
     if (!/^[a-f0-9]{64}$/.test(token)) throw new Error('Invalid control API token');
     const runtimeDir = join(dirname(configDir), 'rs-sdk-public-status');
@@ -53,7 +55,7 @@ export async function createDashboardSupervisor(botsDir: string, configDir: stri
     const git = Bun.spawnSync(['git', 'rev-parse', 'HEAD'], { cwd: import.meta.dir, stderr: 'ignore' });
     const revision = git.success ? git.stdout.toString().trim() : undefined;
     const recordStats = dashboardFleetStats(runtimeDir);
-    const demo = dashboardDemo(runtimeDir, botsDir, configDir, token, recordStats.recordBank, undefined, audit, revision, pathfinding);
+    const demo = dashboardDemo(runtimeDir, botsDir, configDir, token, recordStats.recordBank, undefined, audit, revision, pathfinding, updates);
     const rosterControllers = new Map<string, ReturnType<typeof dashboardDemo>>();
     const managedWorkers = () => [demo, ...rosterControllers.values()];
     const monitor = createDashboardMonitor(() => {
@@ -63,7 +65,7 @@ export async function createDashboardSupervisor(botsDir: string, configDir: stri
         return processes;
     });
     const botRoster = dashboardRoster(botsDir, runtimeDir);
-    const plans = createPlanManager(runtimeDir, planBackend);
+    const plans = createPlanManager(runtimeDir, planBackend, updates);
     const recordActivity = dashboardLastActivity(runtimeDir);
     const readState = dashboardStateReader();
     const sessions = dashboardSessions(runtimeDir, async () => {
@@ -132,7 +134,7 @@ export async function createDashboardSupervisor(botsDir: string, configDir: stri
         const key = profile.name.toLowerCase();
         let worker = rosterControllers.get(key);
         if (!worker) {
-            worker = dashboardDemo(runtimeDir, botsDir, configDir, token, recordStats.recordBank, profile, audit, revision, pathfinding);
+            worker = dashboardDemo(runtimeDir, botsDir, configDir, token, recordStats.recordBank, profile, audit, revision, pathfinding, updates);
             rosterControllers.set(key, worker);
         }
         return worker;
@@ -166,52 +168,6 @@ export async function createDashboardSupervisor(botsDir: string, configDir: stri
         return worker.planBackend(profile.name);
     }
 
-    async function handlePlan(request: Request, name: string | null, session?: string) {
-        const headers = { 'Cache-Control': 'no-store', ...(session ? { 'Set-Cookie': session } : {}) };
-        const reply = (body: object, status = 200) => Response.json(body, { status, headers });
-        if (!session && !await demo.allowed(request)) return reply({ error: 'Sign in to manage activity plans.' }, 401);
-        if (request.method === 'GET') {
-            const profile = name === null ? null : await botProfile(name);
-            if (name !== null && !profile) return reply({ error: 'Bot profile not found.' }, 404);
-            return reply({ catalog: planCatalog, skills: trainingSkills, plan: profile && plans.get(profile.name) });
-        }
-        if (request.method !== 'POST') return new Response(null, { status: 405, headers: { ...headers, Allow: 'GET, POST' } });
-        const body = await request.json().catch(() => null);
-        if (!body || typeof body !== 'object') return reply({ error: 'Invalid activity plan.' }, 400);
-        if (name === null) {
-            if (body.action !== 'create') return reply({ error: 'Choose a bot to manage.' }, 400);
-            try {
-                const steps = parseSteps(body.steps);
-                const profile = await botRoster.create(body.name, (await demo.profile())?.name);
-                const plan = plans.start(profile.name, steps);
-                expiresAt = 0;
-                return reply({ bot: profile.name, plan }, 202);
-            } catch (error) {
-                return reply({ error: error instanceof Error ? error.message : 'Could not create the bot.' }, 400);
-            }
-        }
-        const profile = await botProfile(name);
-        if (!profile) return reply({ error: 'Bot profile not found.' }, 404);
-        try {
-            let plan;
-            if (body.action === 'pause') plan = await plans.pause(profile.name);
-            else if (body.action === 'resume') plan = plans.resume(profile.name);
-            else if (body.action === 'start') plan = plans.start(profile.name, parseSteps(body.steps));
-            else if (body.action === 'update') {
-                if (typeof body.expectedRevision !== 'string' || !body.expectedRevision) {
-                    return reply({ error: 'Reload the current plan before saving changes.' }, 400);
-                }
-                plan = plans.update(profile.name, parseSteps(body.steps), body.expectedRevision);
-            } else if (body.action === 'queue-mining') plan = plans.queueMining(profile.name, parseSteps([body.step])[0]!);
-            else return reply({ error: 'Choose start, update, pause, resume, or queue mining.' }, 400);
-            expiresAt = 0;
-            return reply({ bot: profile.name, plan }, body.action === 'pause' || body.action === 'update' ? 200 : 202);
-        } catch (error) {
-            return reply({ error: error instanceof Error ? error.message : 'Could not update the plan.' },
-                error instanceof PlanEditConflict ? 409 : 400);
-        }
-    }
-
     function workerStatus(name: string, worker?: ReturnType<typeof dashboardDemo>) {
         return worker?.dashboardActivity(worker.status(name));
     }
@@ -240,7 +196,8 @@ export async function createDashboardSupervisor(botsDir: string, configDir: stri
                 }
                 return reply({ error: 'Pause the running plan before starting another activity.' }, 409);
             }
-            const bundled = body?.action === 'start' && isBundledTask(body.task) && !primary.tasks.includes(body.task);
+            const bundled = body?.action === 'start' && (updates?.current().isActivity ?? isBundledTask)(body.task) &&
+                !primary.tasks.includes(body.task);
             if (primaryActive && bundled) {
                 return reply({ error: 'Stop the primary game client before starting this bundled activity.' }, 409);
             }
@@ -323,7 +280,7 @@ export async function createDashboardSupervisor(botsDir: string, configDir: stri
     function botStatus(name: string, result: FleetStateReading | null | undefined, control?: ControlActivity): Bot {
         const plan = plans.get(name);
         const work = plan?.work ?? plan?.steps[plan.index];
-        const planLabel = work && activity(work.task).label;
+        const planLabel = work && (updates?.current().activity ?? activity)(work.task)?.label;
         const summary = plan ? { index: plan.index, length: plan.steps.length, status: plan.status, message: plan.message, label: planLabel } : undefined;
         if (plan?.status === 'running' && !control?.running) {
             control = { bot: name, label: planLabel ?? 'Starting plan', running: true, transitioning: true };
@@ -412,145 +369,20 @@ export async function createDashboardSupervisor(botsDir: string, configDir: stri
         try { audit.prune(); } catch { console.error('Activity audit retention check failed'); }
     }, 15 * 60_000).unref();
 
+    const apiRuntime: DashboardWorkerApiRuntime = {
+        botProfile, botRoster, plans, demo, sessions, monitor, managedWorkers, inventory, inventoryController,
+        parseInventoryCommand, recordStats, botDiagnostics, diagnostics, dashboardQuestPoints, handleBotActivity,
+        invalidateSnapshot: () => { expiresAt = 0; },
+        isPlanEditConflict: error => error instanceof PlanEditConflict,
+        snapshot(after, fresh) {
+            return snapshot(fresh && cached ? Date.parse(cached.checkedAt) : after);
+        },
+        handlePrimaryActivity: (request, session) => handleActivity(request, token, session),
+    };
+
     async function handle(request: Request) {
-        const { pathname, searchParams } = new URL(request.url);
-        if (pathname === '/internal/fleet-snapshot' && request.method === 'GET') {
-            const requestedAfter = searchParams.get('after');
-            const after = requestedAfter && /^\d{13}$/.test(requestedAfter) ? Number(requestedAfter) : undefined;
-            const previous = searchParams.get('fresh') === '1' ? cached : undefined;
-            return Response.json(await snapshot(previous ? Date.parse(previous.checkedAt) : after));
-        }
-        if (pathname === '/internal/audit-access') {
-            if (request.method === 'POST') return sessions.handle(request, 'login', { programmatic: true });
-            if (request.method !== 'GET') return new Response(null, { status: 405 });
-            const session = await sessions.authenticate(request).catch(() => undefined);
-            if (!session && !await demo.allowed(request)) {
-                return Response.json({ error: 'Sign in to view audit history.' }, { status: 401, headers: { 'Cache-Control': 'no-store' } });
-            }
-            return new Response(null, { status: 204, headers: session ? { 'Set-Cookie': session } : undefined });
-        }
-        if (pathname === '/bots/activity') {
-            const demoRoute = searchParams.get('demo');
-            if (demoRoute !== null) {
-                if (request.method === 'POST' && (demoRoute === 'task/stop' || demoRoute === 'client/stop') &&
-                    await demo.allowed(request)) await demo.cancelStart();
-                return demo.handle(request, demoRoute);
-            }
-            const action = searchParams.get('session');
-            if (action) return sessions.handle(request, action);
-            const session = await sessions.authenticate(request).catch(() => undefined);
-            const view = searchParams.get('view');
-            const bot = searchParams.get('bot');
-            if (view === 'monitor') {
-                const headers: Record<string, string> = { 'Cache-Control': 'no-store' };
-                if (request.method !== 'GET') return new Response(null, { status: 405, headers: { ...headers, Allow: 'GET' } });
-                if (!session && !await demo.allowed(request)) {
-                    return Response.json({ error: 'Sign in to view the resource monitor.' }, { status: 401, headers });
-                }
-                if (session) headers['Set-Cookie'] = session;
-                const requestedWindow = searchParams.get('window') ?? '30';
-                if (!['30', '300', '3600'].includes(requestedWindow)) {
-                    return Response.json({ error: 'Use a window of 30, 300, or 3600 seconds.' }, { status: 400, headers });
-                }
-                const seconds = Number(requestedWindow);
-                const reading = monitor.read(seconds);
-                const end = reading.sampledAt ?? Date.now();
-                const events = managedWorkers().flatMap(worker => worker.monitorTimeline(end - seconds * 1000))
-                    .filter(event => event.at <= end)
-                    .sort((a, b) => a.at - b.at);
-                return Response.json({ ...reading, events }, { headers });
-            }
-            if (view === 'plan') {
-                try { return await handlePlan(request, bot, session); }
-                catch { return Response.json({ error: 'Activity plans are temporarily unavailable.' }, { status: 503 }); }
-            }
-            if (view === 'inventory') {
-                const headers: Record<string, string> = { 'Cache-Control': 'no-store' };
-                const reply = (data: object, status = 200) => Response.json(data, { status, headers });
-                if (request.method !== 'GET' && request.method !== 'POST') {
-                    return new Response(null, { status: 405, headers: { ...headers, Allow: 'GET, POST' } });
-                }
-                if (!session) return reply({ error: 'Sign in to use the backpack.' }, 401);
-                headers['Set-Cookie'] = session;
-                try {
-                    const profile = bot && await botProfile(bot);
-                    if (!profile) return reply({ error: 'Bot profile not found.' }, 404);
-                    if (request.method === 'GET') return reply(await inventory(profile));
-                    if (request.headers.get('Content-Type')?.split(';')[0]?.trim().toLowerCase() !== 'application/json') {
-                        return reply({ error: 'Send an inventory action as JSON.' }, 415);
-                    }
-                    const command = parseInventoryCommand(await request.json().catch(() => null));
-                    if (!command) return reply({ error: 'Invalid inventory action.' }, 400);
-                    const control = await inventoryController(profile);
-                    if (!control) return reply({ error: 'Inventory controls are unavailable for this game client.' }, 409);
-                    const response = await control(command);
-                    response.headers.set('Set-Cookie', session);
-                    return response;
-                } catch {
-                    return reply({ error: request.method === 'POST'
-                        ? 'The inventory action could not be confirmed. Check the inventory before retrying.'
-                        : 'Current inventory is temporarily unavailable.' }, 503);
-                }
-            }
-            if (view === 'bank' || view === 'banks') {
-                const headers = { 'Cache-Control': 'no-store' };
-                if (request.method !== 'GET') return new Response(null, { status: 405, headers: { ...headers, Allow: 'GET' } });
-                if (!session) return Response.json({ error: 'Sign in to view bank snapshots.' }, { status: 401, headers });
-                const authenticated = { ...headers, 'Set-Cookie': session };
-                try {
-                    if (view === 'banks') return Response.json(recordStats.bankOverview(), { headers: authenticated });
-                    const profile = bot && await botProfile(bot);
-                    if (!profile) return Response.json({ error: 'Bot profile not found.' }, { status: 404, headers: authenticated });
-                    const { bank } = recordStats(profile.name);
-                    return Response.json({ bot: profile.name, bank }, { headers: authenticated });
-                } catch {
-                    return Response.json({ error: 'Bank snapshots are temporarily unavailable.' }, { status: 503, headers: authenticated });
-                }
-            }
-            if (view === 'diagnostics' && bot !== null) {
-                const headers: Record<string, string> = { 'Cache-Control': 'no-store' };
-                if (request.method !== 'GET') return new Response(null, { status: 405, headers: { ...headers, Allow: 'GET' } });
-                if (!session && !await demo.allowed(request)) {
-                    return Response.json({ error: 'Sign in to view diagnostics.' }, { status: 401, headers });
-                }
-                if (session) headers['Set-Cookie'] = session;
-                try {
-                    const report = await botDiagnostics(bot);
-                    return report ? Response.json(report, { headers })
-                        : Response.json({ error: 'Bot profile not found.' }, { status: 404, headers });
-                } catch {
-                    return Response.json({ error: 'Diagnostics are temporarily unavailable.' }, { status: 503, headers });
-                }
-            }
-            if (view === 'diagnostics' || view === 'fleet-data' || view === 'quests') {
-                const headers = { 'Cache-Control': 'no-store' };
-                if (request.method !== 'GET') return new Response(null, { status: 405, headers: { ...headers, Allow: 'GET' } });
-                if (!session) return Response.json({ error: 'Sign in to view this dashboard data.' }, { status: 401, headers });
-                try {
-                    const current = await snapshot();
-                    const payload = view === 'diagnostics' ? diagnostics.read() : view === 'quests'
-                        ? {
-                            scores: await dashboardQuestPoints(current.bots.map(({ name, stats }) => ({ name, score: stats?.journal?.score }))),
-                            journals: Object.fromEntries(current.bots.map(({ name, stats }) => [name, stats?.journal ?? null])),
-                        }
-                        : current.bots.map(({ name, stats }) => {
-                            const bank = stats?.bank;
-                            return {
-                                name, skills: stats?.skills, xpGained: stats?.xpGained,
-                                bank: bank && { at: bank.at, stacks: bank.stacks, coins: bank.coins },
-                            };
-                        });
-                    return Response.json(payload, { headers: { ...headers, 'Set-Cookie': session } });
-                } catch {
-                    return Response.json({ error: 'Dashboard data is temporarily unavailable.' }, { status: 503, headers });
-                }
-            }
-            const response = bot === null ? await handleActivity(request, token, session)
-                : await handleBotActivity(request, bot, session);
-            if (session) response.headers.set('Set-Cookie', session);
-            return response;
-        }
-        return new Response(null, { status: 404 });
+        const handler = updates ? (await updates.load()).value.handleWorkerRequest : handleWorkerRequest;
+        return handler(request, apiRuntime);
     }
 
     return { runtimeDir, handle };

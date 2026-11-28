@@ -5,6 +5,7 @@ import type { BotWorldState } from '../sdk/types';
 import type { ControllerStatus } from './dashboard-activity';
 import { finished, nextWork, type Step, type Work } from './dashboard-plan';
 import { activity, type ActivityId, type ActivityOptions } from './dashboard-task-catalog';
+import type { DashboardWorkerUpdates, WorkerRelease } from './dashboard-worker-policy';
 
 export type Plan = {
     bot: string;
@@ -21,7 +22,7 @@ export type PlanBackend = {
     status(): ControllerStatus;
     prepare(signal: AbortSignal): Promise<void>;
     observe(): Promise<BotWorldState | null>;
-    start(task: ActivityId, skill?: string, bankTarget?: number, options?: ActivityOptions): Promise<void>;
+    start(task: ActivityId, skill?: string, bankTarget?: number, options?: ActivityOptions, release?: WorkerRelease): Promise<void>;
     stop(): Promise<void>;
 };
 
@@ -54,7 +55,8 @@ function sameLaunch(first: Work, second: Work) {
         workBankTarget(first) === workBankTarget(second) && sameOptions(first.options, second.options);
 }
 
-export function createPlanManager(directory: string, backendFor: (bot: string, signal: AbortSignal) => Promise<PlanBackend>) {
+export function createPlanManager(directory: string, backendFor: (bot: string, signal: AbortSignal) => Promise<PlanBackend>,
+    updates?: Pick<DashboardWorkerUpdates, 'load' | 'current'>) {
     const db = new Database(join(directory, 'activity-plans.sqlite'), { create: true });
     db.exec('CREATE TABLE IF NOT EXISTS activity_plan (bot TEXT PRIMARY KEY COLLATE NOCASE, data TEXT NOT NULL)');
     const read = db.query<{ data: string }, [string]>('SELECT data FROM activity_plan WHERE bot = ?');
@@ -109,10 +111,16 @@ export function createPlanManager(directory: string, backendFor: (bot: string, s
                 signal.throwIfAborted();
                 let step = plan.steps[plan.index]!;
                 let work: Work | null;
+                let release: WorkerRelease | undefined;
                 try {
-                    work = nextWork(step, state, plan.elapsedMs);
+                    release = await updates?.load();
+                    signal.throwIfAborted();
+                    // A plan edit can arrive while a new revision is loading.
+                    if (step !== plan.steps[plan.index]) continue;
+                    work = (release?.value.nextWork ?? nextWork)(step, state, plan.elapsedMs);
                     missingSince = 0;
                 } catch (error) {
+                    signal.throwIfAborted();
                     missingSince ||= Date.now();
                     if (Date.now() - missingSince > 20_000) throw error;
                     await Bun.sleep(interval);
@@ -128,7 +136,7 @@ export function createPlanManager(directory: string, backendFor: (bot: string, s
                 signal.throwIfAborted();
                 if (backend.status().task) throw new Error('Stop the current activity before running a plan.');
                 const launchedWork = { ...work };
-                await backend.start(work.task, workSkill(work), workBankTarget(work), work.options);
+                await backend.start(work.task, workSkill(work), workBankTarget(work), work.options, release);
                 owned = true;
                 let lastLive = Date.now();
                 let previous = lastLive;
@@ -154,10 +162,15 @@ export function createPlanManager(directory: string, backendFor: (bot: string, s
                     lastLive = now;
                     if (revised !== step) {
                         let replacement: Work | null;
+                        let updatedRelease: WorkerRelease | undefined;
                         try {
-                            replacement = nextWork(revised, state, plan.elapsedMs);
+                            updatedRelease = await updates?.load();
+                            signal.throwIfAborted();
+                            if (revised !== plan.steps[plan.index]) continue;
+                            replacement = (updatedRelease?.value.nextWork ?? nextWork)(revised, state, plan.elapsedMs);
                             missingEditSince = 0;
                         } catch (error) {
+                            signal.throwIfAborted();
                             missingEditSince ||= now;
                             if (now - missingEditSince > 20_000) throw error;
                             previous = now;
@@ -171,6 +184,7 @@ export function createPlanManager(directory: string, backendFor: (bot: string, s
                         if (work.finish.type !== 'minutes' || work.inserted) previous = now;
                         step = revised;
                         work = replacement;
+                        release = updatedRelease;
                         plan.work = work;
                         save(plan);
                     }
@@ -182,7 +196,7 @@ export function createPlanManager(directory: string, backendFor: (bot: string, s
                     previous = now;
                     let done = false;
                     try {
-                        done = finished(work, state, plan.elapsedMs);
+                        done = (release?.value.finished ?? finished)(work, state, plan.elapsedMs);
                         missingFinishSince = 0;
                     } catch (error) {
                         missingFinishSince ||= now;
@@ -200,11 +214,11 @@ export function createPlanManager(directory: string, backendFor: (bot: string, s
                             break;
                         }
                         if (exit?.name === work.task && exit.exitCode !== 0) {
-                            throw new Error(`${activity(work.task).label} exited with code ${exit.exitCode}.`);
+                            throw new Error(`${(release?.value.activity ?? activity)(work.task).label} exited with code ${exit.exitCode}.`);
                         }
                         endedAt ||= now;
                         if (now - endedAt > 7500) {
-                            throw new Error(`${activity(work.task).label} exited before the finish condition was verified.`);
+                            throw new Error(`${(release?.value.activity ?? activity)(work.task).label} exited before the finish condition was verified.`);
                         }
                     }
                 }
@@ -301,7 +315,9 @@ export function createPlanManager(directory: string, backendFor: (bot: string, s
             plan.index !== plan.steps.length - 1 || step?.task !== 'craft-body-runes') {
             throw new Error('Mining can be queued after the current final runecrafting step.');
         }
-        if (plan.steps.length >= 12 || activity(next.task).category !== 'Mining') throw new Error('Choose a mining activity to queue.');
+        if (plan.steps.length >= 12 || (updates?.current().activity ?? activity)(next.task).category !== 'Mining') {
+            throw new Error('Choose a mining activity to queue.');
+        }
         const finish = { type: 'essence-exhausted' } as const;
         step.finish = finish;
         if (plan.work?.task === step.task) plan.work.finish = finish;

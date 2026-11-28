@@ -12,6 +12,7 @@ import type { DashboardAudit } from './dashboard-audit';
 import type { MonitorProcess } from './dashboard-monitor';
 import { taskActivityLabel } from './dashboard-task-activity';
 import { activity, activityIds, isActivity, type ActivityId, type ActivityOptions } from './dashboard-task-catalog';
+import { taskEnvironment, type DashboardWorkerUpdates, type WorkerRelease } from './dashboard-worker-policy';
 
 const taskName = 'pickpocket-men';
 export const isBundledTask = isActivity;
@@ -63,7 +64,7 @@ export type DashboardPathfinding = {
 
 export function dashboardDemo(runtimeDir: string, botsDir: string, configDir: string, token: string,
     recordBank: ReturnType<typeof dashboardFleetStats>['recordBank'], roster?: BotProfile, audit?: DashboardAudit, revision?: string,
-    pathfinding?: DashboardPathfinding) {
+    pathfinding?: DashboardPathfinding, updates?: DashboardWorkerUpdates) {
     const writableDir = roster ? join(runtimeDir, 'managed-bots', roster.name) : join(runtimeDir, 'pickpocket-demo');
     const workingDir = roster?.directory ?? writableDir;
     const envFile = join(workingDir, 'bot.env');
@@ -233,33 +234,44 @@ export function dashboardDemo(runtimeDir: string, botsDir: string, configDir: st
         }).catch(() => { event('client-observer-failed'); });
     }
 
-    async function startTask(bot: string, name: DemoTaskName, planned = false, skill?: string, bankTarget?: number, options?: ActivityOptions) {
+    async function startTask(bot: string, name: DemoTaskName, planned = false, skill?: string, bankTarget?: number,
+        options?: ActivityOptions, release?: WorkerRelease) {
+        const activeClient = client;
         await pathfinding?.ensureReady();
         const credentials = await botCredentials(bot, workingDir);
-        const script = join(import.meta.dir, 'tasks', activity(name).script);
-        const scriptSha = audit ? await Bun.file(script).arrayBuffer()
-            .then(bytes => createHash('sha256').update(new Uint8Array(bytes)).digest('hex')).catch(() => null) : null;
-        const auditId = audit?.begin(bot, name, revision ?? null, scriptSha, [credentials.password, token]);
+        const selected = release ?? await updates?.load();
+        const definition = (selected?.value.activity ?? activity)(name);
+        const pinned = await updates?.pinTask(selected?.revision, definition.script);
+        const script = pinned?.path ?? join(import.meta.dir, 'tasks', definition.script);
+        let auditId: string | undefined;
         let child: Bun.Subprocess<'ignore', 'pipe', 'pipe'>;
-        try { child = Bun.spawn([process.execPath, '--no-env-file', script], {
-            cwd: writableDir,
-            stdin: 'ignore', stdout: 'pipe', stderr: 'pipe',
-            env: {
-                ...process.env, BOT_USERNAME: credentials.username, PASSWORD: credentials.password,
-                SERVER: 'rs-sdk.maxbittker.com', SHOW_CHAT: 'false', GATEWAY_DIRECT: 'false',
-                ...(pathfinding && { RS_PATHFINDING_SOCKET: pathfinding.socket }),
-                RS_ACTIVITY: name, RS_ACTIVITY_AUDIT: auditId ? '1' : '0', RS_PLANNED: planned ? '1' : '0', RS_ACTIVITY_SKILL: skill ?? '',
-                RS_ACTIVITY_BANK_TARGET: bankTarget === undefined ? '' : String(bankTarget),
-                RS_ACTIVITY_PICKPOCKET_BANKING: options?.banking ? '1' : '',
-            },
-        }); } catch (error) {
+        try {
+            const scriptSha = pinned?.sha ?? (audit ? await Bun.file(script).arrayBuffer()
+                .then(bytes => createHash('sha256').update(new Uint8Array(bytes)).digest('hex')).catch(() => null) : null);
+            if (!activeClient || client !== activeClient || activeClient.stopping || activeClient.process.exitCode !== null) {
+                throw new Error('The managed client stopped before the activity could start.');
+            }
+            auditId = audit?.begin(bot, name, pinned?.revision ?? selected?.revision ?? revision ?? null, scriptSha, [credentials.password, token]);
+            const activityEnv = (selected?.value.taskEnvironment ?? taskEnvironment)(skill, bankTarget, options);
+            child = Bun.spawn([process.execPath, '--no-env-file', script], {
+                cwd: writableDir,
+                stdin: 'ignore', stdout: 'pipe', stderr: 'pipe',
+                env: {
+                    ...process.env, ...activityEnv, BOT_USERNAME: credentials.username, PASSWORD: credentials.password,
+                    SERVER: 'rs-sdk.maxbittker.com', SHOW_CHAT: 'false', GATEWAY_DIRECT: 'false',
+                    ...(pathfinding && { RS_PATHFINDING_SOCKET: pathfinding.socket }),
+                    RS_ACTIVITY: name, RS_ACTIVITY_AUDIT: auditId ? '1' : '0', RS_PLANNED: planned ? '1' : '0',
+                },
+            });
+        } catch (error) {
+            await pinned?.release().catch(() => { event('task-release-cleanup-failed'); });
             if (auditId) {
                 audit?.append(auditId, { kind: 'failure', name: 'spawn', message: error instanceof Error ? error.message : String(error) });
                 audit?.finish(auditId, 1, false);
             }
             throw error;
         }
-        const running: Task = { bot, auditId, process: child, startedAt: new Date().toISOString(), name, activity: activity(name).label, bankTarget };
+        const running: Task = { bot, auditId, process: child, startedAt: new Date().toISOString(), name, activity: definition.label, bankTarget };
         task = running;
         taskExit = null;
         taskStopped = false;
@@ -279,7 +291,9 @@ export function dashboardDemo(runtimeDir: string, botsDir: string, configDir: st
                 audit?.append(auditId, { kind: 'worker', name: 'task-exited', exitCode, stopped: running.stopping });
                 audit?.finish(auditId, exitCode, !!running.stopping);
             }
-        }).catch(() => { event('task-observer-failed'); });
+        }).catch(() => { event('task-observer-failed'); }).finally(async () => {
+            await pinned?.release().catch(() => { event('task-release-cleanup-failed'); });
+        });
     }
 
     async function state(bot: string | null, allowUnregistered = false) {
@@ -312,7 +326,7 @@ export function dashboardDemo(runtimeDir: string, botsDir: string, configDir: st
 
     function status(bot: string | null): ControllerStatus {
         return {
-            bot, tasks: activityIds,
+            bot, tasks: updates?.current().activityIds ?? activityIds,
             client: client ? { startedAt: client.startedAt, stopping: Boolean(client.stopping) } : null,
             task: task ? { name: task.name, startedAt: task.startedAt, stopping: Boolean(task.stopping), activity: task.activity, recovery: task.recovery } : null,
             lastTask: taskExit && !taskStopped ? { name: taskExit.name, exitCode: taskExit.exitCode,
@@ -362,7 +376,8 @@ export function dashboardDemo(runtimeDir: string, botsDir: string, configDir: st
             if (route === 'task/start') {
                 const body = await request.json().catch(() => null);
                 const name = body?.task;
-                if (!isBundledTask(name)) {
+                const release = await updates?.load();
+                if (!(release?.value.isActivity ?? isBundledTask)(name)) {
                     return json({ error: 'Unknown demo task' }, 400);
                 }
                 const bot = await storedBot();
@@ -371,7 +386,7 @@ export function dashboardDemo(runtimeDir: string, botsDir: string, configDir: st
                     client !== activeClient || activeClient.stopping || activeClient.process.exitCode !== null) {
                     return json({ error: 'Start the demo client and wait for live state before starting a task' }, 409);
                 }
-                await startTask(bot, name);
+                await startTask(bot, name, false, undefined, undefined, undefined, release);
                 return json({ bot, task: name, phase: 'starting' }, 202);
             }
             if (task) taskStopped = true;
@@ -418,10 +433,10 @@ export function dashboardDemo(runtimeDir: string, botsDir: string, configDir: st
                     sample.botStatus === 'dead' || sample.botStatus === 'stale' || !isFreshBotState(sample.stateAge)) return null;
                 return sample.state;
             },
-            async start(name: ActivityId, skill?: string, bankTarget?: number, options?: ActivityOptions) {
+            async start(name: ActivityId, skill?: string, bankTarget?: number, options?: ActivityOptions, release?: WorkerRelease) {
                 if (!client || task || busy || startingPlanTask) throw new Error('The managed client is busy.');
                 startingPlanTask = true;
-                try { await startTask(bot, name, true, skill, bankTarget, options); }
+                try { await startTask(bot, name, true, skill, bankTarget, options, release); }
                 finally { startingPlanTask = false; }
             },
             stop: () => planCommand(bot, 'task/stop', true),

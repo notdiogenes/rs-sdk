@@ -284,13 +284,25 @@ Use `GET /bots/activity?view=monitor&window=30` with a dashboard session or
 control Bearer credential. The window is in seconds and accepts `30`, `300`,
 or `3600`. Samples include timestamps for matching PIDs against `atop`.
 
-### Activity audit history
+### Fleet Desk updates
 
 Fleet Desk loads its page, browser assets, and read-only audit reports from one
 committed Git revision. A UI update takes effect on the next page load. If a
 presentation fails to load, Fleet Desk keeps serving the previous version.
-Changes to task control or audit recording can still require a worker
-supervisor restart.
+The worker loads compatible plan, activity catalog, and API changes in place
+and keeps the last compatible version if a reload fails. Running tasks keep
+the script and tracked dependencies from their launch revision. The next
+task launch uses the updated compatible release. An operator edit that
+changes launch arguments can still relaunch the affected task.
+
+On an existing host, the first update to this worker leaves the old process
+and its bots running. Activate live updates during a maintenance window by
+restarting `rs-sdk-fleet-workers.service` once after the checkout syncs.
+Fleet Desk restores saved running plans after that restart. Subsequent
+changes to the process supervisor, game client, or shared pathfinder still
+use a worker restart.
+
+### Activity audit history
 
 Fleet desk stores activity runs in `activity-audit.sqlite` in the dashboard
 runtime directory. Each dashboard-managed task and the Lumbridge demo worker

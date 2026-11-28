@@ -1,6 +1,9 @@
 import { lstatSync, unlinkSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { createDashboardSupervisor } from './dashboard-supervisor';
+import { dashboardRevisions } from './dashboard-revisions';
+import * as builtInPolicy from './dashboard-worker-policy';
+import type { DashboardWorkerPolicy, DashboardWorkerUpdates } from './dashboard-worker-policy';
 import type { MonitorProcess } from './dashboard-monitor';
 
 const [botsDir, configDir, socket] = process.argv.slice(2);
@@ -10,6 +13,18 @@ const pathfindingServer = join(import.meta.dir, '../sdk/pathfinding-server.ts');
 const PATHFINDING_START_TIMEOUT = 60_000;
 let pathfindingReady = false;
 let monitoredPathfinder: MonitorProcess | null = null;
+const revisions = dashboardRevisions(import.meta.dir, dirname(socket));
+const reload = revisions.load<DashboardWorkerPolicy>('dashboard-worker-policy.ts', builtInPolicy.isWorkerPolicy, 'worker policy', builtInPolicy);
+let policy: DashboardWorkerPolicy = builtInPolicy;
+const updates: DashboardWorkerUpdates = {
+    async load() {
+        const release = await reload();
+        policy = release.value;
+        return release;
+    },
+    current: () => policy,
+    pinTask: revisions.pinTask,
+};
 
 async function supervisePathfinding() {
     for (;;) {
@@ -59,11 +74,12 @@ async function waitForPathfinding() {
     }
 }
 
+await updates.load();
 const supervisor = await createDashboardSupervisor(botsDir, configDir, {
     socket: pathfindingSocket,
     ensureReady: waitForPathfinding,
     monitoredProcess: () => monitoredPathfinder,
-});
+}, updates);
 Bun.serve({
     unix: socket,
     maxRequestBodySize: 16_384,

@@ -3,8 +3,9 @@ set -euo pipefail
 
 source_dir=$1
 stamp=$2
+role=${4:-legacy}
 # Old installations continue running until the separate services are installed.
-case "${4:-legacy}" in
+case "$role" in
     legacy)
         if [[ "$3" == changed ]]; then exit 1; fi
         if [[ "$3" == record ]]; then exit 0; fi
@@ -17,20 +18,32 @@ case "${4:-legacy}" in
         )
         ;;
     worker)
+        # The old service is still running from before live updates were installed.
+        # Activate this worker with a controlled restart. ExecStartPost writes
+        # the new stamp only after the service has started.
+        worker_stamp_version='Fleet Desk worker restart inputs v2'
+        if [[ "$3" == changed ]]; then
+            if [[ ! -r "$stamp" ]] || ! IFS= read -r installed_version < "$stamp" ||
+                [[ "$installed_version" != "$worker_stamp_version" ]]; then
+                exit 1
+            fi
+        fi
+        # Only dependencies of the long-lived worker, pathfinder and client
+        # belong here. The worker reloads plan policy and starts task scripts
+        # in separate processes on demand.
         files=(
             "$source_dir/dashboard-worker.ts" "$source_dir/dashboard-supervisor.ts" "$source_dir/dashboard-monitor.ts"
-            "$source_dir/dashboard-task-activity.ts"
+            "$source_dir/dashboard-task-activity.ts" "$source_dir/dashboard-revisions.ts"
             "$source_dir/dashboard-activity.ts" "$source_dir/dashboard-session.ts" "$source_dir/dashboard-inventory.ts"
             "$source_dir/dashboard-diagnostics.ts" "$source_dir/dashboard-live-state.ts" "$source_dir/dashboard-audit.ts" "$source_dir/dashboard-audit-schema.ts"
             "$source_dir/dashboard-audit-insights.ts" "$source_dir/dashboard-last-activity.ts" "$source_dir/hosted-bot.ts"
             "$source_dir/dashboard-fleet-stats.ts" "$source_dir/dashboard-quests.ts"
-            "$source_dir/dashboard-demo.ts" "$source_dir/dashboard-task-catalog.ts" "$source_dir/dashboard-roster.ts" "$source_dir/mining-routes.ts"
-            "$source_dir/dashboard-plan.ts" "$source_dir/dashboard-plan-runner.ts" "$source_dir"/tasks/*.ts
-            "$source_dir/../sdk/audit-trace.ts" "$source_dir/../sdk/index.ts" "$source_dir/../sdk/runner.ts"
+            "$source_dir/dashboard-demo.ts" "$source_dir/dashboard-roster.ts" "$source_dir/dashboard-plan-runner.ts"
+            "$source_dir/../sdk/audit-trace.ts"
             "$source_dir/../sdk/"pathfinding*.ts "$source_dir/../sdk/collision-data.json"
             "$source_dir/../server/vendor/rsmod-pathfinder/rsmod-pathfinder.js" "$source_dir/../server/vendor/rsmod-pathfinder/rsmod_bg.wasm"
             "$source_dir/../sdk/inventory-command.ts" "$source_dir/../sdk/fleet-telemetry.ts"
-            "$source_dir"/tasks/quests/*.ts "$source_dir/../server/webclient/src/lite/runner.ts"
+            "$source_dir/../server/webclient/src/lite/runner.ts"
             "$source_dir/../server/webclient/src/lite/LiteClient.ts" "$source_dir/../server/webclient/src/lite/actions.ts"
             "$source_dir/../server/webclient/src/lite/protocol/incoming.ts"
             "$source_dir/../server/webclient/src/bot/StateCollector.ts" "$source_dir/../server/webclient/src/bot/quest-journal.ts"
@@ -39,6 +52,9 @@ case "${4:-legacy}" in
     *) exit 2 ;;
 esac
 revision=$(sha256sum -- "${files[@]}")
+if [[ "$role" == worker ]]; then
+    revision="$worker_stamp_version"$'\n'"$revision"
+fi
 
 case "$3" in
     changed)
