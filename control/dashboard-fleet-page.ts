@@ -211,14 +211,15 @@ export function fleetPage({ nonce, revision = '', data, taskActivity, questCatal
 </main>
 <dialog id="monitor-dialog" aria-labelledby="monitor-title"><div class="dialog-body">
   <div class="dialog-header monitor-header">
-    <div><h2 id="monitor-title">Resource monitor</h2><p>VPS process usage by bot and PID</p></div>
+    <div class="monitor-heading"><h2 id="monitor-title">Resource monitor</h2>
+      <p id="monitor-status" role="status">VPS process usage by bot and PID</p>
+    </div>
     <dl class="monitor-meta">
       <div><dt>Sample interval</dt><dd id="monitor-interval">—</dd></div>
       <div><dt>Latest sample</dt><dd><time id="monitor-latest">—</time></dd></div>
     </dl>
     <button type="button" id="monitor-close" autofocus>Close</button>
   </div>
-  <p id="monitor-status" role="status" hidden></p>
   <section class="monitor-summary" aria-label="Resource totals">
     <article class="metric monitor-bots"><span>Bot processes</span><strong id="monitor-bot-rss">—</strong><small id="monitor-bot-detail">Lite clients and SDK tasks</small></article>
     <article class="metric monitor-shared"><span>Shared pathfinder</span><strong id="monitor-shared-rss">—</strong><small id="monitor-shared-detail">—</small></article>

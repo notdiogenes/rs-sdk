@@ -1608,8 +1608,9 @@
     let monitorCursorAt;
 
     function monitorStatus(message) {
-        setText(monitorField('status'), message);
-        setHidden(monitorField('status'), !message);
+        const status = monitorField('status');
+        setText(status, message || 'VPS process usage by bot and PID');
+        status.dataset.notice = String(Boolean(message));
     }
 
     function monitorTotal(processes, property) {
@@ -1630,7 +1631,7 @@
             : Number.isFinite(monitorData?.sampledAt) ? 'No pathfinder process sampled' : '—');
         setText(monitorField('fleet-rss'), monitorRss(monitorTotal(processes, 'rssBytes')));
         setText(monitorField('fleet-detail'), monitorData
-            ? `${processes.length} managed ${processes.length === 1 ? 'process' : 'processes'} · CPU ${monitorCpu(monitorTotal(processes, 'cpuPercent'))}` : '—');
+            ? `${processes.length} ${processes.length === 1 ? 'process' : 'processes'} · CPU ${monitorCpu(monitorTotal(processes, 'cpuPercent'))}` : '—');
         setText(monitorField('interval'), Number.isFinite(monitorData?.sampleIntervalMs) ? `${monitorData.sampleIntervalMs} ms` : '—');
         const latest = monitorField('latest');
         if (Number.isFinite(monitorData?.sampledAt)) {
@@ -1902,7 +1903,7 @@
         }
         if (monitorDialog.open) return;
         clearTimeout(refresh);
-        monitorStatus('Loading process usage…');
+        monitorStatus('');
         monitorDialog.showModal();
         renderMonitor();
         void loadMonitor();
@@ -1930,7 +1931,6 @@
             if (button.dataset.monitorMetric) monitorMetric = button.dataset.monitorMetric;
             else {
                 monitorWindow = Number(button.dataset.monitorWindow);
-                monitorStatus('Loading history…');
                 void loadMonitor();
             }
             drawMonitorChart();
