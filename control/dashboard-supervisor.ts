@@ -69,6 +69,7 @@ export async function createDashboardSupervisor(botsDir: string, configDir: stri
     let cached: Snapshot | undefined;
     let expiresAt = 0;
     let refreshing: Promise<Snapshot> | undefined;
+    let sampleTimer: ReturnType<typeof setTimeout>;
     let readingPrimary: Promise<PrimaryFleet | null> | undefined;
 
     async function primaryStatus(): Promise<ControllerStatus> {
@@ -367,8 +368,12 @@ export async function createDashboardSupervisor(botsDir: string, configDir: stri
         return { bots: readings.map(({ bot }) => bot), checkedAt: new Date().toISOString() };
     }
 
-    async function snapshot() {
-        if (cached && Date.now() < expiresAt) return cached;
+    async function snapshot(after?: number) {
+        const now = Date.now();
+        // The dashboard clock shows whole seconds. A refresh must advance the displayed second.
+        const minimum = after === undefined ? 0 : Math.floor(Math.min(now, after) / 1000) * 1000 + 1000;
+        if (minimum > now) await Bun.sleep(minimum - now);
+        if (cached && Date.now() < expiresAt && Date.parse(cached.checkedAt) >= minimum) return cached;
         return refreshSnapshot();
     }
 
@@ -377,12 +382,16 @@ export async function createDashboardSupervisor(botsDir: string, configDir: stri
             cached = result;
             expiresAt = Date.now() + refreshSeconds * 1000;
             return result;
-        }).finally(() => { refreshing = undefined; });
+        }).finally(() => {
+            refreshing = undefined;
+            clearTimeout(sampleTimer);
+            sampleTimer = setTimeout(collectInBackground, refreshSeconds * 1000);
+            sampleTimer.unref();
+        });
     }
 
     const collectInBackground = () => void refreshSnapshot().catch(() => console.error('Dashboard bot sample failed'));
     collectInBackground();
-    setInterval(collectInBackground, refreshSeconds * 1000).unref();
     plans.restore();
     setInterval(() => {
         try { audit.prune(); } catch { console.error('Activity audit retention check failed'); }
@@ -391,7 +400,10 @@ export async function createDashboardSupervisor(botsDir: string, configDir: stri
     async function handle(request: Request) {
         const { pathname, searchParams } = new URL(request.url);
         if (pathname === '/internal/fleet-snapshot' && request.method === 'GET') {
-            return Response.json(await snapshot());
+            const requestedAfter = searchParams.get('after');
+            const after = requestedAfter && /^\d{13}$/.test(requestedAfter) ? Number(requestedAfter) : undefined;
+            const previous = searchParams.get('fresh') === '1' ? cached : undefined;
+            return Response.json(await snapshot(previous ? Date.parse(previous.checkedAt) : after));
         }
         if (pathname === '/internal/audit-access') {
             if (request.method === 'POST') return sessions.handle(request, 'login', { programmatic: true });

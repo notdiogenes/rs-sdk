@@ -27,6 +27,7 @@
     const close = form.querySelector('#activity-close');
     let refresh;
     let fleetRefresh;
+    let requestedSnapshot;
     let selected;
     let signedIn = false;
     let configured = true;
@@ -935,10 +936,17 @@
     }
 
     function refreshFleet(afterChange = false) {
-        if (fleetRefresh) return afterChange ? fleetRefresh.then(() => refreshFleet()) : fleetRefresh;
+        const displayedSnapshot = document.querySelector('.brand time')?.dateTime;
+        if (fleetRefresh) {
+            return afterChange || displayedSnapshot !== requestedSnapshot
+                ? fleetRefresh.then(() => refreshFleet()) : fleetRefresh;
+        }
+        requestedSnapshot = displayedSnapshot;
         clearTimeout(refresh);
         fleetRefresh = (async () => {
-            const response = await fetch(window.location.pathname + window.location.search, {
+            const url = new URL(window.location.href);
+            if (displayedSnapshot) url.searchParams.set('snapshotAfter', String(Date.parse(displayedSnapshot)));
+            const response = await fetch(url.pathname + url.search, {
                 credentials: 'same-origin', cache: 'no-store', redirect: 'error', signal: AbortSignal.timeout(15000),
             });
             if (!response.ok) throw new Error('Fleet refresh failed');

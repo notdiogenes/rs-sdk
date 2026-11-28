@@ -140,8 +140,13 @@ export function dashboardWebHandler(worker: CallSupervisor, presentation: LoadPr
         }
         let data: Snapshot | undefined;
         const taskActivity = new Map<string, LastActivity>();
+        let snapshotPath = '/internal/fleet-snapshot';
+        if (request.method === 'GET') {
+            const after = searchParams.get('snapshotAfter');
+            snapshotPath += after && /^\d{13}$/.test(after) ? `?after=${after}` : '?fresh=1';
+        }
         try {
-            const response = await call('/internal/fleet-snapshot');
+            const response = await call(snapshotPath);
             if (response.ok) {
                 data = await response.json() as Snapshot;
                 for (const bot of data.bots) {

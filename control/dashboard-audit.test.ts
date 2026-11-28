@@ -122,6 +122,23 @@ test('renders named task activity with its own timestamp and ignores reports fro
     }
 });
 
+test('requests a sample newer than the timestamp displayed by the Fleet page', async () => {
+    const checkedAt = '2026-11-27T23:20:00.000Z';
+    const requests: string[] = [];
+    const handle = dashboardWebHandler(async request => {
+        requests.push(new URL(request.url).search);
+        return Response.json({ bots: [], checkedAt });
+    }, async () => ({ revision: 'fixture', fleetStyle: '', controls: '', fleetPage, auditDashboardLocation, readDashboardAudit }),
+    () => { throw new Error('No activity data to look up'); }, []);
+    const url = 'https://fleet.test/bots';
+    const after = Date.parse(checkedAt);
+    const initial = await handle(new Request(url));
+    expect(await initial.text()).toContain(`<time datetime="${checkedAt}">`);
+    expect((await handle(new Request(`${url}?snapshotAfter=${after}`))).status).toBe(200);
+    expect((await handle(new Request(url, { method: 'HEAD' }))).status).toBe(200);
+    expect(requests).toEqual(['?fresh=1', `?after=${after}`, '']);
+});
+
 test('groups matching breakpoints and preserves bounded evidence beyond trace eviction', () => {
     const directory = mkdtempSync(join(process.cwd(), '.audit-test-'));
     let now = 1_800_000_000_000;
