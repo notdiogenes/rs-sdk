@@ -75,6 +75,13 @@ export async function fishSharks({ bot, sdk }: ScriptContext, cook = process.env
         return { ...state, player: state.player };
     }
 
+    function observe(predicate: (state: BotWorldState) => boolean, timeout: number) {
+        return sdk.waitForCondition(state => !state.inGame || !!state.player?.isDead || predicate(state), timeout).catch(error => {
+            if (error instanceof Error && error.message === 'waitForCondition timed out') return null;
+            throw error;
+        });
+    }
+
     async function requireAction(label: string, action: Promise<{ success: boolean; message: string }>) {
         const result = await action;
         if (!result.success) throw new Error(`${label}: ${result.message}`);
@@ -177,15 +184,34 @@ export async function fishSharks({ bot, sdk }: ScriptContext, cook = process.env
         await walk(catherbyRange, 3, 'Reach the Catherby range');
         const range = current().nearbyLocs.find(loc => loc.id === 2728 && loc.x === catherbyRange.x && loc.z === catherbyRange.z);
         if (!range) throw new Error('The Catherby range was not visible.');
+        const startingXp = skill(current(), 'Cooking')?.experience ?? 0;
+        let processed = 0;
+        let misses = 0;
         for (let item = nextFish(); item; item = nextFish()) {
             const { id, name } = item;
             const count = quantity(current(), id);
             reportTaskActivity('Cooking fish at the Catherby range');
-            await requireAction(`Use ${name} on the range`, bot.useItemOnLoc(item, range));
-            // A burn still consumes the raw fish, so XP is not a reliable
-            // completion signal for an individual cook.
-            await sdk.waitForCondition(state => quantity(state, id) < count, 10_000);
+            const result = await bot.useItemOnLoc(item, range, { timeout: 5_000 });
+            // Both a cook and a burn consume the raw fish. Reconcile the
+            // inventory even when the SDK could not confirm the interaction.
+            if (result.success) {
+                await observe(state => quantity(state, id) < count, 5_000);
+            }
+            if (quantity(current(), id) >= count) await sdk.waitForTicks(2);
+            const remaining = quantity(current(), id);
+            if (remaining < count) {
+                processed += count - remaining;
+                if (misses) auditEvent('milestone', 'cooking-retry-recovered', { fish: id, misses });
+                misses = 0;
+                continue;
+            }
+            const message = result.success ? 'No raw fish was consumed.' : result.message;
+            auditEvent('setback', 'cooking-action-unconfirmed', { fish: id, remaining, attempt: ++misses, message });
+            if (misses >= 4) throw new Error(`Cooking ${name} at the Catherby range made no progress after ${misses} attempts. ${message}`);
         }
+        auditEvent('milestone', 'cooking-batch-completed', {
+            processed, xpGained: (skill(current(), 'Cooking')?.experience ?? 0) - startingXp,
+        });
     }
 
     async function fishBackpack(stage: Stage) {
@@ -200,12 +226,6 @@ export async function fishSharks({ bot, sdk }: ScriptContext, cook = process.env
                 .sort((a, b) => a.distance - b.distance);
             return nearby[missed % nearby.length];
         }
-        const observe = (predicate: (state: BotWorldState) => boolean, timeout: number) =>
-            sdk.waitForCondition(state => !state.inGame || !!state.player?.isDead || predicate(state), timeout).catch(error => {
-                if (error instanceof Error && error.message === 'waitForCondition timed out') return null;
-                throw error;
-            });
-
         async function searchShoreline() {
             const { player } = current();
             const distance = (from: typeof player, point: Tile) =>
@@ -296,6 +316,10 @@ export async function fishSharks({ bot, sdk }: ScriptContext, cook = process.env
 
     const { player } = current();
     if (player.level !== 0) throw new Error('Start this activity on the surface.');
+    // A restarted cook task can still be carrying the batch it was working on.
+    if (cook && Math.max(Math.abs(player.worldX - catherbyRange.x), Math.abs(player.worldZ - catherbyRange.z)) <= 3) {
+        await cookBackpack();
+    }
     const nearestBank = banks.reduce((nearest, candidate) =>
         Math.max(Math.abs(candidate.x - player.worldX), Math.abs(candidate.z - player.worldZ)) <
         Math.max(Math.abs(nearest.x - player.worldX), Math.abs(nearest.z - player.worldZ)) ? candidate : nearest);
