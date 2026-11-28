@@ -2,7 +2,7 @@ import { checkStepCompatibility, parseSteps, type Step } from './dashboard-plan'
 import { handleActivityUpdates, type ActivityUpdateSource, type StandaloneUpdates } from './dashboard-activity-updates';
 import { planCatalog, trainingSkills } from './dashboard-task-catalog';
 import type { dashboardDemo } from './dashboard-demo';
-import type { dashboardRuntimeGroups } from './dashboard-runtime-groups';
+import type { dashboardRuntimeGroups, RuntimeGroup } from './dashboard-runtime-groups';
 import type { dashboardDiagnostics } from './dashboard-diagnostics';
 import type { dashboardFleetStats } from './dashboard-fleet-stats';
 import type { createDashboardMonitor } from './dashboard-monitor';
@@ -14,6 +14,12 @@ import type { ManagedProfile, Snapshot } from './dashboard-supervisor';
 import type { InventoryCommand, parseInventoryCommand } from '../sdk/inventory-command';
 
 type BotWorker = ReturnType<typeof dashboardDemo>;
+export type RelaunchMode = 'safe' | 'immediate';
+export type RuntimeRelaunchResult = {
+    bot: string;
+    status: 'queued' | 'assigned' | 'relaunching' | 'failed';
+    message?: string;
+};
 
 export type DashboardWorkerApiRuntime = {
     botProfile(name: string): Promise<ManagedProfile | null>;
@@ -23,8 +29,12 @@ export type DashboardWorkerApiRuntime = {
     updateSource?: ActivityUpdateSource;
     standaloneUpdates?: StandaloneUpdates;
     runtimeGroups?: {
-        store: Pick<ReturnType<typeof dashboardRuntimeGroups>, 'list' | 'create' | 'assignment' | 'assign'>;
-        state(profile: ManagedProfile): Promise<{ online: boolean; activeGroupId: string | null }>;
+        store: Pick<ReturnType<typeof dashboardRuntimeGroups>, 'list' | 'create' | 'assignment' | 'assign'> &
+            Partial<Pick<ReturnType<typeof dashboardRuntimeGroups>, 'listConfigured' | 'createWithMembers' | 'editWithMembers'>>;
+        members?(): Promise<ManagedProfile[]>;
+        relaunch?(profile: ManagedProfile, target: RuntimeGroup | null, mode: RelaunchMode): Promise<RuntimeRelaunchResult>;
+        refreshGroup?(group: RuntimeGroup): void;
+        state(profile: ManagedProfile): Promise<{ online: boolean; activeGroupId: string | null; activeTaskGroupId?: string | null }>;
         offline(profile: ManagedProfile): Promise<void>;
     };
     invalidateSnapshot(): void;
@@ -58,7 +68,12 @@ async function handleRuntimeGroups(request: Request, bot: string | null, session
     if (!profile) return reply({ error: 'Bot profile not found.' }, 404);
     const { store } = runtimeGroups;
     let state = await runtimeGroups.state(profile);
-    let created;
+    const canConfigureGroups = !!(runtimeGroups.members && runtimeGroups.relaunch &&
+        store.listConfigured && store.createWithMembers && store.editWithMembers);
+    const members = canConfigureGroups ? await runtimeGroups.members!() : [];
+    let created: RuntimeGroup | undefined;
+    let edited: RuntimeGroup | undefined;
+    let relaunches: RuntimeRelaunchResult[] | undefined;
     if (request.method === 'POST') {
         if (request.headers.get('Content-Type')?.split(';')[0]?.trim().toLowerCase() !== 'application/json') {
             return reply({ error: 'Send the runtime group command as JSON.' }, 415);
@@ -70,6 +85,46 @@ async function handleRuntimeGroups(request: Request, bot: string | null, session
                 state = { online: false, activeGroupId: null };
             }
             catch (error) { return reply({ error: error instanceof Error ? error.message : 'Could not take this bot offline.' }, 409); }
+        } else if (body?.action === 'edit' || (body?.action === 'create' && ('bots' in body || 'relaunch' in body))) {
+            if (!canConfigureGroups) return reply({ error: 'Restart the Fleet Desk worker to configure group members and relaunch tasks.' }, 503);
+            const mode = body.relaunch === undefined ? 'safe' : body.relaunch;
+            if (mode !== 'safe' && mode !== 'immediate') return reply({ error: 'Choose a supported relaunch mode.' }, 400);
+            if (!Array.isArray(body.bots)) {
+                return reply({ error: 'Select the bots for this group.' }, 400);
+            }
+            const roster = new Map(members.map(member => [member.name.toLowerCase(), member]));
+            const names = new Set<string>();
+            for (const input of body.bots) {
+                const name = typeof input === 'string' && roster.get(input.toLowerCase())?.name;
+                if (!name || names.has(name)) return reply({ error: 'Choose each bot once from the current roster.' }, 400);
+                names.add(name);
+            }
+            let affected: { bot: string; group: RuntimeGroup | null }[];
+            try {
+                if (body.action === 'create') {
+                    const group = store.createWithMembers!(body.name, body.mode, [...names]);
+                    created = group;
+                    affected = [...names].map(bot => ({ bot, group }));
+                } else {
+                    const result = store.editWithMembers!(body.groupId, body.expectedRevision, body.name, body.mode, [...names]);
+                    edited = result.group;
+                    affected = result.affected;
+                    runtimeGroups.refreshGroup?.(edited);
+                }
+            } catch (error) {
+                return reply({ error: error instanceof Error ? error.message : 'Could not save the group.' },
+                    error instanceof Error && error.name === 'RuntimeGroupConflict' ? 409 : 400);
+            }
+            // All assignments commit together. Each running bot then schedules its own handoff.
+            relaunches = await Promise.all(affected.map(async ({ bot, group }): Promise<RuntimeRelaunchResult> => {
+                try {
+                    const member = roster.get(bot.toLowerCase());
+                    if (!member) return { bot, status: 'assigned', message: 'No managed bot to relaunch.' };
+                    return await runtimeGroups.relaunch!(member, group, mode);
+                } catch (error) {
+                    return { bot, status: 'failed', message: error instanceof Error ? error.message : 'Could not schedule the relaunch.' };
+                }
+            }));
         } else {
             try {
                 if (body?.action === 'create') created = store.create(body.name, body.mode);
@@ -81,9 +136,13 @@ async function handleRuntimeGroups(request: Request, bot: string | null, session
         }
         invalidateSnapshot();
     }
-    const groupId = store.assignment(profile.name)?.id ?? null;
-    return reply({ groups: store.list(), groupId, ...state, pending: state.online && state.activeGroupId !== groupId, created },
-        created ? 201 : 200);
+    const assignment = store.assignment(profile.name);
+    const groupId = assignment?.id ?? null;
+    const desiredTaskGroupId = assignment?.mode === 'client-and-task' ? groupId : null;
+    const pending = state.online && (state.activeGroupId !== groupId ||
+        (state.activeTaskGroupId !== undefined && state.activeTaskGroupId !== desiredTaskGroupId));
+    return reply({ groups: canConfigureGroups ? store.listConfigured!() : store.list(), groupId, ...state, pending,
+        members: members.map(({ name }) => ({ name })), canConfigureGroups, created, edited, relaunches }, created ? 201 : 200);
 }
 
 async function handlePlan(request: Request, name: string | null, session: string | undefined,

@@ -1619,13 +1619,39 @@
     const groupStatus = runtimeDialog.querySelector('#runtime-status');
     const groupClose = runtimeDialog.querySelector('#runtime-close');
     const groupNew = runtimeDialog.querySelector('#runtime-new');
+    const groupEdit = runtimeDialog.querySelector('#runtime-edit');
+    const groupTitle = runtimeDialog.querySelector('#runtime-title');
     const groupSave = runtimeDialog.querySelector('#runtime-save');
     const groupOffline = runtimeDialog.querySelector('#runtime-offline');
     const groupSharing = runtimeDialog.querySelector('#runtime-sharing');
     const groupPending = runtimeDialog.querySelector('#runtime-pending');
+    const groupMembership = creationForm.querySelector('#runtime-membership');
+    const groupMembers = creationForm.querySelector('#runtime-members');
+    const groupSafe = creationForm.querySelector('#runtime-safe');
+    const groupTiming = creationForm.querySelector('#runtime-timing');
+    const groupResults = runtimeDialog.querySelector('#runtime-results');
     let groupTrigger, groupData, groupRequest, groupPoll;
     let groupWriting = false;
     let groupFleetChanged = false;
+    let editingRuntimeGroup;
+
+    function showGroupTiming() {
+        groupTiming.dataset.immediate = String(!groupSafe.checked);
+        groupTiming.textContent = groupSafe.checked
+            ? 'Running scripts switch at a safe checkpoint, or at their next launch if they have no checkpoint.'
+            : 'Running scripts affected by membership or sharing changes will restart immediately.';
+    }
+
+    function showGroupResults(results) {
+        const labels = { queued: 'Queued for a safe checkpoint', relaunching: 'Relaunching', assigned: 'Assigned', failed: 'Failed' };
+        groupResults.replaceChildren(...results.map(result => {
+            const item = document.createElement('li');
+            item.dataset.failed = String(result.status === 'failed');
+            item.textContent = [result.bot, labels[result.status], result.message].filter(Boolean).join(' · ');
+            return item;
+        }));
+        groupResults.hidden = !results.length;
+    }
 
     function renderGroupControls() {
         const group = groupData?.groups.find(item => item.id === groupField.value);
@@ -1634,25 +1660,58 @@
         groupPending.hidden = !groupData?.pending;
         if (!groupPending.hidden) {
             const label = id => groupData.groups.find(item => item.id === id)?.name ?? 'Dedicated';
-            groupPending.textContent = `Currently using ${label(groupData.activeGroupId)}. ${label(groupData.groupId)} takes effect at the next activity.`;
+            groupPending.textContent = groupData.activeGroupId === groupData.groupId
+                ? `SDK sharing change pending for ${label(groupData.groupId)}.`
+                : `Currently using ${label(groupData.activeGroupId)}. Move to ${label(groupData.groupId)} pending.`;
         }
         groupField.disabled = groupNew.disabled = !groupData || groupWriting;
+        groupEdit.hidden = !(groupData?.canConfigureGroups && group?.revision && Array.isArray(group.members));
+        groupEdit.disabled = !!groupRequest;
         groupSave.disabled = groupField.disabled || groupField.value === (groupData?.groupId ?? '');
         groupClose.disabled = groupOffline.disabled = groupWriting;
         runtimeDialog.querySelector('#runtime-handoff').hidden = !groupData?.online || !creationForm.hidden;
         for (const field of creationForm.elements) field.disabled = groupWriting;
     }
 
-    function showGroupCreation(show) {
+    function showGroupCreation(show, edit) {
+        editingRuntimeGroup = show ? edit : undefined;
         creationForm.hidden = !show;
         assignmentForm.hidden = show;
-        groupNew.setAttribute('aria-expanded', String(show));
+        groupNew.setAttribute('aria-expanded', String(show && !edit));
+        groupEdit.setAttribute('aria-expanded', String(show && !!edit));
+        groupTitle.textContent = show ? (edit ? `Edit group · ${edit.name}` : 'New runtime group')
+            : `Runtime group · ${groupTrigger.dataset.runtimeBot}`;
         groupStatus.textContent = '';
         renderGroupControls();
         if (show) {
             creationForm.reset();
+            creationForm.querySelector('#runtime-create').textContent = edit ? 'Save group' : 'Create group';
+            creationForm.querySelector('#runtime-removal').hidden = !edit;
+            if (edit) {
+                creationForm.elements['runtime-name'].value = edit.name;
+                creationForm.elements['runtime-mode'].value = edit.mode;
+            }
+            const members = groupData?.members;
+            groupMembership.hidden = !(groupData?.canConfigureGroups && Array.isArray(members));
+            creationForm.querySelector('#runtime-compatibility').hidden = !groupMembership.hidden;
+            const selected = new Set((edit?.members ?? [groupTrigger.dataset.runtimeBot]).map(name => name.toLowerCase()));
+            const names = new Set((groupMembership.hidden ? [] : members).map(member => member.name));
+            for (const name of edit?.members ?? []) names.add(name);
+            groupMembers.replaceChildren(...[...names].sort((left, right) => left.localeCompare(right)).map(name => {
+                const label = document.createElement('label');
+                label.className = 'runtime-check';
+                const input = document.createElement('input');
+                input.type = 'checkbox';
+                input.name = 'bot';
+                input.value = name;
+                input.checked = selected.has(name.toLowerCase());
+                label.append(input, name);
+                return label;
+            }));
+            showGroupTiming();
             creationForm.elements['runtime-name'].focus();
         }
+        showGroupResults([]);
     }
 
     async function loadRuntimeGroup(payload) {
@@ -1663,6 +1722,7 @@
         groupRequest = controller;
         groupWriting = !!payload;
         if (payload) {
+            showGroupResults([]);
             groupStatus.dataset.error = 'false';
             groupStatus.textContent = payload.action === 'offline' ? 'Taking bot offline…' : 'Saving…';
         }
@@ -1678,16 +1738,28 @@
             groupField.replaceChildren(new Option('Dedicated', ''), ...data.groups.map(item => new Option(item.name, item.id)));
             groupField.value = selected;
             groupStatus.dataset.error = 'false';
-            if (payload?.action === 'create') {
+            if (payload?.action === 'create' || payload?.action === 'edit') {
                 showGroupCreation(false);
-                groupField.value = data.created.id;
-                groupStatus.textContent = 'Group created. Save the assignment to use it for this bot.';
+                if (payload.bots) {
+                    groupFleetChanged = true;
+                    const results = data.relaunches ?? [];
+                    showGroupResults(results);
+                    const failures = results.filter(result => result.status === 'failed').length;
+                    const change = payload.action === 'edit' ? 'Group updated' : 'Group created';
+                    groupStatus.dataset.error = String(!!failures || !Array.isArray(data.relaunches));
+                    groupStatus.textContent = !Array.isArray(data.relaunches) ? `${change}. Bot assignments were not confirmed.`
+                        : failures ? `${change}. ${failures} of ${results.length} bots need attention.`
+                        : `${change} · ${(data.edited ?? data.created).name}`;
+                } else {
+                    groupField.value = data.created.id;
+                    groupStatus.textContent = 'Group created. Save the assignment to use it for this bot.';
+                }
             } else if (payload?.action === 'assign') {
                 groupStatus.textContent = 'Assignment saved.';
             } else if (payload?.action === 'offline') {
                 groupFleetChanged = true;
                 groupStatus.textContent = 'Bot taken offline.';
-            } else {
+            } else if (groupResults.hidden) {
                 groupStatus.textContent = '';
             }
         } catch (error) {
@@ -1697,14 +1769,15 @@
                 openSignIn(groupTrigger);
             } else {
                 groupStatus.dataset.error = 'true';
-                groupStatus.textContent = error.message;
+                groupStatus.textContent = error.status === 409 && payload?.action === 'edit'
+                    ? error.message + ' Cancel and reopen the group to load its current settings.' : error.message;
             }
         } finally {
             if (groupRequest === controller) {
                 groupRequest = undefined;
                 groupWriting = false;
                 renderGroupControls();
-                if (runtimeDialog.open && payload?.action === 'create' && creationForm.hidden) groupField.focus();
+                if (runtimeDialog.open && (payload?.action === 'create' || payload?.action === 'edit') && creationForm.hidden) groupField.focus();
                 if (runtimeDialog.open && groupData?.pending && creationForm.hidden)
                     groupPoll = setTimeout(() => void loadRuntimeGroup(), 5000);
             }
@@ -1719,7 +1792,6 @@
         groupData = null;
         groupFleetChanged = false;
         groupField.replaceChildren(new Option('Dedicated', ''));
-        runtimeDialog.querySelector('#runtime-title').textContent = `Runtime group · ${button.dataset.runtimeBot}`;
         showGroupCreation(false);
         groupStatus.dataset.error = 'false';
         groupStatus.textContent = 'Loading groups…';
@@ -1727,20 +1799,33 @@
         void loadRuntimeGroup();
     });
     groupField.addEventListener('change', renderGroupControls);
-    groupNew.addEventListener('click', () => {
+    function openGroupEditor(edit) {
         clearTimeout(groupPoll);
         groupRequest?.abort();
-        showGroupCreation(true);
-    });
+        showGroupCreation(true, edit);
+    }
+    groupNew.addEventListener('click', () => openGroupEditor());
+    groupEdit.addEventListener('click', () => openGroupEditor(groupData.groups.find(item => item.id === groupField.value)));
     creationForm.querySelector('#runtime-cancel').addEventListener('click', () => {
+        const button = editingRuntimeGroup ? groupEdit : groupNew;
         showGroupCreation(false);
-        groupNew.focus();
-        if (groupData?.pending) void loadRuntimeGroup();
+        button.focus();
+        void loadRuntimeGroup();
     });
+    groupSafe.addEventListener('change', showGroupTiming);
     creationForm.addEventListener('submit', event => {
         event.preventDefault();
-        void loadRuntimeGroup({ action: 'create', name: creationForm.elements['runtime-name'].value.trim(),
-            mode: creationForm.elements['runtime-mode'].value });
+        const payload = { action: editingRuntimeGroup ? 'edit' : 'create', name: creationForm.elements['runtime-name'].value.trim(),
+            mode: creationForm.elements['runtime-mode'].value };
+        if (editingRuntimeGroup) {
+            payload.groupId = editingRuntimeGroup.id;
+            payload.expectedRevision = editingRuntimeGroup.revision;
+        }
+        if (!groupMembership.hidden) {
+            payload.bots = [...groupMembers.querySelectorAll('input:checked')].map(input => input.value);
+            payload.relaunch = groupSafe.checked ? 'safe' : 'immediate';
+        }
+        void loadRuntimeGroup(payload);
     });
     assignmentForm.addEventListener('submit', event => {
         event.preventDefault();

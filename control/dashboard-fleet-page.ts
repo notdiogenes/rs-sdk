@@ -237,7 +237,10 @@ export function fleetPage({ nonce, revision = '', data, taskActivity, questCatal
     <p id="runtime-sharing" class="muted"></p>
     <p id="runtime-pending" hidden></p>
     <div class="runtime-actions">
-      <button type="button" id="runtime-new" aria-controls="runtime-creation" aria-expanded="false" disabled>New group</button>
+      <div class="runtime-group-actions">
+        <button type="button" id="runtime-new" aria-controls="runtime-creation" aria-expanded="false" disabled>New group</button>
+        <button type="button" id="runtime-edit" aria-controls="runtime-creation" aria-expanded="false" hidden>Edit group</button>
+      </div>
       <button type="submit" id="runtime-save" disabled>Save assignment</button>
     </div>
   </form>
@@ -247,9 +250,19 @@ export function fleetPage({ nonce, revision = '', data, taskActivity, questCatal
       <option value="client">Share Lite clients</option>
       <option value="client-and-task">Share Lite clients and SDK tasks</option>
     </select></label>
+    <div id="runtime-membership" hidden>
+      <fieldset><legend>Group members</legend><div id="runtime-members"></div></fieldset>
+      <p id="runtime-removal" class="muted" hidden>Uncheck a member to move it to Dedicated.</p>
+      <label class="runtime-check" for="runtime-safe">
+        <input type="checkbox" id="runtime-safe" checked aria-describedby="runtime-timing">Wait for a safe checkpoint
+      </label>
+      <p id="runtime-timing" class="muted"></p>
+    </div>
+    <p id="runtime-compatibility" class="muted" hidden>Restart the Fleet Desk worker from Updates to select bots and relaunch them when creating a group.</p>
     <div class="runtime-actions"><button type="button" id="runtime-cancel">Cancel</button><button type="submit" id="runtime-create">Create group</button></div>
   </form>
   <p id="runtime-status" role="status" aria-atomic="true"></p>
+  <ul id="runtime-results" aria-label="Group assignments" hidden></ul>
   <div id="runtime-handoff" hidden><button type="button" id="runtime-offline">Take offline</button></div>
 </div></dialog>
 <dialog id="updates-dialog" aria-labelledby="updates-title"><div class="dialog-body">

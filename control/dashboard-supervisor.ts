@@ -15,10 +15,10 @@ import { dashboardQuestPoints } from './dashboard-quests';
 import { dashboardAudit } from './dashboard-audit';
 import { dashboardDemo, isBundledTask, type DashboardPathfinding } from './dashboard-demo';
 import { activity } from './dashboard-task-catalog';
-import { handleWorkerRequest, type DashboardWorkerApiRuntime } from './dashboard-worker-api';
+import { handleWorkerRequest, type DashboardWorkerApiRuntime, type RelaunchMode, type RuntimeRelaunchResult } from './dashboard-worker-api';
 import type { DashboardWorkerUpdates } from './dashboard-worker-policy';
 import { createPlanManager, PlanEditConflict, type Plan } from './dashboard-plan-runner';
-import { dashboardRuntimeGroups } from './dashboard-runtime-groups';
+import { dashboardRuntimeGroups, type RuntimeGroup } from './dashboard-runtime-groups';
 import { createDashboardRuntimePools } from './dashboard-runtime-pools';
 import { dashboardRoster, type BotProfile } from './dashboard-roster';
 
@@ -251,10 +251,45 @@ export async function createDashboardSupervisor(botsDir: string, configDir: stri
         return request.method === 'POST' ? sequenceCommand(name, run) : run();
     }
 
+    async function runtimeMembers() {
+        const [profiles, demoProfile] = await Promise.all([botRoster.list(), demo.profile().catch(() => null)]);
+        const members = new Map<string, ManagedProfile>(profiles.map(profile => [profile.name.toLowerCase(), profile]));
+        if (demoProfile) members.set(demoProfile.name.toLowerCase(), { ...demoProfile, worker: demo });
+        return [...members.values()].sort((a, b) => a.name.localeCompare(b.name));
+    }
+
+    function relaunchForGroup(profile: ManagedProfile, target: RuntimeGroup | null, mode: RelaunchMode): Promise<RuntimeRelaunchResult> {
+        const bot = profile.name;
+        return sequenceCommand(bot, async (): Promise<RuntimeRelaunchResult> => {
+            const stillAssigned = () => {
+                const current = groupStore.assignment(bot);
+                return current?.id === target?.id && current?.mode === target?.mode;
+            };
+            const worker = profile.worker ?? rosterControllers.get(bot.toLowerCase());
+            const planRun = plans.activeUpdate(bot).running;
+            const run = planRun ?? worker?.standaloneActivity()?.running;
+            if (!stillAssigned()) return { bot, status: 'assigned', message: 'A newer assignment took precedence.' };
+            if (!run || !worker) {
+                return { bot, status: 'assigned', message: 'Applies at the next managed task launch.' };
+            }
+
+            const desiredSdk = target?.mode === 'client-and-task' ? target.id : null;
+            if (worker.activeGroupId() === (target?.id ?? null) && worker.runtimeTaskGroupId() === desiredSdk) {
+                return { bot, status: 'assigned', message: 'Already running with these settings.' };
+            }
+            const status = planRun ? plans.requestRuntimeMove(bot, run.runId, mode, stillAssigned)
+                : await worker.requestStandaloneRelaunch(run.runId, mode, stillAssigned);
+            if (status === 'next-launch') {
+                return { bot, status: 'assigned', message: 'Applies at the next task launch. The current run has no available handoff.' };
+            }
+            return { bot, status };
+        });
+    }
+
     async function runtimeState(profile: ManagedProfile) {
         const worker = profile.worker ?? rosterControllers.get(profile.name.toLowerCase());
         if (worker?.status(profile.name).client || workerStatus(profile.name, worker)?.starting) {
-            return { online: true, activeGroupId: worker?.activeGroupId() ?? null };
+            return { online: true, activeGroupId: worker?.activeGroupId() ?? null, activeTaskGroupId: worker?.runtimeTaskGroupId() };
         }
         const primary = await primaryStatus();
         const online = primary?.bot?.toLowerCase() === profile.name.toLowerCase() &&
@@ -444,6 +479,9 @@ export async function createDashboardSupervisor(botsDir: string, configDir: stri
     const apiRuntime: DashboardWorkerApiRuntime = {
         runtimeGroups: {
             store: groupStore,
+            members: runtimeMembers,
+            relaunch: relaunchForGroup,
+            refreshGroup: pools.refreshGroup,
             state: runtimeState,
             offline: profile => sequenceCommand(profile.name, () => takeOffline(profile)),
         },

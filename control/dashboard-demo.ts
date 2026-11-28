@@ -50,6 +50,7 @@ type Task = Process & {
     name: DemoTaskName;
     activity: string;
     recovery?: { since: string; resumeAt: number };
+    finishedScript?: boolean;
     completion?: NonNullable<ControllerStatus['lastTask']>['completion'];
     bankTarget?: number;
     settled?: Promise<void>;
@@ -58,6 +59,8 @@ type Task = Process & {
     script: string;
     update: ReturnType<typeof taskUpdateChannel>;
     standalone?: Step;
+    skill?: string;
+    release?: WorkerRelease;
 };
 
 async function stopProcess(handle: Process | undefined, signal: 'SIGINT' | 'SIGTERM') {
@@ -114,7 +117,7 @@ export function dashboardDemo(runtimeDir: string, botsDir: string, configDir: st
     let busy = false;
     let taskStopped = false;
     let startingPlanTask = false;
-    let standaloneUpdate: { runId: string; switching: boolean; cancelled: boolean } | undefined;
+    let standaloneUpdate: { runId: string; switching: boolean; cancelled: boolean; runtimeMove: boolean } | undefined;
     let clientEpoch = 0;
     let offlining: Promise<void> | undefined;
 
@@ -137,6 +140,9 @@ export function dashboardDemo(runtimeDir: string, botsDir: string, configDir: st
                     if (running.auditId) {
                         try {
                             const entry = JSON.parse(line.slice(auditPrefix.length));
+                            if (entry.kind === 'milestone' && entry.name === 'script-finish' && entry.outcome === 'complete') {
+                                running.finishedScript = true;
+                            }
                             if (running.name === 'craft-body-runes' && entry.kind === 'milestone' &&
                                 entry.name === 'runecraft-essence-exhausted' && entry.essence === 0 && entry.bankEssence === 0) {
                                 running.completion = 'essence-exhausted';
@@ -301,34 +307,46 @@ export function dashboardDemo(runtimeDir: string, botsDir: string, configDir: st
         }
     }
 
-    async function clientForTask(bot: string, active: ManagedClient, group: RuntimeGroup | null, epoch: number) {
+    async function clientForTask(bot: string, active: ManagedClient, group: RuntimeGroup | null, epoch: number,
+        checkLaunch?: () => void, followAssignment = false) {
         requireCurrentClient(active, epoch);
-        if ((active.process.groupId ?? null) === (group?.id ?? null)) return active;
-        if (task) throw new Error('The current activity has not stopped yet.');
-        await stopProcess(active, 'SIGINT');
-        await active.settled;
-        if (offlining || epoch !== clientEpoch || client || task) {
-            throw new Error('The managed client changed while moving to its runtime group.');
-        }
-        const replacement = startClient(bot, group);
-        const deadline = Date.now() + 75_000;
-        let tick: number | undefined;
-        while (Date.now() < deadline) {
-            requireCurrentClient(replacement, epoch);
-            const frame = replacement.feed.state();
-            if (frame?.state.inGame && frame.state.player && isFreshBotState(Date.now() - frame.at)) {
-                if (tick !== undefined && frame.state.tick !== tick) return replacement;
-                tick = frame.state.tick;
+        while ((active.process.groupId ?? null) !== (group?.id ?? null)) {
+            if (task) throw new Error('The current activity has not stopped yet.');
+            await stopProcess(active, 'SIGINT');
+            await active.settled;
+            checkLaunch?.();
+            if (offlining || epoch !== clientEpoch || client || task) {
+                throw new Error('The managed client changed while moving to its runtime group.');
             }
-            await Bun.sleep(250);
+            if (followAssignment) group = runtime?.assignment(bot) ?? null;
+            active = startClient(bot, group);
+            const deadline = Date.now() + 75_000;
+            let tick: number | undefined;
+            for (;;) {
+                checkLaunch?.();
+                requireCurrentClient(active, epoch);
+                if (followAssignment) {
+                    group = runtime?.assignment(bot) ?? null;
+                    if ((active.process.groupId ?? null) !== (group?.id ?? null)) break;
+                }
+                const frame = active.feed.state();
+                if (frame?.state.inGame && frame.state.player && isFreshBotState(Date.now() - frame.at)) {
+                    if (tick !== undefined && frame.state.tick !== tick) return active;
+                    tick = frame.state.tick;
+                }
+                if (Date.now() >= deadline) {
+                    await stopProcess(active, 'SIGINT');
+                    await active.settled;
+                    throw new Error('The new runtime group did not publish a live game session.');
+                }
+                await Bun.sleep(250);
+            }
         }
-        await stopProcess(replacement, 'SIGINT');
-        await replacement.settled;
-        throw new Error('The new runtime group did not publish a live game session.');
+        return active;
     }
 
     async function startTask(bot: string, name: DemoTaskName, planned = false, skill?: string, bankTarget?: number,
-        options?: ActivityOptions, release?: WorkerRelease) {
+        options?: ActivityOptions, release?: WorkerRelease, checkLaunch?: () => void, followAssignment = false) {
         const activeClient = client;
         const epoch = clientEpoch;
         await pathfinding?.ensureReady();
@@ -344,10 +362,16 @@ export function dashboardDemo(runtimeDir: string, botsDir: string, configDir: st
         try {
             const scriptSha = pinned?.sha ?? (audit ? await Bun.file(script).arrayBuffer()
                 .then(bytes => createHash('sha256').update(new Uint8Array(bytes)).digest('hex')).catch(() => null) : null);
-            const group = runtime?.assignment(bot) ?? null;
+            checkLaunch?.();
+            let group = runtime?.assignment(bot) ?? null;
             requireCurrentClient(activeClient, epoch);
-            const placedClient = await clientForTask(bot, activeClient, group, epoch);
-            requireCurrentClient(placedClient, epoch);
+            let placedClient = activeClient;
+            do {
+                placedClient = await clientForTask(bot, placedClient, group, epoch, checkLaunch, followAssignment);
+                checkLaunch?.();
+                requireCurrentClient(placedClient, epoch);
+                if (followAssignment) group = runtime?.assignment(bot) ?? null;
+            } while ((placedClient.process.groupId ?? null) !== (group?.id ?? null));
             auditId = audit?.begin(bot, name, launchRevision ?? null, scriptSha, [credentials.password, token]);
             const activityEnv = (selected?.value.taskEnvironment ?? taskEnvironment)(skill, bankTarget, options);
             const env = {
@@ -373,7 +397,7 @@ export function dashboardDemo(runtimeDir: string, botsDir: string, configDir: st
             throw error;
         }
         const running: Task = {
-            bot, auditId, process: child, startedAt: new Date().toISOString(), name, activity: definition.label, bankTarget,
+            bot, auditId, process: child, startedAt: new Date().toISOString(), name, activity: definition.label, bankTarget, skill, release: selected,
             runId: auditId ?? randomUUID(), revision: launchRevision, script: definition.script, update,
             standalone: planned ? undefined : {
                 task: name, finish: { type: definition.usage === 'once' ? 'complete' : 'forever' },
@@ -469,7 +493,8 @@ export function dashboardDemo(runtimeDir: string, botsDir: string, configDir: st
                 return json({ error: 'Demo credentials or game gateway state are unavailable' }, 503);
             }
         }
-        if (busy || startingPlanTask || standaloneUpdate?.switching) return json({ error: 'Another demo command is in progress' }, 409);
+        const stoppingRuntimeMove = standaloneUpdate?.runtimeMove && (route === 'client/stop' || route === 'task/stop');
+        if (busy || startingPlanTask || (standaloneUpdate?.switching && !stoppingRuntimeMove)) return json({ error: 'Another demo command is in progress' }, 409);
         busy = true;
         try {
             if (route === 'client/start') {
@@ -559,42 +584,86 @@ export function dashboardDemo(runtimeDir: string, botsDir: string, configDir: st
         }
         const compatibility = release.value.checkStepCompatibility(running.standalone);
         if (compatibility.status === 'review') throw new Error(compatibility.reason);
-        const safe = async () => {
-            const sample = await hostedBotState(running.bot, workingDir);
-            return isSafeTaskUpdateState(sample?.state, sample?.stateAge ?? Infinity);
-        };
         if (mode === 'safe' && !running.update.state().supported) throw new Error('This run does not provide safe checkpoints.');
-        if (mode === 'now' && !await safe()) throw new Error('Wait for fresh game state outside combat with enough health and all game windows closed.');
+        if (mode === 'now' && !await safeForStandaloneUpdate(running)) {
+            throw new Error('Wait for fresh game state outside combat with enough health and all game windows closed.');
+        }
         if (task !== running || client !== activeClient || busy || standaloneUpdate) throw new Error('The running activity changed.');
-        const pending = standaloneUpdate = { runId, switching: mode === 'now', cancelled: false };
+        scheduleStandaloneSwitch(running, activeClient, mode, compatibility.step.options, release);
+    }
+
+    async function safeForStandaloneUpdate(running: Task) {
+        const sample = await hostedBotState(running.bot, workingDir);
+        return sample?.botStatus !== 'dead' && sample?.botStatus !== 'stale' &&
+            isSafeTaskUpdateState(sample?.state, sample?.stateAge ?? Infinity);
+    }
+
+    function requestStandaloneRelaunch(runId: string, mode: 'safe' | 'immediate', stillAssigned: () => boolean): 'queued' | 'relaunching' | 'next-launch' {
+        const running = task;
+        if (!running?.standalone || running.runId !== runId || !client || running.process.exitCode !== null ||
+            running.stopping || running.finishedScript || running.completion || busy || offlining || startingPlanTask || !stillAssigned()) return 'next-launch';
+        if (standaloneUpdate) {
+            if (standaloneUpdate.runId !== runId || !standaloneUpdate.runtimeMove || standaloneUpdate.switching) return 'next-launch';
+            standaloneUpdate.cancelled = true;
+            running.update.cancel();
+            standaloneUpdate = undefined;
+        }
+        if (mode === 'safe' && !running.update.state().supported) return 'next-launch';
+        scheduleStandaloneSwitch(running, client, mode === 'safe' ? 'safe' : 'now', running.standalone.options, running.release, stillAssigned);
+        return mode === 'safe' ? 'queued' : 'relaunching';
+    }
+
+    function scheduleStandaloneSwitch(running: Task, activeClient: ManagedClient, mode: 'safe' | 'now',
+        options: ActivityOptions | undefined, release: WorkerRelease | undefined, stillAssigned?: () => boolean) {
+        const pending = standaloneUpdate = { runId: running.runId, switching: mode === 'now', cancelled: false, runtimeMove: !!stillAssigned };
+        const stillWanted = () => !pending.cancelled && !offlining;
+        const checkLaunch = () => {
+            if (!stillWanted() || busy || startingPlanTask || task) throw new Error('The requested task relaunch was superseded.');
+        };
         void (async () => {
             let attempt: string | undefined;
             if (mode === 'now') {
                 await stopTask();
+                // A task may flush its completion evidence while stopping. A
+                // SIGTERM handler is also allowed to exit cleanly, so exit code
+                // zero alone cannot distinguish the two.
+                if (stillAssigned && (running.finishedScript || running.completion)) return;
             } else {
-                while (!pending.cancelled && client === activeClient) {
+                while (stillWanted() && client === activeClient) {
                     if (task !== running) {
                         if (!attempt || taskExit?.updateId !== attempt) return;
                         break;
                     }
                     const checkpoint = running.update.state().checkpoint;
+                    // A live assignment may be replaced until the script commits
+                    // to exit. After that boundary this operation owns the replay.
+                    if (stillAssigned && !stillAssigned() && checkpoint?.phase !== 'committed' &&
+                        checkpoint?.phase !== 'accepted') return;
                     if (!checkpoint) {
                         const id = randomUUID();
                         if (running.update.request(id)) attempt = id;
                         pending.switching = false;
-                    } else if (checkpoint.phase === 'ready' && await safe() && !pending.cancelled && task === running) {
+                    } else if (checkpoint.phase === 'ready' &&
+                        await safeForStandaloneUpdate(running).catch(() => false) &&
+                        stillWanted() && (!stillAssigned || stillAssigned()) && task === running && running.process.exitCode === null) {
                         pending.switching = true;
                         running.update.commit(checkpoint.id);
                     }
                     await Bun.sleep(500);
                 }
             }
-            if (pending.cancelled || client !== activeClient || task || busy || startingPlanTask) return;
+            if (!stillWanted() || client !== activeClient || task || busy || startingPlanTask) return;
             pending.switching = true;
-            await startTask(running.bot, running.name, false, undefined, undefined, compatibility.step.options, release);
-        })().catch(error => event('task-update-failed', { message: error instanceof Error ? error.message : String(error) })).finally(() => {
-            running.update.cancel();
-            if (standaloneUpdate === pending) standaloneUpdate = undefined;
+            await startTask(running.bot, running.name, false, running.skill, running.bankTarget, options, release, checkLaunch, !!stillAssigned);
+        })().catch(error => {
+            if (stillWanted()) event(stillAssigned ? 'runtime-relaunch-failed' : 'task-update-failed', {
+                message: error instanceof Error ? error.message : String(error),
+            });
+        }).finally(() => {
+            if (standaloneUpdate === pending) {
+                running.update.cancel();
+                standaloneUpdate = undefined;
+            }
         });
     }
 
@@ -625,11 +694,24 @@ export function dashboardDemo(runtimeDir: string, botsDir: string, configDir: st
             },
             async start(name: ActivityId, skill?: string, bankTarget?: number, options?: ActivityOptions, release?: WorkerRelease) {
                 if (!client || task || busy || startingPlanTask) throw new Error('The managed client is busy.');
+                if (standaloneUpdate?.runtimeMove) standaloneUpdate.cancelled = true;
                 startingPlanTask = true;
-                try { await startTask(bot, name, true, skill, bankTarget, options, release); }
+                try { await startTask(bot, name, true, skill, bankTarget, options, release, undefined, true); }
                 finally { startingPlanTask = false; }
             },
             stop: () => planCommand(bot, 'task/stop', true),
+            async stopForRuntimeMove(runId: string) {
+                const running = task;
+                if (!running || running.runId !== runId || running.standalone || taskStopped || offlining || running.stopping) {
+                    return false;
+                }
+                // An internal placement change must preserve the real exit and
+                // any final bank/essence proof flushed by this exact run. The
+                // ordinary operator Stop path intentionally masks lastTask.
+                if (!running.completion && !running.finishedScript) await stopProcess(running, 'SIGTERM');
+                await running.settled;
+                return true;
+            },
             activeUpdate: () => task && !task.stopping ? taskUpdateInfo(task) : undefined,
             safeForUpdate: () => observation ? isSafeTaskUpdateState(observation.state, Date.now() - observation.at) : false,
             requestCheckpoint: (runId: string, id: string) => task?.runId === runId && task.update.request(id),
@@ -704,8 +786,9 @@ export function dashboardDemo(runtimeDir: string, botsDir: string, configDir: st
 
     return {
         handle, profile, status, allowed, recentEvents, planBackend, inventoryClient, fleetState,
+        runtimeTaskGroupId: () => task?.process.exitCode === null ? task.process.groupId ?? null : undefined,
         activeGroupId: () => client?.process.exitCode === null ? client.process.groupId ?? null : null,
         takeOffline,
-        monitoredProcesses, monitorTimeline, standaloneActivity, requestStandaloneUpdate, cancelStandaloneUpdate, ...actions,
+        monitoredProcesses, monitorTimeline, standaloneActivity, requestStandaloneRelaunch, requestStandaloneUpdate, cancelStandaloneUpdate, ...actions,
     };
 }

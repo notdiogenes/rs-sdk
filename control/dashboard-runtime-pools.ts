@@ -239,7 +239,13 @@ export function createDashboardRuntimePools(options: PoolOptions = {}) {
         } satisfies MonitorProcess] : []);
     }
 
-    return { startLite, startSdk, monitoredProcesses };
+    function refreshGroup(group: RuntimeGroup) {
+        for (const host of pools.values()) {
+            if (host.group.id === group.id) host.group = group;
+        }
+    }
+
+    return { startLite, startSdk, monitoredProcesses, refreshGroup };
 }
 
 export type DashboardRuntimePools = ReturnType<typeof createDashboardRuntimePools>;

@@ -304,15 +304,47 @@ pickpocketers and questers, then leave an experimental boss bot dedicated.
 An individual stop applies to the selected bot. If a pool process exits,
 every session or task hosted in that process stops.
 
-Group assignments are saved. A change made during an activity takes effect
-at the next task launch. For manual play, take the bot offline before logging
-in from your PC. Sign out on the PC before starting its Fleet Desk client again.
+Open **Runtime group** on any bot card. Choose **New group** to create a group,
+or select an existing group and choose **Edit group**. To pool SDK tasks for
+a group that already shares Lite, select **Share Lite clients and SDK tasks**
+and choose **Save group**. Existing group members keep their Lite sessions
+while their SDK tasks change placement.
+
+When creating or editing a group, choose its sharing mode and select its
+members. Saving records all assignments together. Selecting a bot that
+belongs to another group moves it into this one. Removing a bot returns it
+to Dedicated. Changing only the group name keeps every running task in place.
+**Wait for a safe checkpoint** queues affected running bots for a handoff.
+Activities without a checkpoint use the saved assignment on their next launch.
+Clear the checkbox to request an immediate relaunch. The dialog reports each
+bot's outcome. A failed handoff leaves its new assignment saved. Offline bots
+use the saved assignment on their next launch.
+
+Changing the group on a single bot's card still applies at the next task
+launch. For manual play, take the bot offline before logging in from your PC.
+Sign out on the PC before starting its Fleet Desk client again.
 
 Use `GET /bots/activity?view=runtime-groups&bot=NAME` with a dashboard
-session or control Bearer credential to read the named groups and the bot's
-assignment. To create a group, POST `{"action":"create","name":"Questing","mode":"client"}`
-as JSON to the same URL. Use `client-and-task` to pool SDK tasks too. Assign
-the returned `created.id` with `{"action":"assign","groupId":"<id>"}`, or
+session or control Bearer credential to read the groups, available members
+and bot's assignment. To create a group and assign members, POST this JSON
+to the same URL.
+
+```json
+{"action":"create","name":"Questing","mode":"client","bots":["Scout","Miner"],"relaunch":"safe"}
+```
+
+Use `client-and-task` to pool SDK tasks too. Omit `relaunch` for the default
+safe handoff, or set it to `immediate`. The response includes the `created`
+group and `relaunches` for individual bots. An empty `bots` list or the
+existing create command without `bots` creates a group for later assignment.
+
+To edit a group, send `action: "edit"` with its `groupId`, the
+`expectedRevision` from the current group, its desired `name` and `mode`,
+and the complete `bots` list. An empty list removes all members. A stale
+revision returns HTTP 409. Refresh the group before editing it again. A
+successful response includes `edited` and `relaunches`.
+
+Assign a single bot with `{"action":"assign","groupId":"<id>"}`, or
 set `groupId` to `null` for Dedicated. The response includes the selected
 `groupId`, the running client's `activeGroupId`, and `pending`. To pause and
 take only this account offline, POST `{"action":"offline"}`.
@@ -368,8 +400,9 @@ The installer uses `sudo` to install root-owned systemd units for the private
 socket and restart service.
 Enabling the socket leaves the current worker running. Open **Updates** and
 use **Restart Fleet Desk worker** during a maintenance window to activate the
-new worker. Runtime groups become available after this first controlled
-restart. The control restarts `rs-sdk-fleet-workers.service`.
+new worker. Selecting members and relaunching them during pool creation or
+editing requires this controlled restart when upgrading from the original
+runtime group worker. The control restarts `rs-sdk-fleet-workers.service`.
 Fleet Desk restores saved running plans after the restart. Subsequent
 changes to the process supervisor, game client, or shared pathfinder still
 use a worker restart.
