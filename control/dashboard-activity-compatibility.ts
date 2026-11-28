@@ -46,6 +46,7 @@ export function activityAffected(task: ActivityId, paths: readonly string[]): bo
         const changed = path.slice(taskDirectory.length);
         if (changed === script) return true;
         if (scripts.has(changed)) return false;
+        if (changed === 'bank-stock.ts') return ['mine-resources.ts', 'fish-sharks.ts', 'smelt-mithril-falador.ts'].includes(script);
         if (changed === 'adventure.ts') return usesAdventure(script);
         if (changed === 'mithril-smithing-training.ts') return script === 'smelt-mithril-falador.ts';
         if (changed === 'tutorial.ts') return script === 'pickpocket.ts' || script === 'skip-tutorial.ts';

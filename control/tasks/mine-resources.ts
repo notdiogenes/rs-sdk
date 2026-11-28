@@ -4,6 +4,7 @@ import type { ScriptContext } from '../../sdk/runner';
 import { TaskUpdateAccepted, withTaskUpdateCheckpoints, type TaskCheckpoint } from './update-checkpoint';
 import type { BotWorldState, InventoryItem, NearbyLoc } from '../../sdk/types';
 import { reportTaskActivity } from '../dashboard-task-activity';
+import { reportBankStockTarget } from './bank-stock';
 import { alKharidTollGate, coalTrucks, fishingGuildBank, guildLadder, inMiningGuild, miningBanks, miningDistance,
     miningPathDistance, miningResources, miningSelection, miningSiteBanks, miningTravelDistance, miningTravelTimeout, miningTravelWaypoints,
     rankMiningSites, type MiningSite, type Tile } from '../mining-routes';
@@ -194,8 +195,8 @@ export async function mineResources({ bot, sdk }: ScriptContext, task = process.
         if (!bank.isOpen) throw new Error('Open the bank before checking the mining stock target.');
         const banked = bank.items.filter(item => products.includes(item.id)).reduce((sum, item) => sum + item.count, 0);
         remaining = Math.max(0, bankTarget - banked);
-        auditEvent('milestone', remaining ? 'mining-bank-target-progress' : 'mining-bank-target-confirmed',
-            { resource, banked, target: bankTarget, remaining });
+        if (remaining) auditEvent('milestone', 'mining-bank-target-progress', { resource, banked, target: bankTarget, remaining });
+        else reportBankStockTarget(banked, bankTarget, { resource, remaining });
         return remaining === 0;
     }
 

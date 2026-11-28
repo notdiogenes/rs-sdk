@@ -377,6 +377,19 @@ dialog h3{margin-top:12px}
 .plan-step-head,.plan-end,.plan-requirement{display:flex;flex-wrap:wrap;align-items:end;gap:8px}
 .plan-step-head>label,.plan-end>label,.plan-requirement>label{flex:1 1 8rem;min-width:0}
 .plan-step-head select,.plan-end select,.plan-end input,.plan-requirement select,.plan-requirement input{width:100%;min-width:0}
+.plan-step-line{display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap}
+.plan-step-label{border:0;background:transparent;color:inherit;font-weight:700;text-align:left;padding:0}
+.plan-step-label:hover{text-decoration:underline}
+.plan-step-summary{display:block;color:var(--muted);font-size:12px;margin-top:3px}
+.plan-layout{display:grid;grid-template-columns:minmax(96px,112px) minmax(0,1fr);gap:14px;border-top:1px solid var(--line);margin-top:10px;padding-top:10px}
+.plan-family-nav{align-self:start;display:flex;flex-direction:column}
+.plan-family-nav button{text-align:left;white-space:nowrap}
+.plan-controls{min-width:0}
+.plan-controls label:not(.plan-option){display:grid;gap:4px}
+.plan-controls .plan-kind{margin-top:0}
+.plan-quantity-hint{margin:6px 0 0;color:var(--muted);font-size:12px}
+.plan-step-line .plan-order{margin-left:auto}
+.plan-step .plan-fixed{margin:4px 0}
 .plan-option{display:flex;align-items:center;gap:8px;width:fit-content;margin-top:8px;padding:4px 0;cursor:pointer}
 .plan-option input{flex:none;margin:0;accent-color:var(--green)}
 .plan-order,.plan-toolbar,.plan-toolbar-actions{display:flex;align-items:center;flex-wrap:wrap;gap:6px}
@@ -405,5 +418,9 @@ dialog h3{margin-top:12px}
   .plan-step{padding:9px}
   .plan-step-head>label{flex-basis:100%}
   .plan-order{margin-left:auto}
+  .plan-layout{grid-template-columns:minmax(0,1fr);gap:10px}
+  .plan-family-nav{flex-direction:row;flex-wrap:wrap}
+  .plan-family-nav button{padding:5px 8px}
+  .plan-controls .plan-step-head>label{flex:1 1 6rem}
   .plan-toolbar button{min-height:38px;font-size:14px}
 }

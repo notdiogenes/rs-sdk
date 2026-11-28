@@ -2476,6 +2476,7 @@
     let planCatalog = [];
     let planSkills = [];
     let draft = [];
+    let expandedPlanStep = null;
     let editing = null;
     let planEditBase = null;
     let removedCompletedIndexes = [];
@@ -2497,10 +2498,11 @@
     const questChoices = () => planCatalog.filter(entry => entry.category === 'Quests');
     const draftCurrentIndex = () => planEditBase.index - removedCompletedIndexes.length;
     const canEditCompletePlan = () => planCanRemoveCompleted && planState?.status === 'complete' && planState.steps.length > 0;
+    const bankItem = meta => meta?.bankStockItem ?? meta?.stockTargetItem;
     const finishLabel = (finish, stockItem) => finish.type === 'level' ? `Until ${finish.skill} ${finish.level}`
         : finish.type === 'minutes' ? `${finish.minutes} min`
         : finish.type === 'essence-exhausted' ? 'Until rune essence runs out'
-        : finish.type === 'bank-stock' ? `Until ${finish.quantity.toLocaleString('en-US')} ${stockItem ? stockItem + ' ' : ''}in bank`
+        : finish.type === 'bank-stock' ? `Until ${(Number.isFinite(finish.quantity) ? finish.quantity.toLocaleString('en-US') : '…')} ${stockItem ? stockItem + ' ' : ''}in bank`
         : finish.type === 'forever' ? 'Indefinite grind' : 'Until complete';
     const requirementLabel = req => req.type === 'quest' ? labelFor(req.task) : `${req.skill} ${req.level}`;
 
@@ -2522,6 +2524,7 @@
 
     function planField(label, input) {
         const field = node('label', label);
+        input.setAttribute('aria-label', label);
         field.append(input);
         return field;
     }
@@ -2545,69 +2548,206 @@
         return input;
     }
 
-    function defaultStep(task = planCatalog[0]?.id) {
-        const meta = metaFor(task);
-        if (meta?.stockTargetItem) return { task, requirements: [], finish: { type: 'bank-stock', quantity: 100 } };
-        return { task, requirements: [], finish: meta?.usage === 'once'
-            ? { type: 'complete' } : { type: 'minutes', minutes: 30 } };
+    const finishNames = {
+        minutes: 'Time spent', level: 'Skill level', 'bank-stock': 'Bank total',
+        'essence-exhausted': 'Rune essence runs out', forever: 'Indefinite grind', complete: 'Quest completion',
+    };
+    const plannerFamilies = ['Mining', 'Fishing', 'Thieving', 'Combat', 'Runecraft', 'Smithing', 'Quests'];
+    const compactPlan = window.matchMedia('(max-width:540px)');
+    compactPlan.addEventListener('change', () => {
+        for (const nav of planSteps.querySelectorAll('.plan-family-nav')) {
+            nav.setAttribute('aria-orientation', compactPlan.matches ? 'horizontal' : 'vertical');
+        }
+    });
+
+    function finishModes(meta) {
+        if (meta.finishModes) return meta.finishModes;
+        // A web release can load while the worker still serves the previous catalog.
+        if (meta.usage === 'once') return ['complete'];
+        if (meta.stockTargetItem) return ['bank-stock'];
+        return ['minutes', ...(meta.trains?.length ? ['level'] : []),
+            ...(meta.id === 'craft-body-runes' ? ['essence-exhausted'] : []),
+            ...(meta.category === 'Mining' && meta.id.endsWith('-bank') ? ['bank-stock'] : []), 'forever'];
     }
 
-    function renderRequirement(item, step, index) {
+    function defaultFinish(meta, type) {
+        if (type === 'minutes') return { type, minutes: 30 };
+        if (type === 'level') return { type, skill: meta.trains[0], level: 40 };
+        if (type === 'bank-stock') return { type, quantity: 250 };
+        return { type };
+    }
+
+    function defaultStep(task = metaFor('mine-iron-bank')?.id ?? planCatalog[0]?.id) {
+        const meta = metaFor(task);
+        const modes = meta ? finishModes(meta) : ['complete'];
+        const type = task === 'mine-iron-bank' && modes.includes('bank-stock') ? 'bank-stock' : modes[0];
+        return { task, requirements: [], finish: defaultFinish(meta, type) };
+    }
+
+    function renderRequirement(item, step, index, stepIndex) {
         const row = node('div', '', 'plan-requirement');
         const kind = planSelect([['level', 'Skill level'], ['quest', 'Quest']], item.type, type => {
             step.requirements[index] = type === 'quest'
                 ? { type, task: questChoices().find(q => q.id !== step.task)?.id }
                 : { type, skill: planSkills[0], level: 10 };
-            renderPlan();
+            renderPlan(stepIndex, 'requirement-' + index);
         });
+        kind.dataset.focusKey = 'requirement-' + index;
         const field = item.type === 'quest'
             ? planField('Quest', planSelect(questChoices().filter(q => q.id !== step.task)
                 .map(q => [q.id, q.label]), item.task, task => { item.task = task; }))
             : planField('Skill', planSelect(planSkills.map(skill => [skill, skill]), item.skill, skill => { item.skill = skill; }));
         row.append(planField('Requirement type', kind), field);
         if (item.type === 'level') row.append(planField('Minimum level', planNumber(item.level, 1, 99, value => { item.level = value; })));
-        row.append(planButton('Remove', () => { step.requirements.splice(index, 1); renderPlan(); }, 'Remove this requirement'));
+        row.append(planButton('Remove', () => {
+            step.requirements.splice(index, 1);
+            renderPlan(stepIndex, step.requirements.length ? 'requirement-' + Math.min(index, step.requirements.length - 1) : 'prerequisites');
+        }, 'Remove this requirement'));
         return row;
+    }
+
+    function renderActivitySelectors(step, index, meta) {
+        const category = meta?.category;
+        const categories = [...new Set(planCatalog.map(entry => entry.category))];
+        const families = [...new Set([...plannerFamilies.filter(family => categories.includes(family)), ...categories])];
+        const variants = planCatalog.filter(entry => entry.category === category);
+        const layout = node('div', '', 'plan-layout');
+        const nav = node('nav', '', 'plan-family-nav');
+        nav.setAttribute('role', 'tablist');
+        nav.setAttribute('aria-label', 'Activity family');
+        nav.setAttribute('aria-orientation', compactPlan.matches ? 'horizontal' : 'vertical');
+        const panel = node('div', '', 'plan-controls');
+        panel.id = 'plan-controls-' + index;
+        panel.setAttribute('role', 'tabpanel');
+
+        function choose(entry, focusKey) {
+            if (!entry) return;
+            if (entry.id !== step.task) {
+                const next = defaultStep(entry.id);
+                if (entry.category === category && finishModes(entry).includes(step.finish.type) &&
+                    (step.finish.type !== 'level' || entry.trains?.includes(step.finish.skill))) {
+                    next.finish = { ...step.finish };
+                }
+                next.requirements = step.requirements.filter(req => req.type !== 'quest' || req.task !== next.task);
+                for (const { id } of checkboxOptionsFor(next.task)) {
+                    if (step.options?.[id] === true) (next.options ??= {})[id] = true;
+                }
+                expandedPlanStep = draft[index] = next;
+            }
+            renderPlan(index, focusKey);
+        }
+
+        families.forEach((family, position) => {
+            const tab = planButton(family, () => {
+                const first = family === 'Mining' ? metaFor('mine-iron-bank') : null;
+                choose(family === category ? meta : first ?? planCatalog.find(entry => entry.category === family), 'family');
+            });
+            tab.id = 'plan-family-' + index + '-' + position;
+            tab.setAttribute('role', 'tab');
+            tab.setAttribute('aria-controls', panel.id);
+            tab.setAttribute('aria-selected', String(family === category));
+            tab.tabIndex = family === category || (!category && position === 0) ? 0 : -1;
+            if (family === category) {
+                tab.dataset.focusKey = 'family';
+                panel.setAttribute('aria-labelledby', tab.id);
+            }
+            tab.addEventListener('keydown', event => {
+                const keys = { ArrowDown: 1, ArrowRight: 1, ArrowUp: -1, ArrowLeft: -1 };
+                const offset = keys[event.key];
+                if (!offset && event.key !== 'Home' && event.key !== 'End') return;
+                event.preventDefault();
+                const next = event.key === 'Home' ? 0 : event.key === 'End' ? families.length - 1
+                    : (position + offset + families.length) % families.length;
+                nav.children[next].click();
+            });
+            nav.append(tab);
+        });
+        layout.append(nav, panel);
+        if (!meta) {
+            panel.setAttribute('aria-label', 'Unavailable activity');
+            const select = planSelect([['', 'Choose an activity'], ...planCatalog.map(entry => [entry.id, entry.label])], '',
+                task => choose(metaFor(task), 'family'));
+            select.required = true;
+            panel.append(planField('Replacement activity', select));
+            return { layout, panel };
+        }
+        panel.append(node('small', meta.usage === 'once' ? 'One-time quest' : 'Repeatable activity', 'plan-kind'));
+        const fields = node('div', '', 'plan-step-head');
+        const selectors = meta.selectors ?? [];
+        const sameFields = selectors.length && variants.every(entry => entry.selectors?.length === selectors.length &&
+            selectors.every(({ label }, i) => entry.selectors[i].label === label));
+        if (sameFields) {
+            selectors.forEach(({ label, value }, i) => {
+                const candidates = variants.filter(entry => selectors.slice(0, i).every((selector, j) =>
+                    entry.selectors[j].value === selector.value));
+                const options = [...new Set(candidates.map(entry => entry.selectors[i].value))];
+                const key = 'selector-' + i;
+                const select = planSelect(options.map(text => [text, text]), value, selected => {
+                    const matches = candidates.filter(entry => entry.selectors[i].value === selected);
+                    const sameSuffix = matches.find(entry => selectors.slice(i + 1).every((selector, j) =>
+                        entry.selectors[i + j + 1].value === selector.value));
+                    choose(sameSuffix ?? matches[0], key);
+                });
+                select.dataset.focusKey = key;
+                fields.append(planField(label, select));
+            });
+        } else if (variants.length > 1) {
+            const select = planSelect(variants.map(entry => [entry.id, entry.label]), step.task,
+                task => choose(metaFor(task), 'activity'));
+            select.dataset.focusKey = 'activity';
+            fields.append(planField('Activity', select));
+        } else {
+            fields.append(node('p', meta.label, 'plan-fixed'));
+        }
+        panel.append(fields);
+        if (category === 'Fishing') panel.append(node('p', 'Fish available at current levels, progressing to sharks.', 'plan-quantity-hint'));
+        return { layout, panel };
     }
 
     function renderStep(step, index) {
         const meta = metaFor(step.task);
         const row = node('li', '', 'plan-step');
-        const select = node('select');
-        select.required = true;
-        for (const category of [...new Set(planCatalog.map(entry => entry.category))]) {
-            const group = node('optgroup');
-            group.label = category;
-            planCatalog.filter(entry => entry.category === category).forEach(entry => group.append(new Option(entry.label, entry.id)));
-            select.append(group);
-        }
-        select.value = step.task;
-        select.addEventListener('change', () => {
-            const replacement = defaultStep(select.value);
-            replacement.requirements = step.requirements.filter(req => req.type !== 'quest' || req.task !== replacement.task);
-            for (const option of checkboxOptionsFor(replacement.task)) {
-                if (step.options?.[option.id] === true) (replacement.options ??= {})[option.id] = true;
-            }
-            draft[index] = replacement;
-            renderPlan();
-        });
-        const head = node('div', '', 'plan-step-head');
-        head.append(planField('Activity', select));
+        const head = node('div', '', 'plan-step-line');
+        const heading = node('div');
+        const title = planButton(labelFor(step.task), () => {
+            expandedPlanStep = step;
+            renderPlan(index, 'heading');
+        }, 'Edit activity ' + (index + 1) + ', ' + labelFor(step.task));
+        title.className = 'plan-step-label';
+        title.dataset.focusKey = 'heading';
+        title.setAttribute('aria-expanded', String(step === expandedPlanStep));
+        const summary = node('small', finishLabel(step.finish, bankItem(meta)), 'plan-step-summary');
+        heading.append(title, summary);
+        head.append(heading);
         if (!planReview) {
             const ordering = node('div', '', 'plan-order');
             for (const [symbol, offset, title] of [['↑', -1, 'Move activity up'], ['↓', 1, 'Move activity down']]) {
+                const next = index + offset;
                 const button = planButton(symbol, () => {
-                    const next = index + offset;
                     [draft[index], draft[next]] = [draft[next], draft[index]];
-                    renderPlan();
+                    renderPlan(next, 'heading');
                 }, title);
-                button.disabled = index + offset < (planEditBase ? draftCurrentIndex() : 0) || index + offset >= draft.length;
+                button.disabled = next < (planEditBase ? draftCurrentIndex() : 0) || next >= draft.length ||
+                    (step.finish.type === 'forever' && next !== draft.length - 1) ||
+                    (draft[next]?.finish.type === 'forever' && index !== draft.length - 1);
                 ordering.append(button);
             }
-            ordering.append(planButton('Remove', () => { draft.splice(index, 1); renderPlan(); }, 'Remove this activity'));
+            ordering.append(planButton('Remove', () => {
+                draft.splice(index, 1);
+                const next = Math.min(index, draft.length - 1);
+                if (expandedPlanStep === step) expandedPlanStep = draft[next];
+                renderPlan(next, 'heading');
+                if (!planSteps.children[next]?.querySelector('.plan-step-label')) planAdd.focus();
+            }, 'Remove this activity'));
             head.append(ordering);
         }
         row.append(head);
+        const { layout, panel } = renderActivitySelectors(step, index, meta);
+        layout.id = 'plan-step-layout-' + index;
+        title.setAttribute('aria-controls', layout.id);
+        layout.hidden = step !== expandedPlanStep;
+        row.append(layout);
+        if (!meta) return row;
         for (const option of checkboxOptionsFor(step.task)) {
             const input = node('input');
             input.type = 'checkbox';
@@ -2621,49 +2761,59 @@
             });
             const field = node('label', '', 'plan-option');
             field.append(input, option.label);
-            row.append(field);
+            panel.append(field);
         }
-        row.append(node('small', meta?.usage === 'once' ? 'One-time quest' : 'Repeatable activity', 'plan-kind'));
-        if (meta?.usage === 'repeatable') {
+        if (meta.usage === 'repeatable' || !finishModes(meta).includes(step.finish.type)) {
             const stopRow = node('div', '', 'plan-end');
-            const modes = meta.stockTargetItem ? [['bank-stock', 'Bank stock']]
-                : [['minutes', 'Time spent'], ...(meta.trains?.length ? [['level', 'Skill level']] : []),
-                ...(step.task === 'craft-body-runes' ? [['essence-exhausted', 'Rune essence runs out']] : []),
-                ...(meta.category === 'Mining' && step.task.endsWith('-bank') ? [['bank-stock', 'Bank stock']] : []),
-                ['forever', 'Indefinite grind']];
-            const finish = planSelect(modes, step.finish.type, type => {
-                step.finish = type === 'minutes' ? { type, minutes: 30 }
-                    : type === 'level' ? { type, skill: meta.trains[0], level: 40 }
-                    : type === 'bank-stock' ? { type, quantity: 100 } : { type };
-                renderPlan();
-            });
-            finish.required = true;
-            stopRow.append(planField('Finish when', finish));
+            const modes = finishModes(meta).filter(type => type !== 'forever' || index === draft.length - 1 ||
+                step.finish.type === 'forever');
+            if (modes.length > 1 || !modes.includes(step.finish.type)) {
+                const finish = planSelect(modes.map(type => [type, finishNames[type]]), step.finish.type, type => {
+                    step.finish = defaultFinish(meta, type);
+                    renderPlan(index, 'finish');
+                });
+                finish.required = true;
+                finish.dataset.focusKey = 'finish';
+                stopRow.append(planField('Finish when', finish));
+            }
             if (step.finish.type === 'minutes') {
                 stopRow.append(planField('Minutes', planNumber(step.finish.minutes, 1, 10080, value => { step.finish.minutes = value; })));
             } else if (step.finish.type === 'level') {
-                stopRow.append(planField('Skill', planSelect(meta.trains.map(skill => [skill, skill]), step.finish.skill, skill => { step.finish.skill = skill; })),
+                stopRow.append(planField('Skill', planSelect((meta.trains ?? []).map(skill => [skill, skill]), step.finish.skill, skill => { step.finish.skill = skill; })),
                     planField('Target level', planNumber(step.finish.level, 1, 99, value => { step.finish.level = value; })));
             } else if (step.finish.type === 'bank-stock') {
-                const item = meta.stockTargetItem;
+                const item = bankItem(meta);
                 const label = item ? `${item[0].toUpperCase()}${item.slice(1)} in bank` : 'Quantity in bank';
                 stopRow.append(planField(label,
                     planNumber(step.finish.quantity, 1, 100000, value => { step.finish.quantity = value; })));
             }
-            row.append(stopRow);
+            panel.append(stopRow);
+            if (step.finish.type === 'bank-stock' && bankItem(meta)) {
+                panel.append(node('p', 'Includes ' + bankItem(meta) + ' already in the bank.', 'plan-quantity-hint'));
+            } else if (step.finish.type === 'essence-exhausted') {
+                panel.append(node('p', 'Finishes when rune essence runs out in both inventory and bank.', 'plan-quantity-hint'));
+            } else if (step.finish.type === 'forever') {
+                panel.append(node('p', 'An indefinite grind must be the final activity.', 'plan-quantity-hint'));
+            }
+        } else if (meta.usage === 'once') {
+            panel.append(node('p', 'Finishes when the Quest Journal confirms completion.', 'plan-quantity-hint'));
         }
+        panel.addEventListener('input', () => { summary.textContent = finishLabel(step.finish, bankItem(meta)); });
+        panel.addEventListener('change', () => { summary.textContent = finishLabel(step.finish, bankItem(meta)); });
         const requirements = node('details', '', 'plan-requirements');
         requirements.open = step.requirements.length > 0;
-        requirements.append(node('summary', 'Prerequisites' + (step.requirements.length ? ` (${step.requirements.length} added)` : '')));
+        const toggle = node('summary', 'Prerequisites' + (step.requirements.length ? ` (${step.requirements.length} added)` : ''));
+        toggle.dataset.focusKey = 'prerequisites';
+        requirements.append(toggle);
         if (meta?.requirements?.length) requirements.append(node('p', 'Automatic · ' + meta.requirements.map(requirementLabel).join(' · ')));
-        step.requirements.forEach((item, i) => requirements.append(renderRequirement(item, step, i)));
+        step.requirements.forEach((item, i) => requirements.append(renderRequirement(item, step, i, index)));
         const add = planButton('Add prerequisite', () => {
             step.requirements.push({ type: 'level', skill: planSkills[0], level: 10 });
-            renderPlan();
+            renderPlan(index, 'requirement-' + (step.requirements.length - 1));
         });
         add.disabled = step.requirements.length >= 4;
         requirements.append(add);
-        row.append(requirements);
+        panel.append(requirements);
         return row;
     }
 
@@ -2733,7 +2883,7 @@
         setHidden(planEditStatus, !planEditStatus.textContent);
     }
 
-    function renderPlan() {
+    function renderPlan(focusIndex, focusKey) {
         setHidden(planReviewSettings, !planReview || editing !== 'update');
         if (!planReviewSettings.hidden) {
             const saved = updateSettingsList(planReview.settings);
@@ -2745,9 +2895,14 @@
         const current = planEditBase ? draftCurrentIndex() : planState?.index;
         const completedIndexes = planEditBase?.steps.slice(0, planEditBase.index).map((_, index) => index)
             .filter(index => !removedCompletedIndexes.includes(index));
+        const editable = (index) => editing && (editing !== 'update' ||
+            index >= current && (!planReview || index === planReview.index));
+        if (!list.some((step, index) => step === expandedPlanStep && editable(index))) {
+            expandedPlanStep = list.find((_, index) => editable(index));
+        }
         planSteps.replaceChildren(...list.map((step, index) => {
             const state = index < current ? 'done' : index === current ? 'current' : 'queued';
-            const canEdit = editing && (editing !== 'update' || state !== 'done' && (!planReview || index === planReview.index));
+            const canEdit = editable(index);
             const row = canEdit ? renderStep(step, index) : node('li', '', 'plan-step plan-readonly');
             if (canEdit && planReview) row.dataset.review = 'true';
             if (!canEdit) {
@@ -2765,7 +2920,7 @@
                     title.append(heading, remove);
                     row.append(title);
                 } else row.append(heading);
-                row.append(node('small', finishLabel(step.finish, metaFor(step.task)?.stockTargetItem)));
+                row.append(node('small', finishLabel(step.finish, bankItem(metaFor(step.task)))));
                 for (const option of checkboxOptionsFor(step.task)) {
                     if (step.options?.[option.id] === true) row.append(node('small', option.label));
                 }
@@ -2779,6 +2934,7 @@
             return row;
         }));
         renderPlanActions();
+        if (focusKey) planSteps.children[focusIndex]?.querySelector('[data-focus-key="' + focusKey + '"]')?.focus();
         if (!editing && planState) {
             const work = planState.work;
             const progress = work?.finish.type === 'minutes' ? ` · ${Math.floor(planState.elapsedMs / 60000)} of ${work.finish.minutes} min` : '';
@@ -2862,7 +3018,8 @@
         planConflict = planSaved = false;
         planError.textContent = '';
         renderPlan();
-        (planReview ? planSteps.children[planReview.index] : planSteps)?.querySelector('select')?.focus();
+        const expanded = planSteps.querySelector('.plan-layout:not([hidden])');
+        (expanded?.querySelector('[role="tab"][aria-selected="true"]') ?? expanded?.querySelector('select') ?? planAdd).focus();
     }
 
     onButtonClick('#new-bot, [data-plan-bot]', async button => {
@@ -2925,7 +3082,27 @@
         }
     });
 
-    planAdd.addEventListener('click', () => { draft.push(defaultStep()); renderPlan(); });
+    planAdd.addEventListener('click', () => {
+        expandedPlanStep = defaultStep(planCatalog[0]?.id);
+        const last = draft.length - 1;
+        const min = planEditBase ? draftCurrentIndex() : 0;
+        const index = last >= min && draft[last]?.finish.type === 'forever' ? last : draft.length;
+        draft.splice(index, 0, expandedPlanStep);
+        renderPlan(index, 'family');
+    });
+    planSteps.addEventListener('invalid', event => {
+        // Native validation must be able to focus an invalid input in a collapsed step.
+        if (event.target !== planSteps.querySelector('input:invalid, select:invalid')) return;
+        event.target.closest('details')?.setAttribute('open', '');
+        const layout = event.target.closest('.plan-layout');
+        if (!layout?.hidden) return;
+        const row = layout.closest('.plan-step');
+        expandedPlanStep = draft[Array.from(planSteps.children).indexOf(row)];
+        for (const panel of planSteps.querySelectorAll('.plan-layout')) {
+            panel.hidden = panel !== layout;
+            panel.closest('.plan-step').querySelector('.plan-step-label').setAttribute('aria-expanded', String(!panel.hidden));
+        }
+    }, true);
     planEdit.addEventListener('click', () => beginPlanEdit(planState?.status === 'complete' && !canEditCompletePlan()));
     planNew.addEventListener('click', () => beginPlanEdit(true));
     planCancelEdit.addEventListener('click', async () => {
