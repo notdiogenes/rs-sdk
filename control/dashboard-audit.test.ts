@@ -122,10 +122,20 @@ test('renders named task activity with its own timestamp and ignores reports fro
         expect(await render()).not.toContain('Walking to test-secret');
         expect(await render()).not.toContain('Walking to [redacted]');
         now += 1000;
-        recording.begin('Scout', 'fish-sharks-cook', null, null, []);
+        const fishingRun = recording.begin('Scout', 'fish-sharks-cook', null, null, []);
         recording.append(run, { kind: 'task-event', name: 'fleet-activity', label: 'Moving to a new coal rock' });
         expect(await render()).toContain('Moved to X 2635, Z 3381');
         expect(await render()).not.toContain('Moving to a new coal rock');
+
+        bot.activity = 'Fish sharks and cook them';
+        bot.control = { bot: bot.name, label: bot.activity, running: true, transitioning: true };
+        const starting = await render();
+        expect(starting).toContain('<span>Current activity</span><strong>Starting activity - Fish sharks and cook them</strong>');
+        expect(starting).not.toContain('Moved to X 2635, Z 3381');
+        bot.control = { ...bot.control, transitioning: false, startedAt: new Date(now).toISOString() };
+        expect(await render()).toContain('<span>Current activity</span><strong>Waiting for fishing activity details</strong>');
+        recording.append(fishingRun, { kind: 'task-event', name: 'fleet-activity', label: 'Cooking sharks at the Catherby range - 26 raw left' });
+        expect(await render()).toContain('<strong>Cooking sharks at the Catherby range - 26 raw left</strong>');
     } finally {
         reports.close();
         recording.close();
@@ -406,7 +416,7 @@ test('reloads a committed Fleet Desk presentation while the same audit writer ke
         for (const file of [
             'dashboard-presentation-entry.ts', 'dashboard-fleet-page.ts', 'dashboard-fleet-icons.ts', 'dashboard-fleet.css',
             'public-status-controls.js', 'dashboard-fleet-stats.ts', 'dashboard-quests.ts', 'dashboard-task-catalog.ts', 'mining-routes.ts',
-            'dashboard-audit-report.ts', 'dashboard-audit-insights-report.ts', 'dashboard-audit-schema.ts',
+            'dashboard-audit-report.ts', 'dashboard-audit-insights-report.ts', 'dashboard-audit-schema.ts', 'bank-locations.ts',
         ]) copyFileSync(join(import.meta.dir, file), join(source, file));
         git('init', '-q');
         git('add', 'control');

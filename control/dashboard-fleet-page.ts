@@ -8,6 +8,7 @@ import type { LastActivity } from './dashboard-last-activity';
 const escape = (value: string) => value.replaceAll('&', '&amp;').replaceAll('<', '&lt;')
     .replaceAll('>', '&gt;').replaceAll('"', '&quot;').replaceAll("'", '&#39;');
 const groups = { attention: 'Needs attention', active: 'Running', idle: 'Idle', offline: 'Offline' } as const;
+const fishingLabels = new Set(activityIds.map(activity).filter(meta => meta.category === 'Fishing').map(meta => meta.label));
 // Row order from the game's stats tab. Runecraft shares the last row with the total.
 const skillTabOrder = [
     'Attack', 'Hitpoints', 'Mining',
@@ -87,9 +88,20 @@ function card(bot: Bot, category: Group, reason: string, managed: ControlActivit
     reportedActivity?: LastActivity) {
     const name = escape(bot.name);
     const waiting = category === 'idle' && managed?.waiting === reason;
-    const last = waiting ? undefined : reportedActivity ?? bot.lastActivity;
+    let currentActivity: string | undefined;
+    if (waiting) {
+        currentActivity = reportedActivity?.reason ?? reason;
+    } else if (bot.status === 'Online' && managed?.running) {
+        if (managed.transitioning) {
+            const label = managed.label ?? bot.activity;
+            currentActivity = /^(Starting|Stopping) /.test(label) ? label : `Starting activity - ${label}`;
+        } else if (!reportedActivity && fishingLabels.has(bot.activity)) {
+            currentActivity = 'Waiting for fishing activity details';
+        }
+    }
+    const last = currentActivity ? undefined : reportedActivity ?? bot.lastActivity;
     const timestamp = last ? `<time datetime="${escape(last.at)}">${activityClock.format(new Date(last.at))}</time>` : '';
-    const activityDetail = waiting ? reportedActivity?.reason ?? reason : last?.reason.split(' · ').map(signal => {
+    const activityDetail = currentActivity ?? last?.reason.split(' · ').map(signal => {
         if (signal !== 'Moved') return signal;
         return bot.location ? `Moved to ${bot.location}` : 'Position changed';
     }).join(' · ') ?? 'No activity observed';
@@ -110,7 +122,7 @@ function card(bot: Bot, category: Group, reason: string, managed: ControlActivit
       ${showReason ? `<p class="reason">${escape(reason)}</p>` : ''}
     </div>
     <div class="last-activity">
-      <span>${waiting ? 'Current activity' : 'Last activity'}</span>${timestamp}<strong>${escape(activityDetail)}</strong>
+      <span>${currentActivity ? 'Current activity' : 'Last activity'}</span>${timestamp}<strong>${escape(activityDetail)}</strong>
     </div>
     <dl class="facts">
       ${fact('Heartbeat', timeAgo(now, bot.heartbeat))}
