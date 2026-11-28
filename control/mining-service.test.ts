@@ -282,3 +282,71 @@ for (const scenario of ['bank', 'power', 'partial-bank', 'stock-target'] as cons
         expect(state.inventory.some(entry => entry.id === 1275)).toBe(true);
     });
 }
+
+test('mining rechecks exhausted sites and reaches its bank target on a later pass', async () => {
+    const sites = rankMiningSites('iron', 'bank', miningBanks.west, 61);
+    const firstMine = sites[0]!.mine;
+    const ore = { id: 440, name: 'Iron ore', slot: 0, count: 1, optionsWithIndex: [] };
+    const rock = { id: 2092, x: firstMine.x + 1, z: firstMine.z, distance: 1,
+        optionsWithIndex: [{ text: 'Mine', opIndex: 1 }] };
+    const state = {
+        inGame: true, tick: 1,
+        player: { worldX: miningBanks.west.x, worldZ: miningBanks.west.z, level: 0, hp: 99, maxHp: 99, isDead: false },
+        skills: [{ name: 'Mining', baseLevel: 61, experience: 300000 }],
+        inventory: [], equipment: [{ id: 1275, name: 'Rune pickaxe' }],
+        bank: { isOpen: true, items: [] }, nearbyLocs: [], nearbyPlayers: [],
+    } as unknown as BotWorldState;
+    const success = { success: true, message: '' };
+    const blockedWalks: { x: number; z: number }[] = [];
+    const waits: number[] = [];
+    const context = {
+        sdk: {
+            getState: () => state,
+            getStateAge: () => 0,
+            waitForTicks: async (ticks: number) => {
+                waits.push(ticks);
+                state.tick += ticks;
+                return state;
+            },
+            scanNearbyLocs: async () => state.nearbyLocs,
+            sendInteractLoc: async () => {
+                state.inventory.push(ore);
+                state.skills[0]!.experience += 35;
+                return success;
+            },
+            waitForCondition: async (check: (value: BotWorldState) => boolean) => {
+                expect(check(state)).toBe(true);
+                return state;
+            },
+        },
+        bot: {
+            walkTo: async (x: number, z: number) => {
+                if (waits.length < 3) {
+                    blockedWalks.push({ x, z });
+                    return { success: false, message: 'Site temporarily unreachable' };
+                }
+                state.player!.worldX = x;
+                state.player!.worldZ = z;
+                if (x === firstMine.x && z === firstMine.z) {
+                    state.nearbyLocs = [rock as BotWorldState['nearbyLocs'][number]];
+                }
+                return success;
+            },
+            openBank: async () => { state.bank.isOpen = true; return success; },
+            closeBank: async () => { state.bank.isOpen = false; return success; },
+            depositItem: async () => {
+                state.bank.items.push(ore);
+                state.inventory = [];
+                return success;
+            },
+        },
+    } as unknown as ScriptContext;
+
+    await mineResources(context, 'mine-iron-bank', 1);
+
+    const sweep = sites.map(({ mine: { x, z } }) => ({ x, z }));
+    expect(blockedWalks).toEqual([...sweep, ...sweep, ...sweep]);
+    expect(waits).toEqual([100, 100, 100]);
+    expect(state.bank.items).toEqual([ore]);
+    expect(state.bank.isOpen).toBe(false);
+});

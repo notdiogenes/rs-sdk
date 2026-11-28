@@ -10,12 +10,15 @@ import { alKharidTollGate, coalTrucks, fishingGuildBank, guildLadder, inMiningGu
 
 const pickaxe = 1275;
 const capacity = 28;
+const siteRetryTicks = 100;
 const insideEssenceMine = (p: Tile) => Math.floor(p.x / 64) === 45 && Math.floor(p.z / 64) === 75;
 const canEat = (item: InventoryItem) => item.optionsWithIndex.some(option => /^eat$/i.test(option.text));
 const tile = (state: BotWorldState) => ({ x: state.player!.worldX, z: state.player!.worldZ });
 const skill = (state: BotWorldState) => state.skills.find(entry => entry.name === 'Mining');
 const fishingLevel = (state: BotWorldState) => state.skills.find(entry => entry.name === 'Fishing')?.level ?? 0;
 const hasPick = (state: BotWorldState) => [...state.inventory, ...state.equipment].some(item => item.id === pickaxe);
+
+class MiningSuppliesError extends Error {}
 
 export async function mineResources({ bot, sdk }: ScriptContext, task = process.env.RS_ACTIVITY ?? 'mine-iron-bank',
     bankTarget = process.env.RS_ACTIVITY_BANK_TARGET ? Number(process.env.RS_ACTIVITY_BANK_TARGET) : undefined,
@@ -277,7 +280,7 @@ export async function mineResources({ bot, sdk }: ScriptContext, task = process.
 
     async function unload(site: MiningSite) {
         const count = quantity(current());
-        if (!count) throw new Error('The backpack is full with supplies and has no space for ore.');
+        if (!count) throw new MiningSuppliesError('The backpack is full with supplies and has no space for ore.');
         const began = Date.now();
         let complete = false;
         if (selection.mode === 'bank') {
@@ -313,11 +316,10 @@ export async function mineResources({ bot, sdk }: ScriptContext, task = process.
         auditEvent('milestone', 'mining-site-reached', { site: site.mine.name });
     }
 
-    let quietSweeps = 0;
     const retryAfter = new Map<string, number>();
     const productiveRocks = new Set<string>();
     const rockKey = (loc: NearbyLoc) => `${loc.x}:${loc.z}`;
-    while (quietSweeps < 3) {
+    for (;;) {
         const visited = new Set<MiningSite>();
         let produced = false;
         for (;;) {
@@ -338,7 +340,7 @@ export async function mineResources({ bot, sdk }: ScriptContext, task = process.
                     if (!hasPick(state)) throw new Error('The rune pickaxe is no longer usable or present.');
                     if (state.player!.hp <= Math.max(8, Math.floor(state.player!.maxHp / 3))) {
                         const food = state.inventory.find(canEat);
-                        if (!food) throw new Error('Low HP and no food in the backpack.');
+                        if (!food) throw new MiningSuppliesError('Low HP and no food in the backpack.');
                         await act('mining-eat', 'Recover HP', {}, () => bot.eatFood(food));
                     }
                     if (state.inventory.length >= capacity || quantity(state) >= remaining) {
@@ -376,7 +378,6 @@ export async function mineResources({ bot, sdk }: ScriptContext, task = process.
                     if (result.outcome === 'complete') {
                         produced = true;
                         yieldedHere = true;
-                        quietSweeps = 0;
                         attemptsWithoutOre = 0;
                         failedRocks.clear();
                         productiveRocks.add(rockKey(rock));
@@ -397,17 +398,20 @@ export async function mineResources({ bot, sdk }: ScriptContext, task = process.
                     await checkpoint?.();
                 }
             } catch (error) {
-                if (error instanceof TaskUpdateAccepted) throw error;
+                if (error instanceof TaskUpdateAccepted || error instanceof MiningSuppliesError) throw error;
                 if (!hasPick(current()) || current().player!.hp <= 8) throw error;
                 auditEvent('setback', 'mining-route-failed', { site: site.mine.name, message: error instanceof Error ? error.message : String(error) });
                 await closeBank();
             }
             auditEvent('milestone', 'mining-switch-route', { from: site.mine.name, resource, mode: selection.mode });
         }
-        if (!produced) quietSweeps++;
-        if (quietSweeps < 3) await sdk.waitForTicks(10);
+        if (!produced) {
+            phase('mining-retry-sites', { sitesChecked: visited.size, retryTicks: siteRetryTicks });
+            reportTaskActivity(`Waiting to recheck ${material} sites`);
+            if (selection.mode === 'bank' || quantity(current()) === 0) await checkpoint?.();
+        }
+        await sdk.waitForTicks(produced ? 10 : siteRetryTicks);
     }
-    throw new Error(`Could not sustain mining ${settings.label} at any checked site.`);
 }
 
 if (import.meta.main) {
