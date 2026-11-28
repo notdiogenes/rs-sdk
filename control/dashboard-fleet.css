@@ -310,10 +310,21 @@ dialog h3{margin-top:12px}
 #runtime-title{font-size:20px;overflow-wrap:anywhere}
 #runtime-assignment{gap:5px}
 #runtime-dialog select,#runtime-dialog input{width:100%;min-width:0}
+#runtime-membership{display:grid;gap:6px}
+#runtime-membership fieldset{margin:0 0 5px;min-width:0;padding:6px 10px;border:1px solid var(--line);border-radius:7px}
+#runtime-membership legend{padding:0 4px}
+#runtime-members{display:grid;max-height:11rem;overflow-y:auto}
+#runtime-membership .runtime-check{display:flex;align-items:center;gap:8px;padding:4px 0;overflow-wrap:anywhere;cursor:pointer}
+#runtime-membership input[type=checkbox]{flex:none;width:16px;height:16px;padding:0;margin:0;accent-color:var(--gold)}
+#runtime-timing,#runtime-compatibility,#runtime-removal{font-size:13px}
+#runtime-timing[data-immediate=true]{color:var(--amber)}
+#runtime-results{margin:6px 0 0;padding-inline-start:18px;font-size:13px;overflow-wrap:anywhere}
+#runtime-results [data-failed=true]{color:var(--amber)}
 #runtime-sharing,#runtime-pending,#runtime-status{font-size:13px;overflow-wrap:anywhere}
 #runtime-sharing{min-height:1.35em}
 #runtime-pending{margin-top:5px;border-inline-start:2px solid var(--gold);padding:5px 9px;background:#2c271f;color:#e6cea5}
-.runtime-actions{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:7px}
+.runtime-actions,.runtime-group-actions{display:flex;align-items:center;flex-wrap:wrap;gap:6px}
+.runtime-actions{justify-content:space-between;margin-top:7px}
 #runtime-dialog button[type=submit]{border-color:#6e5731;background:#3b3020;color:#fae4bd;font-weight:650}
 #runtime-dialog button:disabled{opacity:.52;cursor:default}
 #runtime-status:not(:empty){margin-top:10px}

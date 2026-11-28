@@ -56,6 +56,8 @@ test('the first live-update deployment leaves an unstamped or legacy worker runn
         expect(worker('changed')).toBe(1);
         legacyWorker('Fleet Desk worker restart inputs v5');
         expect(worker('changed')).toBe(1);
+        legacyWorker('Fleet Desk worker restart inputs v6');
+        expect(worker('changed')).toBe(1);
         expect(worker('record')).toBe(0);
         expect(worker('changed')).toBe(1);
     });

@@ -25,6 +25,7 @@ export type PlanBackend = {
     observe(): Promise<BotWorldState | null>;
     start(task: ActivityId, skill?: string, bankTarget?: number, options?: ActivityOptions, release?: WorkerRelease): Promise<void>;
     stop(): Promise<void>;
+    stopForRuntimeMove?(runId: string): Promise<boolean>;
     activeUpdate?(): ActiveTaskUpdate | undefined;
     safeForUpdate?(): boolean;
     requestCheckpoint?(runId: string, id: string): boolean;
@@ -34,22 +35,23 @@ export type PlanBackend = {
 
 export class PlanEditConflict extends Error {}
 
-type PendingUpdate = {
+type PendingTransition = {
     index: number;
     planRevision: string;
     runId: string;
-    release: WorkerRelease;
-    mode: 'safe' | 'now';
-    reviewed?: Step;
     attempt?: string;
     applying?: boolean;
-};
+} & (
+    | { kind: 'release'; mode: 'safe' | 'now'; release: WorkerRelease; reviewed?: Step }
+    | { kind: 'runtime'; mode: 'safe' | 'immediate'; stillAssigned: () => boolean;
+        stopped?: Promise<{ ok: true } | { ok: false; error: unknown }> }
+);
 type PlanJob = {
     plan: Plan;
     cancel: AbortController;
     done: Promise<void>;
     backend?: PlanBackend;
-    pending?: PendingUpdate;
+    pending?: PendingTransition;
     updateMessage?: string;
 };
 
@@ -79,6 +81,17 @@ const workBankTarget = (work: Work) => work.finish.type === 'bank-stock' ? work.
 function sameLaunch(first: Work, second: Work) {
     return first.task === second.task && workSkill(first) === workSkill(second) &&
         workBankTarget(first) === workBankTarget(second) && sameOptions(first.options, second.options);
+}
+
+function verifiedCompletion(work: Work, status: ControllerStatus) {
+    const exit = status.lastTask;
+    return !status.task && (work.finish.type === 'essence-exhausted' || work.finish.type === 'bank-stock') &&
+        exit?.name === work.task && exit.exitCode === 0 && exit.completion === work.finish.type;
+}
+
+function assignmentMatches(check: () => boolean) {
+    try { return check(); }
+    catch { return false; }
 }
 
 export function createPlanManager(directory: string, backendFor: (bot: string, signal: AbortSignal) => Promise<PlanBackend>,
@@ -114,6 +127,23 @@ export function createPlanManager(directory: string, backendFor: (bot: string, s
         job.pending = undefined;
     }
 
+    function checkpointClosing(job: PlanJob) {
+        const attempt = job.pending?.attempt;
+        if (!attempt) return false;
+        const checkpoint = job.backend?.activeUpdate?.()?.checkpoint;
+        const status = job.backend?.status();
+        return checkpoint?.id === attempt && (checkpoint.phase === 'committed' || checkpoint.phase === 'accepted') ||
+            !status?.task && status?.lastTask?.updateId === attempt;
+    }
+
+    function cancelSupersededRuntimeMove(job: PlanJob) {
+        const { pending } = job;
+        if (pending?.kind !== 'runtime' || pending.applying || assignmentMatches(pending.stillAssigned)) return;
+        // A committed checkpoint may already have stopped the activity. Let
+        // the replacement use the latest assignment at its own launch.
+        if (!checkpointClosing(job)) cancelPending(job);
+    }
+
     function requestUpdate(bot: string, index: number, planRevision: string, runId: string,
         release: WorkerRelease, mode: 'safe' | 'now', reviewed?: Step) {
         const job = jobs.get(bot.toLowerCase());
@@ -121,7 +151,9 @@ export function createPlanManager(directory: string, backendFor: (bot: string, s
         if (!job || job.plan.index !== index || job.plan.revision !== planRevision || job.cancel.signal.aborted || running?.runId !== runId) {
             throw new PlanEditConflict('The running activity changed. Reload updates before retrying.');
         }
-        if (job.pending) throw new PlanEditConflict('An update is already waiting for this activity.');
+        if (job.pending) throw new PlanEditConflict(job.pending.kind === 'runtime'
+            ? 'A runtime move is already waiting for this activity.'
+            : 'An update is already waiting for this activity.');
         const step = reviewed ?? job.plan.steps[index]!;
         const compatibility = release.value.checkStepCompatibility(step);
         if (compatibility.status === 'review') throw new PlanEditConflict(compatibility.reason);
@@ -131,43 +163,89 @@ export function createPlanManager(directory: string, backendFor: (bot: string, s
         if (mode === 'now' && !job.backend?.safeForUpdate?.()) {
             throw new PlanEditConflict('Wait for fresh game state outside combat with enough health and all game windows closed.');
         }
-        job.pending = { index, planRevision, runId, release, mode, reviewed };
+        job.pending = { kind: 'release', index, planRevision, runId, release, mode, reviewed };
         job.updateMessage = undefined;
+    }
+
+    function requestRuntimeMove(bot: string, runId: string, mode: 'safe' | 'immediate',
+        stillAssigned: () => boolean): 'queued' | 'relaunching' | 'next-launch' {
+        const job = jobs.get(bot.toLowerCase());
+        const backend = job?.backend;
+        const running = backend?.activeUpdate?.();
+        if (!job || !backend || job.plan.status !== 'running' || job.cancel.signal.aborted ||
+            running?.runId !== runId || !backend.status().task || !assignmentMatches(stillAssigned)) return 'next-launch';
+        cancelSupersededRuntimeMove(job);
+        if (job.pending) {
+            if (job.pending.kind !== 'runtime' || job.pending.runId !== runId) return 'next-launch';
+            return job.pending.mode === 'immediate' ? 'relaunching' : 'queued';
+        }
+        if (mode === 'safe' && (!running.supported || !backend.requestCheckpoint ||
+            !backend.commitCheckpoint || !backend.safeForUpdate)) return 'next-launch';
+        if (mode === 'immediate' && !backend.stopForRuntimeMove) return 'next-launch';
+
+        const pending: PendingTransition = {
+            kind: 'runtime', mode, stillAssigned, runId, index: job.plan.index, planRevision: job.plan.revision,
+        };
+        job.pending = pending;
+        if (mode === 'safe') return 'queued';
+
+        pending.stopped = Promise.resolve().then(async () => {
+            // The request deliberately does not wait for combat or a fresh snapshot.
+            // If this run ended before the stop request was dispatched, there is
+            // nothing to stop and ordinary plan completion can take over.
+            if (job.cancel.signal.aborted || job.pending !== pending ||
+                backend.activeUpdate?.()?.runId !== runId || !assignmentMatches(stillAssigned)) {
+                if (job.pending === pending) job.pending = undefined;
+            } else {
+                pending.applying = true;
+                if (!await backend.stopForRuntimeMove!(runId) && job.pending === pending) job.pending = undefined;
+            }
+        }).then(() => ({ ok: true as const }), error => ({ ok: false as const, error }));
+        return 'relaunching';
     }
 
     function activeUpdate(bot: string) {
         const job = jobs.get(bot.toLowerCase());
         return {
             running: job?.backend?.activeUpdate?.(),
-            waiting: !!job?.pending,
+            waiting: job?.pending?.kind === 'release',
             message: job?.updateMessage,
         };
     }
 
     function cancelUpdate(bot: string, runId: string) {
         const job = jobs.get(bot.toLowerCase());
-        if (!job?.pending || job.pending.runId !== runId) throw new PlanEditConflict('This update is no longer pending.');
+        if (job?.pending?.kind !== 'release' || job.pending.runId !== runId) throw new PlanEditConflict('This update is no longer pending.');
         const phase = job.backend?.activeUpdate?.()?.checkpoint?.phase;
-        if (job.pending.applying || phase === 'committed' || phase === 'accepted') {
+        if (job.pending.applying || phase === 'committed' || phase === 'accepted' || checkpointClosing(job)) {
             throw new PlanEditConflict('The activity is already switching releases.');
         }
         cancelPending(job);
     }
 
-    async function applyPending(job: PlanJob, backend: PlanBackend, status: ControllerStatus): Promise<WorkerRelease | undefined> {
+    async function applyPending(job: PlanJob, backend: PlanBackend, status: ControllerStatus): Promise<PendingTransition | undefined> {
+        cancelSupersededRuntimeMove(job);
         const { plan, pending } = job;
         if (!pending) return;
+        if (pending.kind === 'runtime' && pending.stopped) {
+            const result = await pending.stopped;
+            job.cancel.signal.throwIfAborted();
+            if (!result.ok) throw result.error;
+            if (job.pending !== pending) return;
+            job.pending = undefined;
+            return pending;
+        }
         const running = backend.activeUpdate?.();
         if (plan.index !== pending.index || plan.revision !== pending.planRevision) {
             cancelPending(job);
             return;
         }
-        if (!status.task && pending.attempt && status.lastTask?.updateId === pending.attempt) {
+        if (!status.task && pending.attempt && status.lastTask?.updateId === pending.attempt && status.lastTask.exitCode === 0) {
             // The script verified the checkpoint again and exited voluntarily.
         } else if (running?.runId !== pending.runId) {
             cancelPending(job);
             return;
-        } else if (pending.mode === 'now') {
+        } else if (pending.kind === 'release' && pending.mode === 'now') {
             if (!backend.safeForUpdate?.()) {
                 job.updateMessage = 'The bot is busy or needs recovery. Try again at a safe point.';
                 cancelPending(job);
@@ -187,14 +265,14 @@ export function createPlanManager(directory: string, backendFor: (bot: string, s
             }
             return;
         }
-        if (pending.reviewed) {
+        if (pending.kind === 'release' && pending.reviewed) {
             const old = plan.steps[pending.index];
             plan.steps[pending.index] = pending.reviewed;
             if (old?.task !== pending.reviewed.task) plan.elapsedMs = 0;
             saveRevision(plan);
         }
         job.pending = undefined;
-        return pending.release;
+        return pending;
     }
 
     async function waitReady(backend: PlanBackend, signal: AbortSignal) {
@@ -218,7 +296,7 @@ export function createPlanManager(directory: string, backendFor: (bot: string, s
         const { signal } = job.cancel;
         let backend: PlanBackend | undefined;
         let owned = false;
-        let nextRelease: WorkerRelease | undefined;
+        let nextLaunch: { release?: WorkerRelease } | undefined;
         try {
             backend = await backendFor(plan.bot, signal);
             job.backend = backend;
@@ -233,7 +311,7 @@ export function createPlanManager(directory: string, backendFor: (bot: string, s
                 let work: Work | null;
                 let release: WorkerRelease | undefined;
                 try {
-                    release = nextRelease ?? await updates?.load();
+                    release = nextLaunch ? nextLaunch.release : await updates?.load();
                     signal.throwIfAborted();
                     // A plan edit can arrive while a new revision is loading.
                     if (step !== plan.steps[plan.index]) continue;
@@ -249,7 +327,7 @@ export function createPlanManager(directory: string, backendFor: (bot: string, s
                     continue;
                 }
                 if (!work) {
-                    nextRelease = undefined;
+                    nextLaunch = undefined;
                     advance(plan);
                     continue;
                 }
@@ -258,8 +336,9 @@ export function createPlanManager(directory: string, backendFor: (bot: string, s
                 signal.throwIfAborted();
                 if (backend.status().task) throw new Error('Stop the current activity before running a plan.');
                 const launchedWork = { ...work };
+                const launchedRelease = release;
                 await backend.start(work.task, workSkill(work), workBankTarget(work), work.options, release);
-                nextRelease = undefined;
+                nextLaunch = undefined;
                 owned = true;
                 let lastLive = Date.now();
                 let previous = lastLive;
@@ -277,6 +356,15 @@ export function createPlanManager(directory: string, backendFor: (bot: string, s
                     const revised = plan.steps[plan.index];
                     if (!revised) break;
                     if (!snapshot?.player) {
+                        cancelSupersededRuntimeMove(job);
+                        const runtime = job.pending?.kind === 'runtime' ? job.pending : undefined;
+                        if (runtime && (runtime.stopped || !status.task && runtime.attempt &&
+                            status.lastTask?.updateId === runtime.attempt) &&
+                            await applyPending(job, backend, status)) {
+                            if (verifiedCompletion(work, backend.status())) advance(plan);
+                            else nextLaunch = { release: launchedRelease };
+                            break;
+                        }
                         previous = now;
                         if (!status.client || now - lastLive > 25_000) throw new Error('The managed game client stopped publishing live state.');
                         continue;
@@ -330,12 +418,19 @@ export function createPlanManager(directory: string, backendFor: (bot: string, s
                         if (!work.inserted) advance(plan);
                         break;
                     }
-                    nextRelease = await applyPending(job, backend, status);
-                    if (nextRelease) break;
+                    if (job.pending?.kind === 'runtime' && verifiedCompletion(work, status)) {
+                        advance(plan);
+                        break;
+                    }
+                    const applied = await applyPending(job, backend, status);
+                    if (applied) {
+                        if (applied.kind === 'runtime' && verifiedCompletion(work, backend.status())) advance(plan);
+                        else nextLaunch = { release: applied.kind === 'release' ? applied.release : launchedRelease };
+                        break;
+                    }
                     if (!status.task) {
                         const exit = status.lastTask;
-                        if ((work.finish.type === 'essence-exhausted' || work.finish.type === 'bank-stock') &&
-                            exit?.name === work.task && exit.exitCode === 0 && exit.completion === work.finish.type) {
+                        if (verifiedCompletion(work, status)) {
                             advance(plan);
                             break;
                         }
@@ -348,6 +443,10 @@ export function createPlanManager(directory: string, backendFor: (bot: string, s
                         }
                     }
                 }
+                if (job.pending?.kind === 'runtime' && job.pending.stopped) {
+                    const result = await job.pending.stopped;
+                    if (!result.ok) throw result.error;
+                }
                 cancelPending(job);
                 if (backend.status().task) await backend.stop();
                 owned = false;
@@ -359,6 +458,14 @@ export function createPlanManager(directory: string, backendFor: (bot: string, s
             plan.message = undefined;
             saveRevision(plan);
         } catch (error) {
+            const moving = job.pending?.kind === 'runtime' && job.pending.stopped ? job.pending : undefined;
+            if (moving?.stopped) {
+                // A concurrent pause must drain the exact stop already in
+                // progress before considering the ordinary stop path.
+                const result = await moving.stopped;
+                if (signal.aborted && result.ok && plan.index === moving.index &&
+                    plan.work && backend && verifiedCompletion(plan.work, backend.status())) advance(plan);
+            }
             cancelPending(job);
             if (owned && backend?.status().task) {
                 try { await backend.stop(); }
@@ -406,7 +513,7 @@ export function createPlanManager(directory: string, backendFor: (bot: string, s
             throw new PlanEditConflict('The saved plan changed. Reload it before saving your edits.');
         }
         const checkpoint = job?.backend?.activeUpdate?.()?.checkpoint?.phase;
-        if (job?.pending?.applying || checkpoint === 'committed' || checkpoint === 'accepted') {
+        if (job?.pending?.applying || checkpoint === 'committed' || checkpoint === 'accepted' || job && checkpointClosing(job)) {
             throw new PlanEditConflict('The activity is switching releases.');
         }
         const removed = new Set(removedCompletedIndexes);
@@ -456,6 +563,9 @@ export function createPlanManager(directory: string, backendFor: (bot: string, s
             plan.index !== plan.steps.length - 1 || step?.task !== 'craft-body-runes') {
             throw new Error('Mining can be queued after the current final runecrafting step.');
         }
+        if (job?.pending?.kind === 'runtime' && (job.pending.applying || checkpointClosing(job))) {
+            throw new PlanEditConflict('The activity is switching runtime groups.');
+        }
         if (plan.steps.length >= 12 || (updates?.current().activity ?? activity)(next.task).category !== 'Mining') {
             throw new Error('Choose a mining activity to queue.');
         }
@@ -481,6 +591,6 @@ export function createPlanManager(directory: string, backendFor: (bot: string, s
         }
     }
 
-    return { get, list, active, activeUpdate, requestUpdate, cancelUpdate, start, resume, update, pause, queueMining, restore,
+    return { get, list, active, activeUpdate, requestUpdate, requestRuntimeMove, cancelUpdate, start, resume, update, pause, queueMining, restore,
         supportsCompletedRemoval: true as const, close: () => db.close() };
 }
