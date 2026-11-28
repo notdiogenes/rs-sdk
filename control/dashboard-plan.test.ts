@@ -112,6 +112,7 @@ test('accepts bank totals for mining in banking mode and requires a bar target f
 test('the public catalog offers exactly the finish conditions accepted for each activity', () => {
     for (const entry of planCatalog) {
         const finishes: Record<Finish['type'], Finish> = {
+            'melee-levels': { type: 'melee-levels', levels: { Attack: 50, Hitpoints: 60 }, style: 'Balanced' },
             complete: { type: 'complete' }, minutes: { type: 'minutes', minutes: 30 },
             level: { type: 'level', skill: entry.trains?.[0] ?? 'Fishing', level: 40 },
             'bank-stock': { type: 'bank-stock', quantity: 250 },
@@ -604,37 +605,45 @@ test('an edit during task launch restarts only after the old child stops when la
     }
 }, 15_000);
 
-test('editing the active banking option relaunches the child and persists through resume', async () => {
+test.each([
+    { label: 'banking option', steps: (edited: boolean) => parseSteps([{ task: 'pickpocket-heroes', finish: { type: 'forever' }, options: { banking: edited } }]) },
+    { label: 'melee targets', steps: (edited: boolean) => parseSteps([{ task: 'train-cows', finish: {
+        type: 'melee-levels', levels: { Attack: edited ? 50 : 40, Hitpoints: 60 }, style: edited ? 'Defensive' : 'Balanced',
+    } }]) },
+])('editing active $label relaunches the child and persists through resume', async ({ steps }) => {
     const directory = mkdtempSync(join(process.cwd(), '.plan-test-'));
     const game = world(80, 99);
     const status: ReturnType<PlanBackend['status']> = { bot: 'Bot', tasks: [], client: null, task: null };
-    const launched: boolean[] = [];
+    const launched: unknown[] = [];
     const backend: PlanBackend = {
         status: () => status,
         async prepare() { status.client = { startedAt: new Date().toISOString(), stopping: false }; },
         async observe() { game.tick++; return game; },
-        async start(name, _skill, _target, options) {
+        async start(name, _skill, _target, options, _release, meleeGoal) {
             expect(status.task).toBeNull();
-            launched.push(options?.banking === true);
+            launched.push(meleeGoal ?? (options?.banking === true));
             status.task = { name, startedAt: new Date().toISOString(), stopping: false };
         },
         async stop() { status.task = null; },
     };
     let manager = createPlanManager(directory, async () => backend);
-    const steps = (banking: boolean) => parseSteps([{ task: 'pickpocket-heroes', finish: { type: 'forever' }, options: { banking } }]);
+    const expected = (edited: boolean) => {
+        const { finish, options } = steps(edited)[0]!;
+        return finish.type === 'melee-levels' ? finish : options?.banking === true;
+    };
     try {
         manager.start('Bot', steps(false));
         await until(() => launched.length === 1);
         manager.update('Bot', steps(true), manager.get('Bot')!.revision);
         await until(() => launched.length === 2);
-        expect(launched).toEqual([false, true]);
+        expect(launched).toEqual([expected(false), expected(true)]);
         await manager.pause('Bot');
         manager.close();
         manager = createPlanManager(directory, async () => backend);
-        expect(manager.get('Bot')?.steps[0]?.options?.banking).toBe(true);
+        expect(manager.get('Bot')?.steps).toEqual(steps(true));
         manager.resume('Bot');
         await until(() => launched.length === 3);
-        expect(launched).toEqual([false, true, true]);
+        expect(launched).toEqual([expected(false), expected(true), expected(true)]);
     } finally {
         await manager.pause('Bot');
         manager.close();

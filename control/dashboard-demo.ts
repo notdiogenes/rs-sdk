@@ -16,6 +16,7 @@ import { taskEnvironment, type DashboardWorkerUpdates, type WorkerRelease } from
 import { taskUpdateChannel } from './dashboard-task-update';
 import { isSafeTaskUpdateState } from './task-update-safety';
 import type { BotWorldState } from '../sdk/types';
+import type { MeleeGoal } from './melee-training';
 import type { Step } from './dashboard-plan';
 import type { RuntimeGroup } from './dashboard-runtime-groups';
 import type { DashboardRuntimePools, RuntimeProcess, RuntimeTaskProcess } from './dashboard-runtime-pools';
@@ -345,8 +346,12 @@ export function dashboardDemo(runtimeDir: string, botsDir: string, configDir: st
         return active;
     }
 
-    async function startTask(bot: string, name: DemoTaskName, planned = false, skill?: string, bankTarget?: number,
-        options?: ActivityOptions, release?: WorkerRelease, checkLaunch?: () => void, followAssignment = false) {
+    async function startTask(bot: string, name: DemoTaskName, {
+        planned = false, skill, bankTarget, meleeGoal, options, release, checkLaunch, followAssignment = false,
+    }: {
+        planned?: boolean; skill?: string; bankTarget?: number; meleeGoal?: MeleeGoal; options?: ActivityOptions;
+        release?: WorkerRelease; checkLaunch?: () => void; followAssignment?: boolean;
+    }) {
         const activeClient = client;
         const epoch = clientEpoch;
         await pathfinding?.ensureReady();
@@ -373,7 +378,7 @@ export function dashboardDemo(runtimeDir: string, botsDir: string, configDir: st
                 if (followAssignment) group = runtime?.assignment(bot) ?? null;
             } while ((placedClient.process.groupId ?? null) !== (group?.id ?? null));
             auditId = audit?.begin(bot, name, launchRevision ?? null, scriptSha, [credentials.password, token]);
-            const activityEnv = (selected?.value.taskEnvironment ?? taskEnvironment)(skill, bankTarget, options);
+            const activityEnv = (selected?.value.taskEnvironment ?? taskEnvironment)(skill, bankTarget, options, meleeGoal);
             const env = {
                 ...process.env, ...activityEnv, BOT_USERNAME: credentials.username, PASSWORD: credentials.password,
                 SERVER: 'rs-sdk.maxbittker.com', SHOW_CHAT: 'false', GATEWAY_DIRECT: 'false',
@@ -523,7 +528,7 @@ export function dashboardDemo(runtimeDir: string, botsDir: string, configDir: st
                     client !== activeClient || activeClient.stopping || activeClient.process.exitCode !== null) {
                     return json({ error: 'Start the demo client and wait for live state before starting a task' }, 409);
                 }
-                await startTask(bot, name, false, undefined, undefined, undefined, release);
+                await startTask(bot, name, { release });
                 return json({ bot, task: name, phase: 'starting' }, 202);
             }
             if (route === 'client/stop') {
@@ -654,7 +659,8 @@ export function dashboardDemo(runtimeDir: string, botsDir: string, configDir: st
             }
             if (!stillWanted() || client !== activeClient || task || busy || startingPlanTask) return;
             pending.switching = true;
-            await startTask(running.bot, running.name, false, running.skill, running.bankTarget, options, release, checkLaunch, !!stillAssigned);
+            await startTask(running.bot, running.name, { skill: running.skill, bankTarget: running.bankTarget,
+                options, release, checkLaunch, followAssignment: !!stillAssigned });
         })().catch(error => {
             if (stillWanted()) event(stillAssigned ? 'runtime-relaunch-failed' : 'task-update-failed', {
                 message: error instanceof Error ? error.message : String(error),
@@ -692,11 +698,11 @@ export function dashboardDemo(runtimeDir: string, botsDir: string, configDir: st
                 observation = { state: sample.state, at: Date.now() - sample.stateAge };
                 return sample.state;
             },
-            async start(name: ActivityId, skill?: string, bankTarget?: number, options?: ActivityOptions, release?: WorkerRelease) {
+            async start(name: ActivityId, skill?: string, bankTarget?: number, options?: ActivityOptions, release?: WorkerRelease, meleeGoal?: MeleeGoal) {
                 if (!client || task || busy || startingPlanTask) throw new Error('The managed client is busy.');
                 if (standaloneUpdate?.runtimeMove) standaloneUpdate.cancelled = true;
                 startingPlanTask = true;
-                try { await startTask(bot, name, true, skill, bankTarget, options, release, undefined, true); }
+                try { await startTask(bot, name, { planned: true, skill, bankTarget, meleeGoal, options, release, followAssignment: true }); }
                 finally { startingPlanTask = false; }
             },
             stop: () => planCommand(bot, 'task/stop', true),

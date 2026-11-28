@@ -32,6 +32,7 @@ export function activityAffected(task: ActivityId, paths: readonly string[]): bo
         if (/\.test\.[cm]?[jt]sx?$/.test(path) || path.startsWith('sdk/test/') || path.startsWith('sdk/docs/')) return false;
         if (path.startsWith('sdk/') || path.startsWith('server/vendor/rsmod-pathfinder/')) return true;
         if (['package.json', 'bun.lock', 'bun.lockb'].includes(path)) return true;
+        if (path === 'control/melee-training.ts') return script === 'train-cows.ts';
         if (path === 'control/mining-routes.ts') return category === 'Mining';
         if (path === 'control/dashboard-task-activity.ts' && script === 'craft-body-runes.ts') return true;
         if (path === 'control/bank-locations.ts' || path === 'control/dashboard-task-activity.ts') {

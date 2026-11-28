@@ -234,6 +234,17 @@ banking method, then set a bank total of 250. The target includes iron ore
 already in the bank. Fishing can target raw sharks or cooked sharks according
 to the catch handling selected. Each step offers its supported finish conditions.
 
+For one melee step with several minimum levels, select **Combat → Train melee on cows → Melee level targets**.
+The editor starts at Attack 50, Strength 50, Defence 50 and Hitpoints 60. Change or clear individual
+levels as needed. The step finishes after every specified **base level** is reached. Balanced
+prioritizes the lowest-XP unfinished melee skill. A preferred Accurate, Aggressive or Defensive
+style prioritizes its skill while it still needs training. Controlled prefers shared melee XP when
+available. If only Hitpoints remains, the bot continues melee combat and can exceed the other minimums.
+The usual food and low-health recovery checks still use current HP.
+
+The corresponding finish object is `{"type":"melee-levels","levels":{"Attack":50,"Strength":50,"Defence":50,"Hitpoints":60},"style":"Balanced"}`.
+Standalone cow training accepts the same JSON in `RS_ACTIVITY_MELEE_GOAL`.
+
 Plans are ordered. Quests finish when the live journal confirms completion.
 Repeatable activities can run for a duration, until a supported skill reaches
 a target level, or indefinitely as the last step. Add quest or level

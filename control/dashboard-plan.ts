@@ -1,4 +1,5 @@
 import type { BotWorldState } from '../sdk/types';
+import { meleeGoalMet, parseMeleeGoal } from './melee-training';
 import { upgradeActivityOptions } from './dashboard-activity-compatibility';
 import { activity, activityIds, activityOptionsFor, finishModesFor, initialSettingsVersion, isActivity, inTutorialDestination, onTutorial, parseActivityOptions, trainingSkills,
     type ActivityId, type ActivityOptions, type Finish, type Requirement, type TrainingSkill } from './dashboard-task-catalog';
@@ -54,6 +55,7 @@ export function parseSteps(value: unknown): Step[] {
         };
         const modes = finishModesFor(meta);
         switch (modes.find(mode => mode === ending.type)) {
+            case 'melee-levels': return { ...step, finish: parseMeleeGoal(ending) };
             case 'complete': return { ...step, finish: { type: 'complete' } };
             case 'essence-exhausted': return { ...step, finish: { type: 'essence-exhausted' } };
             case 'forever':
@@ -111,6 +113,7 @@ function questComplete(state: BotWorldState, id: ActivityId) {
 
 export function finished(work: Work, state: BotWorldState, elapsedMs: number) {
     const finish = work.finish;
+    if (finish.type === 'melee-levels') return meleeGoalMet(finish, state.skills);
     if (finish.type === 'level') return skillLevel(state, finish.skill) >= finish.level;
     if (finish.type === 'minutes') return elapsedMs >= finish.minutes * 60_000;
     if (finish.type === 'forever' || finish.type === 'essence-exhausted' || finish.type === 'bank-stock') return false;
