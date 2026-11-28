@@ -5,6 +5,8 @@ export type MonitorProcess = {
     bot: string | null;
     pid: number;
     startedAt: string;
+    groupName?: string;
+    bots?: string[];
 };
 
 export type MonitorReading = MonitorProcess & { rssBytes: number | null; cpuPercent: number | null };
@@ -67,6 +69,18 @@ async function processStat(pid: number): Promise<ProcStat | null> {
     }
 }
 
+function uniqueMonitorProcesses(processes: MonitorProcess[]): MonitorProcess[] {
+    const byPid = new Map<number, MonitorProcess>();
+    for (const process of processes) {
+        const current = byPid.get(process.pid);
+        if (!current || Date.parse(process.startedAt) > Date.parse(current.startedAt) ||
+            (process.startedAt === current.startedAt && process.groupName && !current.groupName)) {
+            byPid.set(process.pid, process);
+        }
+    }
+    return [...byPid.values()];
+}
+
 export function downsampleMonitorHistory(history: MonitorSample[]): MonitorSample[] {
     if (history.length <= MAX_HISTORY_POINTS) return history;
     const selected = new Set([0, history.length - 1]);
@@ -77,7 +91,7 @@ export function downsampleMonitorHistory(history: MonitorSample[]): MonitorSampl
         let rss = 0;
         let cpu = 0;
         for (const reading of sample.processes) {
-            const key = `${reading.kind}:${reading.bot ?? ''}`;
+            const key = JSON.stringify([reading.kind, reading.bot, reading.groupName]);
             const peak = peaks.get(key) ?? { rss: -1, rssAt: index, cpu: -1, cpuAt: index };
             if (reading.rssBytes != null) {
                 rss += reading.rssBytes;
@@ -138,11 +152,11 @@ export function createDashboardMonitor(getProcesses: () => MonitorProcess[]) {
         sampling = true;
         try {
             const units = await (unitsPromise ??= procUnits());
-            const children = getProcesses();
+            const children = uniqueMonitorProcesses(getProcesses());
             const processes = await Promise.all(children.map(async (child): Promise<MonitorReading> => {
                 const unavailable = { ...child, rssBytes: null, cpuPercent: null };
                 if (!units) return unavailable;
-                const key = JSON.stringify([child.kind, child.bot, child.pid, child.startedAt]);
+                const key = JSON.stringify([child.pid, child.startedAt]);
                 const baseline = previous.get(key);
                 const stat = await processStat(child.pid);
                 if (baseline && (!stat || baseline.startTicks !== stat.startTicks)) {

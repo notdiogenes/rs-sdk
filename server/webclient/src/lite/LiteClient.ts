@@ -38,6 +38,7 @@ import { ClientProt } from '#/io/ClientProt.js';
 import Packet from '#/io/Packet.js';
 
 import { TypedArray1d, TypedArray3d } from '#/util/Arrays.js';
+import WordFilter from '#/wordfilter/WordFilter.js';
 
 import { BotStateCollector } from '#/bot/StateCollector.js';
 import { ActionExecutor, type ActionResultOrPromise } from '#/bot/ActionExecutor.js';
@@ -81,6 +82,7 @@ export interface LiteClientOptions {
     username: string;
     password: string;
     maxMessageLength?: number;
+    profanityFilter?: boolean;
 }
 
 export class LiteClient {
@@ -187,6 +189,7 @@ export class LiteClient {
 
     readonly conn: GameConnection;
     readonly locIndex: LocIndex;
+    private readonly profanityFilter: boolean;
     readonly loginUser: string;
     /**
      * This client's frame counter, bumped once per session loop by tickCycle().
@@ -232,6 +235,7 @@ export class LiteClient {
         this.locIndex = opts.locIndex;
         this.loginUser = opts.username;
         this.loginPass = opts.password;
+        this.profanityFilter = opts.profanityFilter ?? true;
         // Unlike the browser client (which gets the server's value injected via
         // bot.ejs), lite has no config channel - keep this default in sync with
         // the engine's WorldConfig node.maxMessageLength default.
@@ -723,6 +727,7 @@ export class LiteClient {
      */
     activate(): void {
         this.interfaces.activate();
+        WordFilter.enabled = this.profanityFilter;
     }
 
     /** The component `id`, cloned into this client's table if it wasn't already. */
@@ -1038,7 +1043,7 @@ for (const name of Object.getOwnPropertyNames(LiteClient.prototype)) {
     Object.defineProperty(LiteClient.prototype, name, {
         ...descriptor,
         value: function (this: LiteClient, ...args: unknown[]): unknown {
-            this.interfaces.activate();
+            this.activate();
             return original.apply(this, args);
         }
     });

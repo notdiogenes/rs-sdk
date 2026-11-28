@@ -17,7 +17,7 @@ export function inventoryControls() {
         pending?.finish({ status: 503, message: 'The game client disconnected. Check the inventory before retrying.' });
     }
 
-    function send(client: Bun.Subprocess, command: InventoryCommand): Promise<InventoryResult> {
+    function send(client: Pick<Bun.Subprocess, 'exitCode' | 'send'>, command: InventoryCommand): Promise<InventoryResult> {
         if (!ready || client.exitCode !== null) {
             return Promise.resolve({ status: 409, message: 'Inventory controls are unavailable for this game client.' });
         }

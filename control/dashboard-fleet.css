@@ -126,7 +126,8 @@ dialog{border:1px solid var(--line);border-radius:11px;padding:0;background:var(
 .monitor-table table{table-layout:fixed;min-width:320px}
 .monitor-table th,.monitor-table td{padding:7px 8px}
 .monitor-table td:first-child{white-space:normal}
-.monitor-table .monitor-group th{text-align:left;background:#28241e;color:#ded0b9;font-weight:700}
+.monitor-table .monitor-group th{text-align:left;background:#28241e;color:#ded0b9;font-weight:700;white-space:normal;overflow-wrap:anywhere}
+.monitor-table .monitor-group small{display:block;font-weight:400}
 .monitor-table .monitor-group[data-selected=true] th{background:#2a3126;color:#cfebab}
 .monitor-table td:nth-child(2),.monitor-table th:nth-child(2){text-align:left}
 .monitor-table button{font:inherit;font-variant-numeric:tabular-nums;padding:2px 5px;color:var(--gold);border-radius:4px}
@@ -303,6 +304,22 @@ button:disabled{opacity:.6;cursor:default}
 dialog form{display:grid;gap:12px}dialog form label{display:grid;gap:4px}
 dialog h3{margin-top:12px}
 #fleet-empty{margin-top:12px}
+
+#runtime-dialog{max-width:min(430px,calc(100vw - 24px))}
+#runtime-dialog .dialog-header{align-items:center}
+#runtime-title{font-size:20px;overflow-wrap:anywhere}
+#runtime-assignment{gap:5px}
+#runtime-dialog select,#runtime-dialog input{width:100%;min-width:0}
+#runtime-sharing,#runtime-pending,#runtime-status{font-size:13px;overflow-wrap:anywhere}
+#runtime-sharing{min-height:1.35em}
+#runtime-pending{margin-top:5px;border-inline-start:2px solid var(--gold);padding:5px 9px;background:#2c271f;color:#e6cea5}
+.runtime-actions{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:7px}
+#runtime-dialog button[type=submit]{border-color:#6e5731;background:#3b3020;color:#fae4bd;font-weight:650}
+#runtime-dialog button:disabled{opacity:.52;cursor:default}
+#runtime-status:not(:empty){margin-top:10px}
+#runtime-status[data-error=true]{color:var(--amber)}
+#runtime-handoff{border-top:1px solid var(--line);padding-top:12px;margin-top:13px}
+#runtime-offline{color:var(--amber)}
 
 #quests-panel { --quest-account-width: 8rem; }
 .quest-band { overflow: clip; }

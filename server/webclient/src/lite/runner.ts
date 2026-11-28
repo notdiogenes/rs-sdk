@@ -10,10 +10,11 @@
 //
 // Run from server/webclient so the '#/*' import map resolves.
 
+import './dom-shim.js';
 import { fileURLToPath } from 'node:url';
 
 import { OutdatedClientError } from './net/GameConnection.js';
-import { startSession, type LiteSession } from './session.js';
+import { startSession, type LiteSession, type SessionOptions } from './session.js';
 import { type ActionResult } from '#/bot/ActionExecutor.js';
 import { BotActionQueue, type QueuedBotAction } from '#/bot/ActionQueue.js';
 import type { BotAction, BotWorldState } from '#/bot/types.js';
@@ -33,13 +34,15 @@ const TICK_MS = 20; // matches the browser draw loop that drives BotOverlay.tick
 const RECONNECT_MS = 3000;
 const INVENTORY_TIMEOUT_MS = 4500;
 
-function publishFleetFrame(frame: FleetBankFrame | FleetStateFrame): void {
+export type LiteRunnerMessage = FleetBankFrame | FleetStateFrame | InventoryReply | { type: 'inventory-ready' };
+
+function sendToParent(message: LiteRunnerMessage): void {
     if (!process.connected) return;
-    try { process.send?.(frame); }
+    try { process.send?.(message); }
     catch { /* The parent may have closed IPC while the game is still connected. */ }
 }
 
-class LiteGatewayRunner {
+export class LiteGatewayRunner {
     private client: LiteClient;
     private actionQueue = new BotActionQueue();
     private waitTicks = 0;
@@ -72,10 +75,12 @@ class LiteGatewayRunner {
         private session: LiteSession,
         private gatewayUrl: string,
         private fastKbdAttackEnabled = false,
+        private publish?: (message: LiteRunnerMessage) => void,
+        private gatewayDirect = true,
     ) {
         this.client = session.client;
-        if (process.connected) this.client.setOnBankUpdateCallback(items => {
-            publishFleetFrame({ type: 'fleet-bank', at: Date.now(), items });
+        if (this.publish) this.client.setOnBankUpdateCallback(items => {
+            this.publish?.({ type: 'fleet-bank', at: Date.now(), items });
         });
         // State collection and action execution go through the client, which
         // activates this bot's interface table first - see LiteClient.activate.
@@ -110,7 +115,7 @@ class LiteGatewayRunner {
         // Re-checked on every (re)connect, so the direct port is picked up again
         // after a server restart and abandoned if it ever stops answering.
         this.resolvingGateway = true;
-        void preferDirectGateway(this.gatewayUrl).then(url => {
+        void preferDirectGateway(this.gatewayUrl, this.gatewayDirect).then(url => {
             this.resolvingGateway = false;
             if (!this.ws && !this.preventReconnect) this.open(url);
         });
@@ -171,6 +176,10 @@ class LiteGatewayRunner {
         this.session.stop();
     }
 
+    get stopped() {
+        return this.session.stopped;
+    }
+
     private send(msg: unknown): void {
         if (this.ws?.readyState === WebSocket.OPEN) {
             this.ws.send(JSON.stringify(msg));
@@ -220,7 +229,7 @@ class LiteGatewayRunner {
 
     private replyInventory(requestId: string, result: InventoryResult): void {
         const reply: InventoryReply = { type: 'inventory-result', requestId, result };
-        if (process.connected) process.send?.(reply);
+        this.publish?.(reply);
     }
 
     private tickInventory(): boolean {
@@ -375,13 +384,13 @@ class LiteGatewayRunner {
     }
 
     private sendState(gameTick = false): void {
-        const publishLocally = gameTick && process.connected;
+        const publishLocally = gameTick && this.publish !== undefined;
         if (!this.wsConnected && !publishLocally) return;
         const state = this.client.collectBotState(this.serverTick);
         if (!state) return;
         if (publishLocally) {
             const { tick, inGame, player, skills, inventory, questPoints, questJournal } = state;
-            publishFleetFrame({
+            this.publish?.({
                 type: 'fleet-state', at: Date.now(),
                 state: {
                     tick, inGame, skills, inventory, questPoints, questJournal,
@@ -472,9 +481,9 @@ function deriveGatewayUrl(server: string): string {
 const DIRECT_GATEWAYS: Record<string, string> = {
     'wss://rs-sdk.maxbittker.com/gateway': 'wss://rs-sdk.maxbittker.com:7443',
 };
-async function preferDirectGateway(url: string): Promise<string> {
+async function preferDirectGateway(url: string, enabled: boolean): Promise<string> {
     const direct = DIRECT_GATEWAYS[url];
-    if (!direct || process.env.GATEWAY_DIRECT === 'false') return url;
+    if (!direct || !enabled) return url;
     try {
         const res = await fetch(direct.replace(/^ws/, 'http') + '/', { signal: AbortSignal.timeout(3000) });
         return res.ok ? direct : url;
@@ -483,74 +492,66 @@ async function preferDirectGateway(url: string): Promise<string> {
     }
 }
 
-const botName = process.argv[2];
-if (!botName) {
-    console.error('Usage: bun src/lite/runner.ts <botname>');
-    process.exit(1);
-}
-
 const repoRoot = fileURLToPath(new URL('../../../../', import.meta.url));
-const envPath = process.env.RS_LITE_BOT_ENV || `${repoRoot}bots/${botName}/bot.env`;
-const env = Object.fromEntries(
-    (await Bun.file(envPath).text())
-        .split('\n')
-        .filter(l => l.includes('=') && !l.startsWith('#'))
-        .map(l => [l.slice(0, l.indexOf('=')).trim(), l.slice(l.indexOf('=') + 1).trim()])
-);
-
-// The demo server moved off rs-sdk-demo.fly.dev; older bot.env files keep the old name.
+// Older bot.env files use the demo server's former host.
 const LEGACY_SERVER_HOSTS: Record<string, string> = { 'rs-sdk-demo.fly.dev': 'rs-sdk.maxbittker.com' };
-const host = LEGACY_SERVER_HOSTS[env.SERVER ?? ''] ?? (env.SERVER || 'localhost');
-// No config channel from the server (see LiteClient's maxMessageLength note), so
-// mirror the server's NODE_PROFANITY_FILTER by hand: PROFANITY_FILTER=false in
-// bot.env or the process env disables local chat censoring.
-const profanityRaw = (env.PROFANITY_FILTER ?? process.env.PROFANITY_FILTER ?? '').toLowerCase();
-const session = await startSession({
-    host,
-    cacheDir: process.env.RS_LITE_CACHE_DIR,
-    username: env.BOT_USERNAME!,
-    password: env.PASSWORD!,
-    profanityFilter: ['false', '0', 'off', 'no'].includes(profanityRaw) ? false : undefined,
-    quiet: true
-}).catch((err: unknown) => {
-    // A revision mismatch won't fix itself: exit 3 so a supervisor can stop restarting us
-    if (err instanceof OutdatedClientError) {
-        console.error(`[lite-runner] ${err.message}`);
-        process.exit(3);
+
+type LiteRunnerOptions = SessionOptions & { gatewayUrl: string; gatewayDirect: boolean };
+
+export async function readLiteRunnerOptions(envPath: string, cacheDir?: string,
+    gatewayDirect = process.env.GATEWAY_DIRECT !== 'false'): Promise<LiteRunnerOptions> {
+    const env = Object.fromEntries((await Bun.file(envPath).text()).split('\n')
+        .filter(line => line.includes('=') && !line.startsWith('#'))
+        .map(line => [line.slice(0, line.indexOf('=')).trim(), line.slice(line.indexOf('=') + 1).trim()]));
+    const host = LEGACY_SERVER_HOSTS[env.SERVER ?? ''] ?? (env.SERVER || 'localhost');
+    const profanityRaw = (env.PROFANITY_FILTER ?? process.env.PROFANITY_FILTER ?? '').toLowerCase();
+    if (!env.BOT_USERNAME || !env.PASSWORD) throw new Error('Lite bot configuration needs BOT_USERNAME and PASSWORD');
+    return {
+        host, cacheDir, username: env.BOT_USERNAME, password: env.PASSWORD,
+        profanityFilter: !['false', '0', 'off', 'no'].includes(profanityRaw), quiet: true,
+        gatewayUrl: env.GATEWAY_URL || process.env.GATEWAY_URL || deriveGatewayUrl(host), gatewayDirect,
+    };
+}
+
+export async function startLiteRunner(options: LiteRunnerOptions, publish?: (message: LiteRunnerMessage) => void) {
+    const runtimeMode = await Bun.file(`${repoRoot}bots/logs/fleet-runtime.mode`).text()
+        .then(value => value.trim()).catch(() => '');
+    const session = await startSession(options);
+    console.log(`[lite-runner] '${options.username}' logged into ${options.host}`);
+    const fastKbdAttackEnabled = runtimeMode === FAST_KBD_RUNTIME_MODE;
+    if (fastKbdAttackEnabled) console.log('[lite-runner] in-process KBD op2 enabled');
+    const runner = new LiteGatewayRunner(session, options.gatewayUrl, fastKbdAttackEnabled, publish, options.gatewayDirect);
+    runner.connect();
+    return runner;
+}
+
+if (import.meta.main) {
+    const botName = process.argv[2];
+    if (!botName) {
+        console.error('Usage: bun src/lite/runner.ts <botname>');
+        process.exit(1);
     }
-    throw err;
-});
-
-console.log(`[lite-runner] '${env.BOT_USERNAME}' logged into ${host}`);
-
-// SERVER doubles as game-server origin and gateway address, which breaks for
-// local hosts with an explicit web port (localhost:8888 is the engine, not the
-// gateway). GATEWAY_URL (bot.env or process env) overrides the derivation.
-const gatewayUrl = env.GATEWAY_URL || process.env.GATEWAY_URL || deriveGatewayUrl(host);
-const runtimeMode = await Bun.file(`${repoRoot}bots/logs/fleet-runtime.mode`).text()
-    .then(value => value.trim())
-    .catch(() => '');
-const fastKbdAttackEnabled = runtimeMode === FAST_KBD_RUNTIME_MODE;
-if (fastKbdAttackEnabled) {
-    console.log('[lite-runner] in-process KBD op2 enabled');
-}
-const runner = new LiteGatewayRunner(session, gatewayUrl, fastKbdAttackEnabled);
-runner.connect();
-if (process.connected) {
-    process.on('message', message => runner.acceptInventoryCommand(message));
-    process.send?.({ type: 'inventory-ready' });
-}
-
-process.on('SIGINT', () => {
-    console.log('\n[lite-runner] SIGINT, shutting down');
+    const envPath = process.env.RS_LITE_BOT_ENV || `${repoRoot}bots/${botName}/bot.env`;
+    const options = await readLiteRunnerOptions(envPath, process.env.RS_LITE_CACHE_DIR);
+    const runner = await startLiteRunner(options, process.connected ? sendToParent : undefined).catch((error: unknown) => {
+        // A revision mismatch won't resolve on retry. Tell the supervisor.
+        if (error instanceof OutdatedClientError) {
+            console.error(`[lite-runner] ${error.message}`);
+            process.exit(3);
+        }
+        throw error;
+    });
+    if (process.connected) {
+        process.on('message', message => runner.acceptInventoryCommand(message));
+        sendToParent({ type: 'inventory-ready' });
+    }
+    process.on('SIGINT', () => {
+        console.log('\n[lite-runner] SIGINT, shutting down');
+        runner.stop();
+        process.exit(0);
+    });
+    const end = await runner.stopped;
+    console.log(`[lite-runner] Game session ended (${end.reason})`, end.error ?? '');
     runner.stop();
-    process.exit(0);
-});
-
-// One bot per process, so re-login is the supervisor's job (systemd, a shell
-// loop, whatever launched us). Exit non-zero on anything we did not ask for, so
-// it can tell "finished" from "died".
-const end = await session.stopped;
-console.log(`[lite-runner] Game session ended (${end.reason})`, end.error ?? '');
-runner.stop();
-process.exit(end.reason === 'stopped' ? 0 : 1);
+    process.exit(end.reason === 'stopped' ? 0 : 1);
+}

@@ -21,6 +21,7 @@ const skillGlyphs: Record<string, string> = {
 };
 
 const actionGlyphs = {
+    runtime: '<rect x="7" y="2.5" width="6" height="4.5" rx="1"/><path d="M10 7v3.5M5 13v-2.5h10V13"/><rect x="2.5" y="13" width="5" height="4.5" rx="1"/><rect x="12.5" y="13" width="5" height="4.5" rx="1"/>',
     details: '<circle cx="10" cy="10" r="7"/><path d="M10 9v4.5m0-7v.2"/>',
     inventory: '<path fill="#a97544" stroke="#dda878" stroke-width="1.2" d="M7.1 8 5.5 3.1c1.8 1 3.2.8 4.5.1 1.4.7 2.8.9 4.5-.1L12.9 8c2.7 1.6 4.4 4.1 4.3 6.7-.2 2.4-3.2 3.3-7.2 3.3s-7-.9-7.2-3.3C2.7 12.1 4.4 9.6 7.1 8Z"/><path stroke="#ebcb96" stroke-width="1.3" d="M7.1 8h5.8l1 2.3"/><path stroke="#ce9666" stroke-width="1.2" d="M7.2 11.1c-1.1.8-1.7 2-1.6 3.2"/>',
     skills: '<path d="M3 16.5h14"/><path fill="#84aa8c" stroke="none" d="M4 11h2.8v4H4z"/><path fill="#91badd" stroke="none" d="M8.6 7.5h2.8V15H8.6z"/><path fill="#e1b56b" stroke="none" d="M13.2 3.5H16V15h-2.8z"/>',
@@ -36,6 +37,7 @@ const actionGlyphs = {
 export type FleetActionIcon = keyof typeof actionGlyphs;
 
 const actionColors: Record<FleetActionIcon, string> = {
+    runtime: '#b9b2d8',
     details: '#aabfe3',
     inventory: '#dda878',
     skills: '#dfbc84',

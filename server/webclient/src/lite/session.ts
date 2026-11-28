@@ -20,7 +20,6 @@ import { CLIENT_VERSION, GameConnection, LoginError, OutdatedClientError } from 
 import { LiteClient } from './LiteClient.js';
 import { LocIndex } from './world/LocIndex.js';
 import { ClientProt } from '#/io/ClientProt.js';
-import WordFilter from '#/wordfilter/WordFilter.js';
 
 const LOOP_MS = 20;
 /** Engine drops a socket after TIMEOUT_NO_RESPONSE; NO_TIMEOUT keeps it alive. */
@@ -32,6 +31,7 @@ const KEEPALIVE_CYCLES = 50;
  * a NAT dropped looks exactly like a healthy idle one otherwise.
  */
 const IDLE_CYCLES = 3000; // ~60s, i.e. ~200 missed server ticks
+let sharedLocIndex: { key: string; value: WeakRef<LocIndex> } | undefined;
 
 export interface SessionOptions {
     /** Spread remote fleet starts over 5s by default; 0 disables the delay. */
@@ -43,13 +43,14 @@ export interface SessionOptions {
     cacheDir?: string;
     members?: boolean;
     maxMessageLength?: number;
-    /**
-     * Local chat censoring (WordFilter). Default on. Process-wide (WordFilter is
-     * static), so in a multi-bot process like swarm.ts the last session started
-     * wins. Cosmetic unless the server's NODE_PROFANITY_FILTER is also off - the
-     * engine censors chat before it reaches any client.
-     */
+    /** Local chat censoring, enabled by default. */
     profanityFilter?: boolean;
+    /** Reuse the immutable world index in a host that serializes startup. */
+    shareLocIndex?: boolean;
+    /** Keep static cache tables in place while another session is using them. */
+    preserveCache?: boolean;
+    /** Abort a login or stop it before it opens a game connection. */
+    signal?: AbortSignal;
     quiet?: boolean;
     /**
      * Called exactly once when the packet loop ends, whatever the cause. Fires
@@ -101,9 +102,7 @@ async function fetchServerRevision(origin: string): Promise<number | null> {
 }
 
 export async function startSession(opts: SessionOptions): Promise<LiteSession> {
-    if (opts.profanityFilter !== undefined) {
-        WordFilter.enabled = opts.profanityFilter;
-    }
+    opts.signal?.throwIfAborted();
     const secured = opts.secured ?? !(opts.host.startsWith('localhost') || opts.host.startsWith('127.'));
     const origin = `${secured ? 'https' : 'http'}://${opts.host}`;
     const cacheDir = opts.cacheDir ?? `${process.env.HOME}/.cache/rs-sdk-lite`;
@@ -111,21 +110,35 @@ export async function startSession(opts: SessionOptions): Promise<LiteSession> {
     // Fail with the fix, not a decode error or an opaque login response 6, when the server
     // has moved to another revision. Servers without /api/version skip the check.
     const serverRevision = await fetchServerRevision(origin);
+    opts.signal?.throwIfAborted();
     if (serverRevision !== null && serverRevision !== CLIENT_VERSION) {
         throw new OutdatedClientError(origin, serverRevision);
     }
 
+    const loadLocIndex = async (versionlistCrc: number) => {
+        const key = `${origin}/${versionlistCrc}`;
+        if (opts.shareLocIndex && sharedLocIndex?.key === key) {
+            const index = sharedLocIndex.value.deref();
+            if (index) return index;
+        }
+        const index = await LocIndex.load({ origin, cacheDir, versionlistCrc, quiet: opts.quiet });
+        if (opts.shareLocIndex) sharedLocIndex = { key, value: new WeakRef(index) };
+        return index;
+    };
     let { checksums } = await loadCache({ origin, cacheDir, members: opts.members, quiet: opts.quiet });
-    let locIndex = await LocIndex.load({ origin, cacheDir, versionlistCrc: checksums[5], quiet: opts.quiet });
+    opts.signal?.throwIfAborted();
+    let locIndex = await loadLocIndex(checksums[5]);
 
     const connect = async () => {
         await Bun.sleep(loginJitterMs(opts.loginJitterMs ?? Number(process.env.LITE_LOGIN_JITTER_MS ?? (secured ? 5000 : 0))));
+        opts.signal?.throwIfAborted();
         return GameConnection.connect({
             host: opts.host,
             secured,
             username: opts.username,
             password: opts.password,
-            checksums
+            checksums,
+            signal: opts.signal,
         });
     };
 
@@ -137,7 +150,7 @@ export async function startSession(opts: SessionOptions): Promise<LiteSession> {
         // content was redeployed under us and the memoized CRCs are stale, not
         // that this build is actually out of date. Re-fetch /crc once and retry;
         // if the checksums come back unchanged the mismatch is real, so rethrow.
-        if (!(err instanceof LoginError) || err.code !== 6) {
+        if (!(err instanceof LoginError) || err.code !== 6 || opts.preserveCache) {
             throw err;
         }
         const stale = checksums;
@@ -149,8 +162,14 @@ export async function startSession(opts: SessionOptions): Promise<LiteSession> {
             throw serverRevision === null ? new OutdatedClientError(origin, null) : err;
         }
         console.error(`[lite] ${opts.username}: stale archive CRCs after server redeploy, re-fetched /crc and retrying login`);
-        locIndex = await LocIndex.load({ origin, cacheDir, versionlistCrc: checksums[5], quiet: opts.quiet });
+        opts.signal?.throwIfAborted();
+        locIndex = await loadLocIndex(checksums[5]);
         connection = await connect();
+    }
+
+    if (opts.signal?.aborted) {
+        connection.close();
+        opts.signal.throwIfAborted();
     }
 
     const client = new LiteClient({
@@ -158,7 +177,8 @@ export async function startSession(opts: SessionOptions): Promise<LiteSession> {
         locIndex,
         username: opts.username,
         password: opts.password,
-        maxMessageLength: opts.maxMessageLength
+        maxMessageLength: opts.maxMessageLength,
+        profanityFilter: opts.profanityFilter,
     });
 
     let running = true;

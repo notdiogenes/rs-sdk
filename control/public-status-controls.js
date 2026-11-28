@@ -44,6 +44,7 @@
     const monitorDialog = document.querySelector('#monitor-dialog');
     const updatesButton = document.querySelector('#updates-open');
     const updatesDialog = document.querySelector('#updates-dialog');
+    const runtimeDialog = document.querySelector('#runtime-dialog');
     const updatesCount = document.querySelector('#updates-count');
     const updatesSummary = document.querySelector('#updates-summary');
     const updatesStatus = document.querySelector('#updates-status');
@@ -1013,6 +1014,7 @@
         } else {
             if (monitorDialog.open) monitorDialog.close();
             if (updatesDialog.open) updatesDialog.close();
+            if (runtimeDialog.open) runtimeDialog.close();
             clearTimeout(updatesPoll);
             updatesRead?.abort();
             updatesRead = undefined;
@@ -1046,6 +1048,7 @@
         signInMessage.textContent = needsLink ? 'Open your one-time dashboard setup link.'
             : auditPending || button?.matches('#audit-open,[data-audit-bot]') ? 'Sign in to open the audit history.'
             : button === monitorButton ? 'Sign in to open the resource monitor.'
+            : button?.matches('[data-runtime-bot]') ? 'Sign in to manage this bot’s runtime group.'
             : button === updatesButton ? 'Sign in to review activity updates.' : '';
         signIn.showModal();
     }
@@ -1580,7 +1583,7 @@
 
     async function request(path, payload, signal) {
         const headers = { Accept: 'application/json' };
-        const timeout = AbortSignal.timeout(['stop', 'pause'].includes(payload?.action) ? 45000 : 15000);
+        const timeout = AbortSignal.timeout(['stop', 'pause', 'offline'].includes(payload?.action) ? 45000 : 15000);
         const options = {
             headers, credentials: 'same-origin', cache: 'no-store', redirect: 'error',
             signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
@@ -1609,6 +1612,152 @@
     function labelTime(value) {
         return value ? diagnosticClock.format(new Date(value)) : '—';
     }
+
+    const groupField = runtimeDialog.querySelector('#runtime-group');
+    const assignmentForm = runtimeDialog.querySelector('#runtime-assignment');
+    const creationForm = runtimeDialog.querySelector('#runtime-creation');
+    const groupStatus = runtimeDialog.querySelector('#runtime-status');
+    const groupClose = runtimeDialog.querySelector('#runtime-close');
+    const groupNew = runtimeDialog.querySelector('#runtime-new');
+    const groupSave = runtimeDialog.querySelector('#runtime-save');
+    const groupOffline = runtimeDialog.querySelector('#runtime-offline');
+    const groupSharing = runtimeDialog.querySelector('#runtime-sharing');
+    const groupPending = runtimeDialog.querySelector('#runtime-pending');
+    let groupTrigger, groupData, groupRequest, groupPoll;
+    let groupWriting = false;
+    let groupFleetChanged = false;
+
+    function renderGroupControls() {
+        const group = groupData?.groups.find(item => item.id === groupField.value);
+        groupSharing.textContent = !groupData ? '' : !group ? 'Dedicated Lite client and SDK task'
+            : group.mode === 'client' ? 'Shared Lite client · Dedicated SDK task' : 'Shared Lite client and SDK task';
+        groupPending.hidden = !groupData?.pending;
+        if (!groupPending.hidden) {
+            const label = id => groupData.groups.find(item => item.id === id)?.name ?? 'Dedicated';
+            groupPending.textContent = `Currently using ${label(groupData.activeGroupId)}. ${label(groupData.groupId)} takes effect at the next activity.`;
+        }
+        groupField.disabled = groupNew.disabled = !groupData || groupWriting;
+        groupSave.disabled = groupField.disabled || groupField.value === (groupData?.groupId ?? '');
+        groupClose.disabled = groupOffline.disabled = groupWriting;
+        runtimeDialog.querySelector('#runtime-handoff').hidden = !groupData?.online || !creationForm.hidden;
+        for (const field of creationForm.elements) field.disabled = groupWriting;
+    }
+
+    function showGroupCreation(show) {
+        creationForm.hidden = !show;
+        assignmentForm.hidden = show;
+        groupNew.setAttribute('aria-expanded', String(show));
+        groupStatus.textContent = '';
+        renderGroupControls();
+        if (show) {
+            creationForm.reset();
+            creationForm.elements['runtime-name'].focus();
+        }
+    }
+
+    async function loadRuntimeGroup(payload) {
+        if (groupWriting) return;
+        clearTimeout(groupPoll);
+        groupRequest?.abort();
+        const controller = new AbortController();
+        groupRequest = controller;
+        groupWriting = !!payload;
+        if (payload) {
+            groupStatus.dataset.error = 'false';
+            groupStatus.textContent = payload.action === 'offline' ? 'Taking bot offline…' : 'Saving…';
+        }
+        renderGroupControls();
+        try {
+            const url = '/bots/activity?view=runtime-groups&bot=' + encodeURIComponent(groupTrigger.dataset.runtimeBot);
+            const data = await request(url, payload, controller.signal);
+            if (controller.signal.aborted || !runtimeDialog.open) return;
+            if (!Array.isArray(data.groups)) throw new Error('Runtime groups are unavailable on this worker.');
+            const selected = !payload && groupData && groupField.value !== (groupData.groupId ?? '')
+                ? groupField.value : data.groupId ?? '';
+            groupData = data;
+            groupField.replaceChildren(new Option('Dedicated', ''), ...data.groups.map(item => new Option(item.name, item.id)));
+            groupField.value = selected;
+            groupStatus.dataset.error = 'false';
+            if (payload?.action === 'create') {
+                showGroupCreation(false);
+                groupField.value = data.created.id;
+                groupStatus.textContent = 'Group created. Save the assignment to use it for this bot.';
+            } else if (payload?.action === 'assign') {
+                groupStatus.textContent = 'Assignment saved.';
+            } else if (payload?.action === 'offline') {
+                groupFleetChanged = true;
+                groupStatus.textContent = 'Bot taken offline.';
+            } else {
+                groupStatus.textContent = '';
+            }
+        } catch (error) {
+            if (controller.signal.aborted || !runtimeDialog.open) return;
+            if (error.status === 401) {
+                setSignedIn(false);
+                openSignIn(groupTrigger);
+            } else {
+                groupStatus.dataset.error = 'true';
+                groupStatus.textContent = error.message;
+            }
+        } finally {
+            if (groupRequest === controller) {
+                groupRequest = undefined;
+                groupWriting = false;
+                renderGroupControls();
+                if (runtimeDialog.open && payload?.action === 'create' && creationForm.hidden) groupField.focus();
+                if (runtimeDialog.open && groupData?.pending && creationForm.hidden)
+                    groupPoll = setTimeout(() => void loadRuntimeGroup(), 5000);
+            }
+        }
+    }
+
+    onButtonClick('[data-runtime-bot]', async button => {
+        await sessionReady;
+        if (!signedIn) { openSignIn(button); return; }
+        clearTimeout(refresh);
+        groupTrigger = button;
+        groupData = null;
+        groupFleetChanged = false;
+        groupField.replaceChildren(new Option('Dedicated', ''));
+        runtimeDialog.querySelector('#runtime-title').textContent = `Runtime group · ${button.dataset.runtimeBot}`;
+        showGroupCreation(false);
+        groupStatus.dataset.error = 'false';
+        groupStatus.textContent = 'Loading groups…';
+        runtimeDialog.showModal();
+        void loadRuntimeGroup();
+    });
+    groupField.addEventListener('change', renderGroupControls);
+    groupNew.addEventListener('click', () => {
+        clearTimeout(groupPoll);
+        groupRequest?.abort();
+        showGroupCreation(true);
+    });
+    creationForm.querySelector('#runtime-cancel').addEventListener('click', () => {
+        showGroupCreation(false);
+        groupNew.focus();
+        if (groupData?.pending) void loadRuntimeGroup();
+    });
+    creationForm.addEventListener('submit', event => {
+        event.preventDefault();
+        void loadRuntimeGroup({ action: 'create', name: creationForm.elements['runtime-name'].value.trim(),
+            mode: creationForm.elements['runtime-mode'].value });
+    });
+    assignmentForm.addEventListener('submit', event => {
+        event.preventDefault();
+        if (!groupSave.disabled) void loadRuntimeGroup({ action: 'assign', groupId: groupField.value || null });
+    });
+    groupOffline.addEventListener('click', () => {
+        if (window.confirm(`Take ${groupTrigger.dataset.runtimeBot} offline? Its task will stop, its running plan will pause, and its game session will close.`))
+            void loadRuntimeGroup({ action: 'offline' });
+    });
+    groupClose.addEventListener('click', () => runtimeDialog.close());
+    runtimeDialog.addEventListener('cancel', event => { if (groupWriting) event.preventDefault(); });
+    runtimeDialog.addEventListener('close', () => {
+        clearTimeout(groupPoll);
+        groupRequest?.abort();
+        if (groupFleetChanged) void refreshFleet(true);
+        else scheduleRefresh();
+    });
 
     const updatesUrl = '/bots/activity?view=updates';
     const workerRestartUrl = '/bots/activity?view=worker-restart';
@@ -1938,8 +2087,12 @@
     const monitorLabels = { client: 'Lite client', task: 'SDK task', pathfinder: 'Pathfinder', all: 'All bots' };
     const monitorColors = { client: '#a6d185', task: '#e1b56b', pathfinder: '#91badd', all: '#a6d185' };
     const monitorKinds = ['client', 'task', 'pathfinder'];
-    const monitorKey = process => process.kind === 'pathfinder' ? 'shared' : `bot:${process.bot}`;
-    const monitorGroup = key => key === 'shared' ? 'Shared pathfinder' : key.slice(4);
+    const monitorBotKey = bot => `bot:${bot}`;
+    const monitorBots = process => process.bots ?? (process.bot ? [process.bot] : []);
+    const monitorKey = process => process.kind === 'pathfinder' ? 'shared'
+        : process.groupName ? `group:${process.groupName}` : monitorBotKey(process.bot);
+    const monitorGroup = key => key === 'shared' ? 'Shared pathfinder' : key.slice(key.indexOf(':') + 1);
+    const monitorProcessLabel = (kind, shared) => shared ? `Shared ${monitorLabels[kind]}` : monitorLabels[kind];
     const monitorRss = bytes => Number.isFinite(bytes) ? `${num.format(Math.round(bytes / 1048576))} MiB` : '—';
     const monitorCpu = percent => Number.isFinite(percent) ? `${percent.toFixed(1)}%` : '—';
     let monitorData;
@@ -1968,8 +2121,9 @@
         const shared = processes.find(process => process.kind === 'pathfinder');
         const clients = bots.filter(process => process.kind === 'client').length;
         const tasks = bots.length - clients;
+        const pooled = bots.filter(process => process.groupName).length;
         setText(monitorField('bot-rss'), monitorRss(monitorTotal(bots, 'rssBytes')));
-        setText(monitorField('bot-detail'), monitorData ? `${clients} Lite ${clients === 1 ? 'client' : 'clients'} · ${tasks} SDK ${tasks === 1 ? 'task' : 'tasks'}` : 'Lite clients and SDK tasks');
+        setText(monitorField('bot-detail'), monitorData ? `${clients} Lite · ${tasks} SDK${pooled ? ` · ${pooled} shared` : ''}` : 'Lite clients and SDK tasks');
         setText(monitorField('shared-rss'), monitorRss(shared?.rssBytes));
         setText(monitorField('shared-detail'), shared ? `PID ${shared.pid} · CPU ${monitorCpu(shared.cpuPercent)}`
             : Number.isFinite(monitorData?.sampledAt) ? 'No pathfinder process sampled' : '—');
@@ -1991,20 +2145,29 @@
 
     function renderMonitorTable(processes) {
         const sorted = [...processes].sort((a, b) => Number(a.kind === 'pathfinder') - Number(b.kind === 'pathfinder') ||
-            String(a.bot ?? '').localeCompare(String(b.bot ?? '')) || monitorKinds.indexOf(a.kind) - monitorKinds.indexOf(b.kind));
+            monitorGroup(monitorKey(a)).localeCompare(monitorGroup(monitorKey(b))) || monitorKinds.indexOf(a.kind) - monitorKinds.indexOf(b.kind));
         const groups = new Map();
         for (const process of sorted) {
             if (!Number.isSafeInteger(process.pid) || process.pid < 1 || !monitorKinds.includes(process.kind)) continue;
             const key = monitorKey(process);
-            if (!groups.has(key)) groups.set(key, []);
+            const group = groups.get(key) ?? { name: process.groupName, bots: new Set(), rows: [] };
+            groups.set(key, group);
+            for (const bot of monitorBots(process)) group.bots.add(bot);
             const startedAt = Date.parse(process.startedAt);
-            groups.get(key).push(`<tr><td>${monitorLabels[process.kind]}</td>
+            group.rows.push(`<tr><td>${monitorProcessLabel(process.kind, process.groupName)}</td>
               <td><button type="button" data-monitor-pid="${process.pid}" aria-label="Copy PID ${process.pid}">${process.pid}</button></td>
               <td>${monitorRss(process.rssBytes)}</td><td>${monitorCpu(process.cpuPercent)}</td>
               <td>${Number.isFinite(startedAt) ? `<time datetime="${escape(process.startedAt)}" title="${escape(labelTime(startedAt))}">${monitorClock.format(startedAt)}</time>` : '—'}</td></tr>`);
         }
         const table = monitorTable.querySelector('table');
-        const bodies = [...groups].map(([key, rows]) => `<tbody><tr class="monitor-group" data-selected="${key === monitorSubject.value}"><th scope="rowgroup" colspan="5">${escape(monitorGroup(key))}</th></tr>${rows.join('')}</tbody>`).join('') ||
+        const selected = monitorSubject.value;
+        const bodies = [...groups].map(([key, group]) => {
+            const members = [...group.bots].sort((a, b) => a.localeCompare(b));
+            const heading = group.name ? `${escape(group.name)} · Shared runtime${members.length ? `<small>${escape(members.join(', '))}</small>` : ''}`
+                : escape(monitorGroup(key));
+            const highlighted = key === selected || members.some(bot => monitorBotKey(bot) === selected);
+            return `<tbody><tr class="monitor-group" data-selected="${highlighted}"><th scope="rowgroup" colspan="5">${heading}</th></tr>${group.rows.join('')}</tbody>`;
+        }).join('') ||
             `<tbody><tr><td colspan="5">${monitorData ? 'No managed processes sampled.' : 'Waiting for samples…'}</td></tr></tbody>`;
         if (bodies === table.dataset.rendered) return;
         const focusedPid = monitorTable.contains(document.activeElement) ? document.activeElement.dataset.monitorPid : null;
@@ -2016,9 +2179,12 @@
 
     function renderMonitor() {
         const processes = monitorData?.processes ?? [];
-        const keys = new Set(processes.map(monitorKey));
-        for (const sample of monitorData?.history ?? []) {
-            for (const process of sample.processes) keys.add(monitorKey(process));
+        const keys = new Set();
+        for (const rows of [processes, ...(monitorData?.history ?? []).map(sample => sample.processes)]) {
+            for (const process of rows) {
+                if (process.kind === 'pathfinder') keys.add('shared');
+                else for (const bot of monitorBots(process)) keys.add(monitorBotKey(bot));
+            }
         }
         const bots = [...keys].filter(key => key !== 'shared').sort((a, b) => a.localeCompare(b));
         const options = bots.map(key => `<option data-monitor-bot value="${escape(key)}">${escape(monitorGroup(key))}</option>`).join('');
@@ -2046,9 +2212,9 @@
             return bots.length && Number.isFinite(total) ? { value: total / units } : null;
         }
         const process = sample.processes.find(row => row.kind === kind &&
-            (kind === 'pathfinder' || monitorKey(row) === monitorSubject.value));
+            (kind === 'pathfinder' || monitorBots(row).some(bot => monitorBotKey(bot) === monitorSubject.value)));
         const value = process?.[field];
-        return Number.isFinite(value) ? { pid: process.pid, startedAt: process.startedAt, value: value / units } : null;
+        return Number.isFinite(value) ? { pid: process.pid, startedAt: process.startedAt, groupName: process.groupName, value: value / units } : null;
     }
 
     function monitorBankTrips(events) {
@@ -2093,7 +2259,12 @@
         const events = (monitorData?.events ?? []).filter(event => event.at >= start && event.at <= end &&
             (selection === 'shared' || selection === 'all' || `bot:${event.bot}` === selection));
         const bankTrips = monitorBankTrips(events);
-        monitorField('legend').innerHTML = kinds.map(kind => `<span><i style="--monitor-color:${monitorColors[kind]}"></i>${monitorLabels[kind]}</span>`).join('') +
+        monitorField('legend').innerHTML = kinds.map((kind, index) => {
+            const shared = readings.some(values => values[index]?.groupName);
+            const privateProcess = readings.some(values => values[index] && !values[index].groupName);
+            const label = shared && privateProcess ? `${monitorLabels[kind]} · private and shared` : monitorProcessLabel(kind, shared);
+            return `<span><i style="--monitor-color:${monitorColors[kind]}"></i>${label}</span>`;
+        }).join('') +
             (kinds.length && bankTrips.length ? '<span><i class="monitor-bank-key"></i>Bank trip</span>' : '');
         setText(monitorField('resolution'), monitorData ? `${monitorData.sampleIntervalMs} ms samples${monitorData.downsampled ? ' · downsampled view' : ''}` : '');
 
@@ -2213,7 +2384,8 @@
         const readings = chart.readings[index].map((reading, series) => {
             if (!reading) return null;
             const pid = reading.pid === undefined ? '' : ` PID ${reading.pid}`;
-            return `${monitorLabels[chart.kinds[series]]}${pid} · ${chart.format(reading.value)}`;
+            const group = reading.groupName ? ` · ${reading.groupName} group total` : '';
+            return `${monitorProcessLabel(chart.kinds[series], reading.groupName)}${pid} · ${chart.format(reading.value)}${group}`;
         }).filter(Boolean);
         const point = chart.x(at);
         const marker = chart.events.find(event => Math.abs(chart.x(event.at) - point) < 7);
