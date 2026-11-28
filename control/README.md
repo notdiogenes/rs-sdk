@@ -250,6 +250,8 @@ After a service restart, an active plan reconnects and checks live state before
 continuing. A blocked plan shows why it stopped and can be resumed. Open
 **View plan** and choose **Edit plan** to change a saved plan while it runs.
 Edits to upcoming activities preserve the current task and credited time.
+For **Craft Body runes**, select **Also finish when rune essence runs out** to
+allow the step to finish early when the bank and backpack contain no essence.
 Use **Remove** on a completed activity, then save to remove it from the plan.
 Removing completed activities preserves the current task and credited time.
 A change to the current activity can also keep its task running when it needs

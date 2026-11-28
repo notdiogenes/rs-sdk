@@ -14,7 +14,7 @@ export type Requirement =
     | { type: 'level'; skill: TrainingSkill; level: number }
     | { type: 'quest'; task: string };
 
-type ActivityOptionId = 'banking';
+type ActivityOptionId = 'banking' | 'finishOnEssenceExhausted';
 type ActivityOption = { id: ActivityOptionId; type: 'checkbox'; label: string };
 export type ActivityOptions = Partial<Record<ActivityOptionId, true>>;
 export type ActivitySettingsContract = {
@@ -141,6 +141,7 @@ export const activityCatalog = {
     'craft-body-runes': {
         label: 'Craft Body runes', category: 'Runecraft', usage: 'repeatable', script: 'craft-body-runes.ts', trains: ['Runecraft'],
         finishModes: ['minutes', 'level', 'essence-exhausted', 'forever'],
+        options: [{ id: 'finishOnEssenceExhausted', type: 'checkbox', label: 'Also finish when rune essence runs out' }],
     },
     ...miningActivities,
     'smelt-mithril-falador': {

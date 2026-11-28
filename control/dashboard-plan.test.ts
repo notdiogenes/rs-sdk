@@ -2,6 +2,7 @@ import { expect, test } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import { mkdtempSync, mkdirSync, rmSync, statSync } from 'node:fs';
 import { join } from 'node:path';
+import type { ScriptContext } from '../sdk/runner';
 import type { BotWorldState } from '../sdk/types';
 import { checkStepCompatibility, nextWork, parseSteps, type Finish } from './dashboard-plan';
 import { createPlanManager, PlanEditConflict, type PlanBackend } from './dashboard-plan-runner';
@@ -11,6 +12,7 @@ import { planCatalog } from './dashboard-task-catalog';
 import { handleWorkerRequest, type DashboardWorkerApiRuntime } from './dashboard-worker-api';
 import * as builtInPolicy from './dashboard-worker-policy';
 import { botCredentials } from './hosted-bot';
+import { craftBodyRunes } from './tasks/craft-body-runes';
 import { selectFishingStage } from './tasks/fish-sharks';
 
 function world(thieving: number, hp: number, cook = false, tutorial = false) {
@@ -159,6 +161,64 @@ test('accepts only declared activity options and carries pickpocket banking into
     expect(() => parseSteps([{ task: 'fish-sharks', finish, options }])).toThrow('valid option');
 });
 
+test('offers an opt-in essence exhaustion checkbox without changing the Runecraft goal', () => {
+    const task = 'craft-body-runes';
+    const finish = { type: 'level', skill: 'Runecraft', level: 99 } as const;
+    const options = { finishOnEssenceExhausted: true };
+    expect(planCatalog.find(entry => entry.id === task)?.options).toContainEqual({
+        id: 'finishOnEssenceExhausted', type: 'checkbox', label: expect.any(String),
+    });
+    expect(parseSteps([{ task, finish, options }])[0]).toMatchObject({ finish, options });
+    expect(parseSteps([{ task, finish }])[0]?.options).toBeUndefined();
+    expect(parseSteps([{ task, finish, options: { finishOnEssenceExhausted: false } }])[0]?.options).toBeUndefined();
+    expect(() => parseSteps([{ task: 'pickpocket-men', finish: { type: 'forever' }, options }])).toThrow('valid option');
+});
+
+test('the plan API requires worker support before exposing or accepting the essence checkbox', async () => {
+    const runtime = {
+        botProfile: async () => ({ name: 'Bot' }), botRoster: {}, plans: { get: () => null },
+        demo: { allowed: async () => true }, sessions: { authenticate: async () => undefined },
+    } as unknown as DashboardWorkerApiRuntime;
+    const request = (body?: object) => handleWorkerRequest(new Request('https://fleet.test/bots/activity?view=plan&bot=Bot',
+        body && { method: 'POST', body: JSON.stringify(body) }), runtime);
+    const craft = (catalog: typeof planCatalog) => catalog.find(entry => entry.id === 'craft-body-runes');
+    const legacy = await (await request()).json();
+    expect(legacy.canFinishOnEssenceExhausted).toBe(false);
+    expect(craft(legacy.catalog)?.options ?? []).toEqual([]);
+    expect((await request({ action: 'start', steps: [{
+        task: 'craft-body-runes', finish: { type: 'level', skill: 'Runecraft', level: 99 },
+        options: { finishOnEssenceExhausted: true },
+    }] })).status).toBe(503);
+
+    runtime.plans.supportsFinishOnEssenceExhausted = true;
+    const upgraded = await (await request()).json();
+    expect(upgraded.canFinishOnEssenceExhausted).toBe(true);
+    expect(craft(upgraded.catalog)?.options).toContainEqual({
+        id: 'finishOnEssenceExhausted', type: 'checkbox', label: expect.any(String),
+    });
+});
+
+test('an empty runecrafting bank closes cleanly without needing a talisman', async () => {
+    const game = world(80, 99);
+    game.inventory = [];
+    game.bank = { isOpen: true, items: [], noteMode: false };
+    game.skills.push({ name: 'Runecraft', level: 90, baseLevel: 90, experience: 569_937 });
+    const actions: string[] = [];
+    const context = {
+        sdk: { getState: () => game },
+        bot: {
+            async closeBank() {
+                actions.push('close');
+                game.bank.isOpen = false;
+                return { success: true, message: 'Bank closed' };
+            },
+            async withdrawItem() { throw new Error('An empty bank must not trigger a withdrawal.'); },
+        },
+    } as unknown as ScriptContext;
+    await craftBodyRunes(context);
+    expect(actions).toEqual(['close']);
+});
+
 test('creates private profiles and rejects duplicate names case-insensitively', async () => {
     const scratch = mkdtempSync(join(process.cwd(), '.plan-test-'));
     try {
@@ -264,8 +324,8 @@ test('the plan API registers an existing bot only from a same-origin dashboard s
     }
 });
 
-async function until(check: () => boolean) {
-    const end = Date.now() + 9_000;
+async function until(check: () => boolean, timeout = 9_000) {
+    const end = Date.now() + timeout;
     while (!check()) {
         if (Date.now() > end) throw new Error('Expected plan state did not arrive.');
         await Bun.sleep(60);
@@ -353,6 +413,79 @@ test('appends mining without stopping runecrafting and starts after confirmed es
         rmSync(directory, { recursive: true, force: true });
     }
 }, 16_000);
+
+test('advances opted-in Runecraft steps on verified exhaustion while preserving the target and live task', async () => {
+    const directory = mkdtempSync(join(process.cwd(), '.plan-test-'));
+    const level = { type: 'level', skill: 'Runecraft', level: 99 } as const;
+    const timed = { type: 'minutes', minutes: 30 } as const;
+    const cases = [
+        { bot: 'Level', finish: level, enabled: true, advances: true },
+        { bot: 'Timed', finish: timed, enabled: false, advances: true },
+        { bot: 'Strict', finish: level, enabled: false, advances: false },
+        { bot: 'Prerequisite', finish: level, enabled: true, prerequisite: true, advances: false },
+        { bot: 'Unverified', finish: level, enabled: true, unverified: true, advances: false },
+        { bot: 'Failed', finish: level, enabled: true, failed: true, advances: false },
+    ];
+    const fixtures = cases.map(spec => {
+        const { bot, finish, prerequisite } = spec;
+        const game = world(80, 99);
+        game.skills.push({ name: 'Runecraft', level: 90, baseLevel: 90, experience: 569_937 });
+        const status: ReturnType<PlanBackend['status']> = { bot, tasks: [], client: null, task: null };
+        const started: string[] = [];
+        const backend: PlanBackend = {
+            status: () => status,
+            async prepare() { status.client = { startedAt: new Date().toISOString(), stopping: false }; },
+            async observe() { game.tick++; return game; },
+            async start(name) {
+                started.push(name);
+                status.task = { name, startedAt: new Date().toISOString(), stopping: false };
+            },
+            async stop() { status.task = null; },
+        };
+        const steps = (enabled: boolean) => parseSteps([
+            { task: 'craft-body-runes', finish,
+                ...(enabled && { options: { finishOnEssenceExhausted: true } }),
+                ...(prerequisite && { requirements: [{ type: 'level', skill: 'Runecraft', level: 95 }] }) },
+            { task: 'pickpocket-men', finish: { type: 'forever' } },
+        ]);
+        return { ...spec, status, started, backend, steps };
+    });
+    const manager = createPlanManager(directory, async bot => fixtures.find(fixture => fixture.bot === bot)!.backend);
+    try {
+        for (const { bot, steps, enabled } of fixtures) manager.start(bot, steps(enabled));
+        await until(() => fixtures.every(({ started }) => started.length === 1));
+        expect(manager.get('Prerequisite')?.work).toMatchObject({ task: 'craft-body-runes', inserted: true });
+
+        const timer = fixtures.find(({ bot }) => bot === 'Timed')!;
+        await until(() => (manager.get(timer.bot)?.elapsedMs ?? 0) > 0);
+        const before = manager.get(timer.bot)!;
+        const activeTask = timer.status.task;
+        manager.update(timer.bot, timer.steps(true), before.revision);
+        await until(() => manager.get(timer.bot)?.work?.options?.finishOnEssenceExhausted === true);
+        expect(timer.status.task).toBe(activeTask);
+        expect(timer.started).toEqual(['craft-body-runes']);
+        expect(manager.get(timer.bot)?.work?.finish).toEqual(timed);
+        expect(manager.get(timer.bot)!.elapsedMs).toBeGreaterThanOrEqual(before.elapsedMs);
+
+        for (const { status, unverified, failed } of fixtures) {
+            status.task = null;
+            status.lastTask = { name: 'craft-body-runes', finishedAt: new Date().toISOString(), exitCode: failed ? 1 : 0,
+                ...(unverified ? {} : { completion: 'essence-exhausted' }) };
+        }
+        await until(() => fixtures.every(({ bot, advances, started }) =>
+            advances ? started.length === 2 : manager.get(bot)?.status === 'blocked'), 13_000);
+        for (const { bot, finish, advances, started } of fixtures) {
+            const saved = manager.get(bot)!;
+            expect(saved.index).toBe(advances ? 1 : 0);
+            expect(saved.steps[0]?.finish).toEqual(finish);
+            expect(started).toEqual(advances ? ['craft-body-runes', 'pickpocket-men'] : ['craft-body-runes']);
+        }
+    } finally {
+        await Promise.all(fixtures.map(({ bot }) => manager.pause(bot)));
+        manager.close();
+        rmSync(directory, { recursive: true, force: true });
+    }
+}, 26_000);
 
 test('keeps the active child and credited time through plan edits and completed activity removal', async () => {
     const directory = mkdtempSync(join(process.cwd(), '.plan-test-'));

@@ -79,14 +79,18 @@ const workSkill = (work: Work) => work.finish.type === 'level' ? work.finish.ski
 const workBankTarget = (work: Work) => work.finish.type === 'bank-stock' ? work.finish.quantity : undefined;
 
 function sameLaunch(first: Work, second: Work) {
+    const { finishOnEssenceExhausted: _firstFinishOption, ...firstOptions } = first.options ?? {};
+    const { finishOnEssenceExhausted: _secondFinishOption, ...secondOptions } = second.options ?? {};
     return first.task === second.task && workSkill(first) === workSkill(second) &&
-        workBankTarget(first) === workBankTarget(second) && sameOptions(first.options, second.options);
+        workBankTarget(first) === workBankTarget(second) && sameOptions(firstOptions, secondOptions);
 }
 
 function verifiedCompletion(work: Work, status: ControllerStatus) {
     const exit = status.lastTask;
-    return !status.task && (work.finish.type === 'essence-exhausted' || work.finish.type === 'bank-stock') &&
-        exit?.name === work.task && exit.exitCode === 0 && exit.completion === work.finish.type;
+    if (status.task || exit?.name !== work.task || exit.exitCode !== 0) return false;
+    if (exit.completion === 'bank-stock') return work.finish.type === 'bank-stock';
+    const finishOnEssenceExhausted = !work.inserted && work.task === 'craft-body-runes' && work.options?.finishOnEssenceExhausted;
+    return exit.completion === 'essence-exhausted' && (work.finish.type === 'essence-exhausted' || finishOnEssenceExhausted === true);
 }
 
 function assignmentMatches(check: () => boolean) {
@@ -592,5 +596,5 @@ export function createPlanManager(directory: string, backendFor: (bot: string, s
     }
 
     return { get, list, active, activeUpdate, requestUpdate, requestRuntimeMove, cancelUpdate, start, resume, update, pause, queueMining, restore,
-        supportsCompletedRemoval: true as const, close: () => db.close() };
+        supportsCompletedRemoval: true as const, supportsFinishOnEssenceExhausted: true as const, close: () => db.close() };
 }

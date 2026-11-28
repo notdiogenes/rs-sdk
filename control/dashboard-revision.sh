@@ -20,7 +20,7 @@ case "$role" in
     worker)
         # Activate changes to the live plan and roster managers with a controlled restart.
         # ExecStartPost records the new stamp after the service starts.
-        worker_stamp_version='Fleet Desk worker restart inputs v7'
+        worker_stamp_version='Fleet Desk worker restart inputs v8'
         if [[ "$3" == changed ]]; then
             if [[ ! -r "$stamp" ]] || ! IFS= read -r installed_version < "$stamp" ||
                 [[ "$installed_version" != "$worker_stamp_version" ]]; then

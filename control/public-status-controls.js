@@ -2730,6 +2730,7 @@
     let planState = null;
     let planCanRemoveCompleted = false;
     let planCanRegisterExisting;
+    let planCanFinishOnEssenceExhausted;
     let planCatalog = [];
     let planSkills = [];
     let draft = [];
@@ -2751,7 +2752,8 @@
     const planUrl = () => '/bots/activity?view=plan' + (planBot ? '&bot=' + encodeURIComponent(planBot) : '');
     const metaFor = id => planCatalog.find(entry => entry.id === id);
     const labelFor = id => metaFor(id)?.label || (id === 'skip-tutorial' ? 'Skip Tutorial Island' : id);
-    const checkboxOptionsFor = task => (metaFor(task)?.options ?? []).filter(option => option.type === 'checkbox');
+    const checkboxOptionsFor = (task, finish) => (metaFor(task)?.options ?? []).filter(option => option.type === 'checkbox' &&
+        (option.id !== 'finishOnEssenceExhausted' || finish?.type !== 'essence-exhausted'));
     const questChoices = () => planCatalog.filter(entry => entry.category === 'Quests');
     const draftCurrentIndex = () => planEditBase.index - removedCompletedIndexes.length;
     const canEditCompletePlan = () => planCanRemoveCompleted && planState?.status === 'complete' && planState.steps.length > 0;
@@ -3005,7 +3007,7 @@
         layout.hidden = step !== expandedPlanStep;
         row.append(layout);
         if (!meta) return row;
-        for (const option of checkboxOptionsFor(step.task)) {
+        for (const option of checkboxOptionsFor(step.task, step.finish)) {
             const input = node('input');
             input.type = 'checkbox';
             input.checked = step.options?.[option.id] === true;
@@ -3019,6 +3021,9 @@
             const field = node('label', '', 'plan-option');
             field.append(input, option.label);
             panel.append(field);
+        }
+        if (step.task === 'craft-body-runes' && step.finish.type !== 'essence-exhausted' && planCanFinishOnEssenceExhausted === false) {
+            panel.append(node('p', 'Restart the Fleet Desk worker from Updates to enable the rune essence finish option.', 'plan-quantity-hint'));
         }
         if (meta.usage === 'repeatable' || !finishModes(meta).includes(step.finish.type)) {
             const stopRow = node('div', '', 'plan-end');
@@ -3105,7 +3110,8 @@
             bankTarget(oldStep.finish) !== bankTarget(nextStep.finish)) {
             return 'Saving this change may stop the current task and start a different activity.';
         }
-        if (checkboxOptionsFor(nextStep.task).some(({ id }) => (oldStep.options?.[id] === true) !== (nextStep.options?.[id] === true))) {
+        if (checkboxOptionsFor(nextStep.task).some(({ id }) => id !== 'finishOnEssenceExhausted' &&
+            (oldStep.options?.[id] === true) !== (nextStep.options?.[id] === true))) {
             return 'Saving this change may restart the current activity with the new options.';
         }
         if (JSON.stringify(oldStep.requirements) !== JSON.stringify(nextStep.requirements) || planEditBase.work?.inserted) {
@@ -3178,7 +3184,7 @@
                     row.append(title);
                 } else row.append(heading);
                 row.append(node('small', finishLabel(step.finish, bankItem(metaFor(step.task)))));
-                for (const option of checkboxOptionsFor(step.task)) {
+                for (const option of checkboxOptionsFor(step.task, step.finish)) {
                     if (step.options?.[option.id] === true) row.append(node('small', option.label));
                 }
             }
@@ -3212,6 +3218,7 @@
             planState = data.plan;
             planCanRemoveCompleted = data.canRemoveCompleted === true;
             planCanRegisterExisting = data.canRegisterExisting === true;
+            planCanFinishOnEssenceExhausted = data.canFinishOnEssenceExhausted;
             let reviewChanged = false;
             if (initialLoad) {
                 editing = planState ? null : 'new';
@@ -3243,6 +3250,7 @@
         planState = null;
         planCanRemoveCompleted = false;
         planCanRegisterExisting = undefined;
+        planCanFinishOnEssenceExhausted = undefined;
         draft = [];
         editing = planEditBase = null;
         removedCompletedIndexes = [];

@@ -116,8 +116,10 @@ export async function craftBodyRunes({ bot, sdk }: ScriptContext, checkpoint?: T
         }
         try {
             if (!current().bank.isOpen) throw new Error('Bank access was not verified.');
-            const talisman = current().bank.items.find(item => item.id === rune.talisman);
-            if (!count(current().inventory, rune.talisman)) {
+            const supplies = current();
+            const hasEssence = count(supplies.inventory, essenceId) > 0 || count(supplies.bank.items, essenceId) > 0;
+            if (hasEssence && !count(supplies.inventory, rune.talisman)) {
+                const talisman = supplies.bank.items.find(item => item.id === rune.talisman);
                 if (!talisman) throw new Error(`No ${rune.name} talisman in the backpack or bank.`);
                 reportTaskActivity(`Withdrawing the ${rune.name} talisman`);
                 await act('withdraw-runecraft-talisman', `Withdraw a ${rune.name} talisman`, { id: rune.talisman },

@@ -25,7 +25,8 @@ export type DashboardWorkerApiRuntime = {
     botProfile(name: string): Promise<ManagedProfile | null>;
     botRoster: Pick<ReturnType<typeof dashboardRoster>, 'create'> & Partial<Pick<ReturnType<typeof dashboardRoster>, 'register'>>;
     plans: Pick<ReturnType<typeof createPlanManager>, 'get' | 'list' | 'pause' | 'resume' | 'start' | 'update' | 'queueMining' |
-        'activeUpdate' | 'requestUpdate' | 'cancelUpdate'> & { supportsCompletedRemoval?: true };
+        'activeUpdate' | 'requestUpdate' | 'cancelUpdate'> &
+        Partial<Pick<ReturnType<typeof createPlanManager>, 'supportsCompletedRemoval' | 'supportsFinishOnEssenceExhausted'>>;
     updateSource?: ActivityUpdateSource;
     standaloneUpdates?: StandaloneUpdates;
     runtimeGroups?: {
@@ -151,15 +152,23 @@ async function handlePlan(request: Request, name: string | null, session: string
     const reply = (body: object, status = 200) => Response.json(body, { status, headers });
     const canRemoveCompleted = plans.supportsCompletedRemoval === true;
     const canRegisterExisting = typeof botRoster.register === 'function';
+    const canFinishOnEssenceExhausted = plans.supportsFinishOnEssenceExhausted === true;
     if (!session && !await demo.allowed(request)) return reply({ error: 'Sign in to manage activity plans.' }, 401);
     if (request.method === 'GET') {
         const profile = name === null ? null : await botProfile(name);
         if (name !== null && !profile) return reply({ error: 'Bot profile not found.' }, 404);
-        return reply({ catalog: planCatalog, skills: trainingSkills, plan: profile && plans.get(profile.name), canRemoveCompleted, canRegisterExisting });
+        const catalog = canFinishOnEssenceExhausted ? planCatalog : planCatalog.map(entry => entry.id === 'craft-body-runes'
+            ? { ...entry, options: entry.options?.filter(option => option.id !== 'finishOnEssenceExhausted') } : entry);
+        return reply({ catalog, skills: trainingSkills, plan: profile && plans.get(profile.name),
+            canRemoveCompleted, canRegisterExisting, canFinishOnEssenceExhausted });
     }
     if (request.method !== 'POST') return new Response(null, { status: 405, headers: { ...headers, Allow: 'GET, POST' } });
     const body = await request.json().catch(() => null);
     if (!body || typeof body !== 'object') return reply({ error: 'Invalid activity plan.' }, 400);
+    if (!canFinishOnEssenceExhausted && Array.isArray(body.steps) &&
+        body.steps.some((step: Partial<Step> | null) => step?.options?.finishOnEssenceExhausted === true)) {
+        return reply({ error: 'Restart the Fleet Desk worker from Updates to enable finishing on essence exhaustion.' }, 503);
+    }
     if (name === null) {
         if (body.action === 'register') {
             if (!session) return reply({ error: 'Sign in to Fleet Desk to register an existing bot.' }, 401);
