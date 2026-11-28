@@ -1,6 +1,8 @@
 import { auditEvent, auditFrame, auditOperation } from '../../sdk/audit-trace';
 import type { ScriptContext } from '../../sdk/runner';
 import type { BotWorldState, NearbyLoc } from '../../sdk/types';
+import { reportTaskActivity } from '../dashboard-task-activity';
+import { withTaskUpdateCheckpoints, type TaskCheckpoint } from './update-checkpoint';
 
 const essenceId = 1436;
 const bank = { x: 3185, z: 3436 };
@@ -44,7 +46,8 @@ function inTemple(state: BotWorldState, rune: Rune) {
         && Math.floor(p.worldZ / 64) === rune.square.z;
 }
 
-export async function craftBodyRunes({ bot, sdk }: ScriptContext) {
+export async function craftBodyRunes({ bot, sdk }: ScriptContext, checkpoint?: TaskCheckpoint) {
+    reportTaskActivity('Preparing to craft runes');
     const current = () => {
         const state = sdk.getState();
         if (!state?.inGame || !state.player || state.player.isDead) throw new Error('Runecrafting needs a live, living player.');
@@ -64,6 +67,7 @@ export async function craftBodyRunes({ bot, sdk }: ScriptContext) {
 
     async function walk(target: { x: number; z: number }, radius: number, name: string) {
         if (near(current(), target, radius)) return;
+        reportTaskActivity(`Walking to ${name}`);
         await act('walk-to-runecraft-waypoint', `Reach ${name}`, target,
             () => bot.walkTo(target.x, target.z, radius, { timeout: 180_000 }));
         if (!near(current(), target, radius)) throw new Error(`Arrival at ${name} was not verified.`);
@@ -87,6 +91,7 @@ export async function craftBodyRunes({ bot, sdk }: ScriptContext) {
 
     async function exit(rune: Rune) {
         phase('runecraft-exit', rune);
+        reportTaskActivity(`Leaving the ${rune.name} temple through the portal`);
         const portal = await location(rune.portal, `${rune.name} exit portal`);
         await act('use-runecraft-portal', `Use the ${rune.name} temple exit`, { id: portal.id, x: portal.x, z: portal.z },
             () => bot.interactLoc(portal, /^use$/i));
@@ -104,32 +109,40 @@ export async function craftBodyRunes({ bot, sdk }: ScriptContext) {
         phase('runecraft-bank', rune);
         if (!current().bank.isOpen) {
             const useDraynor = rune === air && near(current(), air.outside, 25);
-            await walk(useDraynor ? airBank : bank, 4, useDraynor ? 'Draynor Bank' : 'Varrock West Bank');
-            await act('open-runecraft-bank', 'Open the bank', {}, () => bot.openBank());
+            const bankName = useDraynor ? 'Draynor Bank' : 'Varrock West Bank';
+            await walk(useDraynor ? airBank : bank, 4, bankName);
+            reportTaskActivity(`Opening ${bankName}`);
+            await act('open-runecraft-bank', `Open ${bankName}`, {}, () => bot.openBank());
         }
         try {
             if (!current().bank.isOpen) throw new Error('Bank access was not verified.');
             const talisman = current().bank.items.find(item => item.id === rune.talisman);
             if (!count(current().inventory, rune.talisman)) {
                 if (!talisman) throw new Error(`No ${rune.name} talisman in the backpack or bank.`);
+                reportTaskActivity(`Withdrawing the ${rune.name} talisman`);
                 await act('withdraw-runecraft-talisman', `Withdraw a ${rune.name} talisman`, { id: rune.talisman },
                     () => bot.withdrawItem(talisman, 1, { asNote: false }));
             }
             for (const product of [air, body]) {
                 const runes = current().inventory.find(item => item.id === product.rune);
                 if (!runes) continue;
+                reportTaskActivity(`Banking ${product.name} runes`);
                 await act('deposit-crafted-runes', `Deposit ${product.name} runes`, { id: product.rune, count: runes.count },
                     () => bot.depositItem(runes, -1));
             }
             if (rune === body) {
                 const airTalisman = current().inventory.find(item => item.id === air.talisman);
-                if (airTalisman) await act('deposit-air-talisman', 'Bank the Air talisman after the bootstrap', { id: air.talisman },
-                    () => bot.depositItem(airTalisman, -1));
+                if (airTalisman) {
+                    reportTaskActivity('Returning the Air talisman to the bank');
+                    await act('deposit-air-talisman', 'Bank the Air talisman after the bootstrap', { id: air.talisman },
+                        () => bot.depositItem(airTalisman, -1));
+                }
             }
             const carried = count(current().inventory, essenceId);
             const needed = rune === air ? airNeeded(current()) : backpackSize;
             if (rune === air && carried > needed) {
                 const essence = current().inventory.find(item => item.id === essenceId)!;
+                reportTaskActivity('Banking spare rune essence');
                 await act('deposit-surplus-essence', 'Save essence beyond the Air rune bootstrap', { amount: carried - needed },
                     () => bot.depositItem(essence, carried - needed));
             }
@@ -138,11 +151,13 @@ export async function craftBodyRunes({ bot, sdk }: ScriptContext) {
             const held = count(state.inventory, essenceId);
             const amount = Math.min(backpackSize - state.inventory.length, needed - held, stock?.count ?? 0);
             if (amount > 0 && stock) {
+                reportTaskActivity(`Withdrawing rune essence for ${rune.name} runes`);
                 await act('withdraw-rune-essence', 'Withdraw rune essence', { amount, stock: stock.count },
                     () => bot.withdrawItem(stock, amount, { asNote: false }));
             }
             if (!count(current().inventory, essenceId)) {
                 if (stock?.count) throw new Error('The backpack has no space for unnoted rune essence.');
+                reportTaskActivity('Finishing the runecrafting trip at the bank');
                 auditEvent('milestone', 'runecraft-essence-exhausted', { essence: 0, bankEssence: 0 });
                 await closeBank();
                 return false;
@@ -173,8 +188,11 @@ export async function craftBodyRunes({ bot, sdk }: ScriptContext) {
                     return;
                 }
             } else await closeBank();
+            // The backpack is ready and the bank is closed before travel.
+            await checkpoint?.();
             phase('runecraft-enter', rune);
-            await walk(rune.outside, 4, `${rune.name} ruins`);
+            await walk(rune.outside, 4, `the ${rune.name} ruins`);
+            reportTaskActivity(`Entering the ${rune.name} temple with the ${rune.name} talisman`);
             const ruins = await location(rune.ruins, `${rune.name} ruins`);
             const talisman = current().inventory.find(item => item.id === rune.talisman);
             if (!talisman) throw new Error(`${rune.name} talisman is missing before temple entry.`);
@@ -184,6 +202,7 @@ export async function craftBodyRunes({ bot, sdk }: ScriptContext) {
             await observe(`${rune.name} temple entry`, next => inTemple(next, rune));
         }
         phase('runecraft-craft', rune);
+        reportTaskActivity(`Crafting ${rune.name} runes at the ${rune.name} altar`);
         const altar = await location(rune.altar, `${rune.name} altar`);
         const before = current();
         const beforeStock = count(before.inventory, essenceId);
@@ -208,6 +227,7 @@ export async function craftBodyRunes({ bot, sdk }: ScriptContext) {
 }
 
 if (import.meta.main) {
+    reportTaskActivity('Connecting to the game to start runecrafting');
     const { runScript } = await import('../../sdk/runner');
-    await runScript(craftBodyRunes);
+    await runScript(withTaskUpdateCheckpoints(craftBodyRunes));
 }

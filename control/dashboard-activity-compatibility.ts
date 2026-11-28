@@ -20,7 +20,7 @@ const taskDirectory = 'control/tasks/';
 const scripts = new Set(activityIds.map(task => activity(task).script));
 const usesAdventure = (script: string) => ['pickpocket.ts', 'train-hitpoints.ts', 'train-hp-pickpocket.ts'].includes(script);
 const checkpointScripts = new Set([
-    'fish-sharks.ts', 'mine-resources.ts', 'pickpocket.ts', 'smelt-mithril-falador.ts',
+    'craft-body-runes.ts', 'fish-sharks.ts', 'mine-resources.ts', 'pickpocket.ts', 'smelt-mithril-falador.ts',
     'train-cows.ts', 'train-hitpoints.ts', 'train-hp-pickpocket.ts',
 ]);
 const questCombat = new Set(['quests/dragon-slayer.ts', 'quests/lost-city.ts']);
@@ -33,6 +33,7 @@ export function activityAffected(task: ActivityId, paths: readonly string[]): bo
         if (path.startsWith('sdk/') || path.startsWith('server/vendor/rsmod-pathfinder/')) return true;
         if (['package.json', 'bun.lock', 'bun.lockb'].includes(path)) return true;
         if (path === 'control/mining-routes.ts') return category === 'Mining';
+        if (path === 'control/dashboard-task-activity.ts' && script === 'craft-body-runes.ts') return true;
         if (path === 'control/bank-locations.ts' || path === 'control/dashboard-task-activity.ts') {
             return category === 'Mining' || category === 'Fishing' || category === 'Smithing';
         }

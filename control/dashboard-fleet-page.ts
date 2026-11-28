@@ -8,7 +8,12 @@ import type { LastActivity } from './dashboard-last-activity';
 const escape = (value: string) => value.replaceAll('&', '&amp;').replaceAll('<', '&lt;')
     .replaceAll('>', '&gt;').replaceAll('"', '&quot;').replaceAll("'", '&#39;');
 const groups = { attention: 'Needs attention', active: 'Running', idle: 'Idle', offline: 'Offline' } as const;
-const fishingLabels = new Set(activityIds.map(activity).filter(meta => meta.category === 'Fishing').map(meta => meta.label));
+const taskActivityFallbacks = new Map<string, string>();
+for (const id of activityIds) {
+    const { category, label } = activity(id);
+    if (category === 'Fishing') taskActivityFallbacks.set(label, 'Waiting for fishing activity details');
+    if (category === 'Runecraft') taskActivityFallbacks.set(label, 'Waiting for runecrafting activity details');
+}
 // Row order from the game's stats tab. Runecraft shares the last row with the total.
 const skillTabOrder = [
     'Attack', 'Hitpoints', 'Mining',
@@ -95,8 +100,8 @@ function card(bot: Bot, category: Group, reason: string, managed: ControlActivit
         if (managed.transitioning) {
             const label = managed.label ?? bot.activity;
             currentActivity = /^(Starting|Stopping) /.test(label) ? label : `Starting activity - ${label}`;
-        } else if (!reportedActivity && fishingLabels.has(bot.activity)) {
-            currentActivity = 'Waiting for fishing activity details';
+        } else if (!reportedActivity) {
+            currentActivity = taskActivityFallbacks.get(bot.activity);
         }
     }
     const last = currentActivity ? undefined : reportedActivity ?? bot.lastActivity;

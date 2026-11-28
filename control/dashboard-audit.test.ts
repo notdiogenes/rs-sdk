@@ -136,6 +136,16 @@ test('renders named task activity with its own timestamp and ignores reports fro
         expect(await render()).toContain('<span>Current activity</span><strong>Waiting for fishing activity details</strong>');
         recording.append(fishingRun, { kind: 'task-event', name: 'fleet-activity', label: 'Cooking sharks at the Catherby range' });
         expect(await render()).toContain('<strong>Cooking sharks at the Catherby range</strong>');
+
+        now += 1000;
+        const runecraftRun = recording.begin('Scout', 'craft-body-runes', null, null, []);
+        bot.activity = 'Craft Body runes';
+        bot.control = { bot: bot.name, label: bot.activity, running: true, startedAt: new Date(now).toISOString() };
+        const preparing = await render();
+        expect(preparing).toContain('<span>Current activity</span><strong>Waiting for runecrafting activity details</strong>');
+        expect(preparing).not.toContain('Moved to X 2635, Z 3381');
+        recording.append(runecraftRun, { kind: 'task-event', name: 'fleet-activity', label: 'Crafting Body runes at the Body altar' });
+        expect(await render()).toContain('<strong>Crafting Body runes at the Body altar</strong>');
     } finally {
         reports.close();
         recording.close();
