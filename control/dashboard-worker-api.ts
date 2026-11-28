@@ -18,7 +18,7 @@ export type DashboardWorkerApiRuntime = {
     botProfile(name: string): Promise<ManagedProfile | null>;
     botRoster: Pick<ReturnType<typeof dashboardRoster>, 'create'>;
     plans: Pick<ReturnType<typeof createPlanManager>, 'get' | 'list' | 'pause' | 'resume' | 'start' | 'update' | 'queueMining' |
-        'activeUpdate' | 'requestUpdate' | 'cancelUpdate'>;
+        'activeUpdate' | 'requestUpdate' | 'cancelUpdate'> & { supportsCompletedRemoval?: true };
     updateSource?: ActivityUpdateSource;
     standaloneUpdates?: StandaloneUpdates;
     invalidateSnapshot(): void;
@@ -43,11 +43,12 @@ async function handlePlan(request: Request, name: string | null, session: string
     { demo, botProfile, botRoster, plans, invalidateSnapshot, isPlanEditConflict, updateSource }: DashboardWorkerApiRuntime) {
     const headers = { 'Cache-Control': 'no-store', ...(session ? { 'Set-Cookie': session } : {}) };
     const reply = (body: object, status = 200) => Response.json(body, { status, headers });
+    const canRemoveCompleted = plans.supportsCompletedRemoval === true;
     if (!session && !await demo.allowed(request)) return reply({ error: 'Sign in to manage activity plans.' }, 401);
     if (request.method === 'GET') {
         const profile = name === null ? null : await botProfile(name);
         if (name !== null && !profile) return reply({ error: 'Bot profile not found.' }, 404);
-        return reply({ catalog: planCatalog, skills: trainingSkills, plan: profile && plans.get(profile.name) });
+        return reply({ catalog: planCatalog, skills: trainingSkills, plan: profile && plans.get(profile.name), canRemoveCompleted });
     }
     if (request.method !== 'POST') return new Response(null, { status: 405, headers: { ...headers, Allow: 'GET, POST' } });
     const body = await request.json().catch(() => null);
@@ -59,7 +60,7 @@ async function handlePlan(request: Request, name: string | null, session: string
             const profile = await botRoster.create(body.name, (await demo.profile())?.name);
             const plan = plans.start(profile.name, steps);
             invalidateSnapshot();
-            return reply({ bot: profile.name, plan }, 202);
+            return reply({ bot: profile.name, plan, canRemoveCompleted }, 202);
         } catch (error) {
             return reply({ error: error instanceof Error ? error.message : 'Could not create the bot.' }, 400);
         }
@@ -80,6 +81,9 @@ async function handlePlan(request: Request, name: string | null, session: string
                 return reply({ error: 'The saved plan changed. Reload it before saving your edits.' }, 409);
             }
             if (body.reviewedStep !== undefined) {
+                if (body.removedCompletedIndexes !== undefined) {
+                    return reply({ error: 'Save the reviewed settings before removing completed activities.' }, 400);
+                }
                 const index = body.reviewedStep;
                 if (!Number.isSafeInteger(index) || index < saved.index || index >= saved.steps.length) {
                     return reply({ error: 'Choose an unfinished step to review.' }, 400);
@@ -95,16 +99,26 @@ async function handlePlan(request: Request, name: string | null, session: string
                 if (active && index === saved.index && saved.status === 'running') {
                     if (!release) return reply({ error: 'Activity updates are unavailable on this worker.' }, 503);
                     plans.requestUpdate(profile.name, index, saved.revision, active.runId, release, 'safe', reviewed);
-                    return reply({ bot: profile.name, plan: saved, awaitingCheckpoint: true }, 202);
+                    return reply({ bot: profile.name, plan: saved, canRemoveCompleted, awaitingCheckpoint: true }, 202);
                 }
                 plan = plans.update(profile.name, steps, saved.revision);
             } else {
-                plan = plans.update(profile.name, editSteps(body.steps, saved.steps), saved.revision);
+                const removed = body.removedCompletedIndexes === undefined ? [] : body.removedCompletedIndexes;
+                if (!Array.isArray(removed) || removed.length > saved.index) {
+                    return reply({ error: 'Choose completed activities to remove from this plan.' }, 400);
+                }
+                if (removed.length && !canRemoveCompleted) {
+                    return reply({ error: 'Restart the Fleet Desk worker to enable completed activity removal.' }, 503);
+                }
+                const indexes = new Set(removed);
+                const retained = saved.steps.filter((_, index) => !indexes.has(index));
+                const allowEmpty = saved.status === 'complete' && removed.length > 0;
+                plan = plans.update(profile.name, editSteps(body.steps, retained, allowEmpty), saved.revision, removed);
             }
         } else if (body.action === 'queue-mining') plan = plans.queueMining(profile.name, parseSteps([body.step])[0]!);
         else return reply({ error: 'Choose start, update, pause, resume, or queue mining.' }, 400);
         invalidateSnapshot();
-        return reply({ bot: profile.name, plan }, body.action === 'pause' || body.action === 'update' ? 200 : 202);
+        return reply({ bot: profile.name, plan, canRemoveCompleted }, body.action === 'pause' || body.action === 'update' ? 200 : 202);
     } catch (error) {
         return reply({ error: error instanceof Error ? error.message : 'Could not update the plan.' },
             isPlanEditConflict(error) ? 409 : 400);
@@ -117,8 +131,8 @@ function checkPlanOrder(steps: Step[]) {
     }
 }
 
-function editSteps(value: unknown, saved: Step[]) {
-    if (!Array.isArray(value) || !value.length || value.length > 12) throw new Error('Add between 1 and 12 activities.');
+function editSteps(value: unknown, saved: Step[], allowEmpty = false) {
+    if (!Array.isArray(value) || (!allowEmpty && !value.length) || value.length > 12) throw new Error('Add between 1 and 12 activities.');
     const existing = new Map(saved.map(step => [JSON.stringify(step), step]));
     const result = value.map((entry, index) => {
         const unchanged = existing.get(JSON.stringify(entry));

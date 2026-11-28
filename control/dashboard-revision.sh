@@ -18,10 +18,9 @@ case "$role" in
         )
         ;;
     worker)
-        # The old service is still running from before live updates were installed.
-        # Activate this worker with a controlled restart. ExecStartPost writes
-        # the new stamp only after the service has started.
-        worker_stamp_version='Fleet Desk worker restart inputs v3'
+        # Activate changes to the live plan manager with a controlled restart.
+        # ExecStartPost records the new stamp after the service starts.
+        worker_stamp_version='Fleet Desk worker restart inputs v4'
         if [[ "$3" == changed ]]; then
             if [[ ! -r "$stamp" ]] || ! IFS= read -r installed_version < "$stamp" ||
                 [[ "$installed_version" != "$worker_stamp_version" ]]; then

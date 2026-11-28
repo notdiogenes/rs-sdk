@@ -7,6 +7,7 @@ import { nextWork, parseSteps } from './dashboard-plan';
 import { createPlanManager, PlanEditConflict, type PlanBackend } from './dashboard-plan-runner';
 import { dashboardRoster } from './dashboard-roster';
 import { planCatalog } from './dashboard-task-catalog';
+import { handleWorkerRequest, type DashboardWorkerApiRuntime } from './dashboard-worker-api';
 import * as builtInPolicy from './dashboard-worker-policy';
 import { selectFishingStage } from './tasks/fish-sharks';
 
@@ -225,7 +226,7 @@ test('appends mining without stopping runecrafting and starts after confirmed es
     }
 }, 16_000);
 
-test('keeps the active child and credited time through compatible plan edits, then protects completed steps', async () => {
+test('keeps the active child and credited time through plan edits and completed activity removal', async () => {
     const directory = mkdtempSync(join(process.cwd(), '.plan-test-'));
     const game = world(80, 99, true);
     const status: ReturnType<PlanBackend['status']> = { bot: 'Bot', tasks: [], client: null, task: null };
@@ -278,6 +279,17 @@ test('keeps the active child and credited time through compatible plan edits, th
         expect(futureEdit.elapsedMs).toBe(elapsed);
         await until(() => (manager.get('Bot')?.elapsedMs ?? 0) > elapsed);
         expect(manager.get('Bot')?.revision).toBe(futureRevision);
+        expect(status.task).toBe(originalTask);
+        const beforeRemoval = manager.get('Bot')!;
+        const remaining = beforeRemoval.steps.slice(1);
+        expect(() => manager.update('Bot', remaining, futureRevision, [1])).toThrow('Choose completed activities');
+        expect(() => manager.update('Bot', remaining, futureRevision, [0, 0])).toThrow('Choose completed activities');
+        const cleaned = manager.update('Bot', remaining, futureRevision, [0]);
+        expect(cleaned).toMatchObject({ index: 0, steps: remaining, status: 'running',
+            elapsedMs: beforeRemoval.elapsedMs, work: beforeRemoval.work });
+        expect(cleaned.revision).not.toBe(futureRevision);
+        await until(() => (manager.get('Bot')?.elapsedMs ?? 0) > beforeRemoval.elapsedMs);
+        expect(manager.get('Bot')?.index).toBe(0);
         expect(status.task).toBe(originalTask);
         expect(starts).toBe(1);
         expect(stops).toBe(0);
@@ -443,6 +455,44 @@ test('edits legacy completed plans without restarting and rejects a persisted st
         expect(manager.active('Bot')).toBe(false);
         expect(manager.get('Bot')?.revision).toBe(updated.revision);
         expect(() => manager.update('Bot', steps, 'legacy')).toThrow(PlanEditConflict);
+    } finally {
+        manager.close();
+        rmSync(directory, { recursive: true, force: true });
+    }
+});
+
+test('the plan API clears the last row of a completed plan only on a worker that supports removal', async () => {
+    const directory = mkdtempSync(join(process.cwd(), '.plan-test-'));
+    const manager = createPlanManager(directory, async () => { throw new Error('Removing a completed activity must not start a task.'); });
+    try {
+        const steps = parseSteps([{ task: 'cooks-assistant', finish: { type: 'complete' } }]);
+        const db = new Database(join(directory, 'activity-plans.sqlite'));
+        db.run('INSERT INTO activity_plan (bot, data) VALUES (?, ?)', ['Bot', JSON.stringify({
+            bot: 'Bot', steps, index: 1, elapsedMs: 0, status: 'complete',
+        })]);
+        db.close();
+
+        const { supportsCompletedRemoval: _capability, ...oldPlans } = manager;
+        const runtime = {
+            botProfile: async () => ({ name: 'Bot' }), plans: oldPlans, invalidateSnapshot: () => {},
+            demo: { allowed: async () => true }, sessions: { authenticate: async () => undefined },
+            isPlanEditConflict: (error: unknown) => error instanceof PlanEditConflict,
+        } as unknown as DashboardWorkerApiRuntime;
+        const request = (body?: object) => handleWorkerRequest(new Request('https://fleet.test/bots/activity?view=plan&bot=Bot',
+            body && { method: 'POST', body: JSON.stringify(body) }), runtime);
+        const edit = { action: 'update', steps: [], expectedRevision: 'legacy', removedCompletedIndexes: [0] };
+        expect(await (await request()).json()).toMatchObject({ canRemoveCompleted: false });
+        expect((await request(edit)).status).toBe(503);
+        expect(manager.get('Bot')?.index).toBe(1);
+
+        runtime.plans = manager;
+        expect(await (await request()).json()).toMatchObject({ canRemoveCompleted: true });
+        expect((await request({ ...edit, removedCompletedIndexes: [] })).status).toBe(400);
+        const result = await request(edit);
+        expect(result.status).toBe(200);
+        expect(await result.json()).toMatchObject({ canRemoveCompleted: true, plan: { index: 0, status: 'complete', steps: [] } });
+        expect(manager.get('Bot')).toMatchObject({ index: 0, status: 'complete', steps: [] });
+        expect(manager.active('Bot')).toBe(false);
     } finally {
         manager.close();
         rmSync(directory, { recursive: true, force: true });

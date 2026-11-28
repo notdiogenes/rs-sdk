@@ -240,6 +240,8 @@ After a service restart, an active plan reconnects and checks live state before
 continuing. A blocked plan shows why it stopped and can be resumed. Open
 **View plan** and choose **Edit plan** to change a saved plan while it runs.
 Edits to upcoming activities preserve the current task and credited time.
+Use **Remove** on a completed activity, then save to remove it from the plan.
+Removing completed activities preserves the current task and credited time.
 A change to the current activity can also keep its task running when it needs
 the same task and launch settings. Pausing leaves its managed client online.
 
@@ -249,7 +251,9 @@ read a saved plan. A signed-in session or control Bearer credential can POST
 `{ "action": "create", "name": "", "steps": [...] }` without it. To edit a saved
 plan, POST `{ "action": "update", "expectedRevision": "...", "steps": [...] }`
 with the bot query and the plan's current `revision` from GET. A stale revision
-returns `409`. Existing plans also accept `pause` and `resume`. The catalog
+returns `409`. When `canRemoveCompleted` is true, include `removedCompletedIndexes`
+with the original zero-based indexes of completed entries omitted from `steps`.
+Existing plans also accept `pause` and `resume`. The catalog
 specifies each activity’s
 finish modes via `usage` and `trains`. Example step:
 

@@ -399,7 +399,7 @@ export function createPlanManager(directory: string, backendFor: (bot: string, s
         return launch(plan);
     }
 
-    function update(bot: string, steps: Step[], expectedRevision: string) {
+    function update(bot: string, steps: Step[], expectedRevision: string, removedCompletedIndexes: readonly number[] = []) {
         const job = jobs.get(bot.toLowerCase());
         const plan = job?.plan ?? get(bot);
         if (!plan || plan.revision !== expectedRevision || job?.cancel.signal.aborted) {
@@ -409,21 +409,29 @@ export function createPlanManager(directory: string, backendFor: (bot: string, s
         if (job?.pending?.applying || checkpoint === 'committed' || checkpoint === 'accepted') {
             throw new PlanEditConflict('The activity is switching releases.');
         }
-        for (let index = 0; index < plan.index; index++) {
-            if (!sameStep(plan.steps[index], steps[index])) {
+        const removed = new Set(removedCompletedIndexes);
+        if (removed.size !== removedCompletedIndexes.length || removedCompletedIndexes.some(index =>
+            !Number.isSafeInteger(index) || index < 0 || index >= plan.index)) {
+            throw new PlanEditConflict('Choose completed activities to remove from this plan.');
+        }
+        const retained = removed.size ? plan.steps.filter((_, index) => !removed.has(index)) : plan.steps;
+        const nextIndex = plan.index - removed.size;
+        for (let index = 0; index < nextIndex; index++) {
+            if (!sameStep(retained[index], steps[index])) {
                 throw new PlanEditConflict('Completed activities cannot be changed.');
             }
         }
-        if (plan.steps.length === steps.length && steps.every((step, index) => sameStep(step, plan.steps[index]))) return plan;
+        if (!removed.size && plan.steps.length === steps.length && steps.every((step, index) => sameStep(step, retained[index]))) return plan;
 
         const current = plan.steps[plan.index];
-        const revised = steps[plan.index];
+        const revised = steps[nextIndex];
         // Keep unchanged step objects so edits to the tail never re-evaluate
         // the prerequisites or launch arguments of the running child.
         const proposed: Plan = {
             ...plan,
             revision: randomUUID(),
-            steps: steps.map((step, index) => sameStep(step, plan.steps[index]) ? plan.steps[index]! : step),
+            index: nextIndex,
+            steps: steps.map((step, index) => sameStep(step, retained[index]) ? retained[index]! : step),
         };
         if (current?.task !== revised?.task) proposed.elapsedMs = 0;
         if (!sameStep(current, revised)) {
@@ -473,5 +481,6 @@ export function createPlanManager(directory: string, backendFor: (bot: string, s
         }
     }
 
-    return { get, list, active, activeUpdate, requestUpdate, cancelUpdate, start, resume, update, pause, queueMining, restore, close: () => db.close() };
+    return { get, list, active, activeUpdate, requestUpdate, cancelUpdate, start, resume, update, pause, queueMining, restore,
+        supportsCompletedRemoval: true as const, close: () => db.close() };
 }

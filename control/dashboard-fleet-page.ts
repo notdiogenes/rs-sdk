@@ -373,6 +373,7 @@ export function fleetPage({ nonce, revision = '', data, taskActivity, questCatal
     <div class="plan-toolbar-actions">
       <button type="button" id="plan-cancel-edit" hidden>Cancel edits</button>
       <button type="button" id="plan-edit" hidden>Edit plan</button>
+      <button type="button" id="plan-new" hidden>New plan</button>
       <button type="submit" id="plan-save">Start plan</button>
     </div>
   </div>

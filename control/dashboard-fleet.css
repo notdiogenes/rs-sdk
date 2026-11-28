@@ -386,6 +386,7 @@ dialog h3{margin-top:12px}
 .plan-requirements>button{margin-top:8px}
 .plan-readonly strong,.plan-readonly small{display:block}
 .plan-readonly small{margin-top:4px}
+.plan-completed-heading{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px}
 .plan-step .plan-step-state{display:inline-block;width:max-content;max-width:100%;margin:0 0 7px;padding:2px 7px;border-radius:20px;background:#353026;color:#d7c9ad;font-size:11px;font-weight:700}
 .plan-step-state[data-step-state=current]{background:#354b31;color:#bce79e}
 .plan-step-state[data-step-state=done]{background:#302d28;color:var(--muted)}

@@ -2455,17 +2455,20 @@
     const planReviewSettings = planDialog.querySelector('#plan-review-settings');
     const planAdd = planDialog.querySelector('#plan-add');
     const planEdit = planDialog.querySelector('#plan-edit');
+    const planNew = planDialog.querySelector('#plan-new');
     const planCancelEdit = planDialog.querySelector('#plan-cancel-edit');
     const planEditStatus = planDialog.querySelector('#plan-edit-status');
     const planSave = planDialog.querySelector('#plan-save');
     const planClose = planDialog.querySelector('#plan-close');
     let planBot = null;
     let planState = null;
+    let planCanRemoveCompleted = false;
     let planCatalog = [];
     let planSkills = [];
     let draft = [];
     let editing = null;
     let planEditBase = null;
+    let removedCompletedIndexes = [];
     let planConflict = false;
     let planSubmitting = false;
     let planReloading = false;
@@ -2481,6 +2484,8 @@
     const labelFor = id => metaFor(id)?.label || (id === 'skip-tutorial' ? 'Skip Tutorial Island' : id);
     const checkboxOptionsFor = task => (metaFor(task)?.options ?? []).filter(option => option.type === 'checkbox');
     const questChoices = () => planCatalog.filter(entry => entry.category === 'Quests');
+    const draftCurrentIndex = () => planEditBase.index - removedCompletedIndexes.length;
+    const canEditCompletePlan = () => planCanRemoveCompleted && planState?.status === 'complete' && planState.steps.length > 0;
     const finishLabel = finish => finish.type === 'level' ? `Until ${finish.skill} ${finish.level}`
         : finish.type === 'minutes' ? `${finish.minutes} min`
         : finish.type === 'essence-exhausted' ? 'Until rune essence runs out'
@@ -2583,7 +2588,7 @@
                     [draft[index], draft[next]] = [draft[next], draft[index]];
                     renderPlan();
                 }, title);
-                button.disabled = index + offset < (planEditBase?.index ?? 0) || index + offset >= draft.length;
+                button.disabled = index + offset < (planEditBase ? draftCurrentIndex() : 0) || index + offset >= draft.length;
                 ordering.append(button);
             }
             ordering.append(planButton('Remove', () => { draft.splice(index, 1); renderPlan(); }, 'Remove this activity'));
@@ -2647,7 +2652,7 @@
     }
 
     function planDraftDirty() {
-        return editing === 'update' && JSON.stringify(draft) !== JSON.stringify(planEditBase.steps);
+        return editing === 'update' && (removedCompletedIndexes.length > 0 || JSON.stringify(draft) !== JSON.stringify(planEditBase.steps));
     }
 
     function planEditMessage() {
@@ -2658,12 +2663,18 @@
             return planReview.checkpoint === 'unsupported' ? 'Pause this activity before saving reviewed settings.'
                 : 'Saving applies the reviewed settings at a safe point.';
         }
+        if (!planCanRemoveCompleted && planEditBase.index > 0 && !planDraftDirty()) {
+            return 'Restart the Fleet Desk worker from Updates to remove completed activities.';
+        }
+        if (planEditBase.status === 'complete') return draft.length > draftCurrentIndex()
+            ? 'Save changes, then resume the new activities when ready.' : 'Save changes to the completed plan.';
         if (planEditBase.status !== 'running') return 'Save changes to this plan. Resume when ready.';
         const oldStep = planEditBase.steps[planEditBase.index];
-        const nextStep = draft[planEditBase.index];
+        const nextStep = draft[draftCurrentIndex()];
         if (!nextStep) return 'Saving leaves no activities queued after the completed steps.';
         if (JSON.stringify(oldStep) === JSON.stringify(nextStep)) {
-            return 'Changes to queued steps keep the current activity running.';
+            return removedCompletedIndexes.length ? 'Removing completed activities keeps the current activity running.'
+                : 'Changes to queued steps keep the current activity running.';
         }
         const skill = finish => finish.type === 'level' ? finish.skill : undefined;
         const bankTarget = finish => finish.type === 'bank-stock' ? finish.quantity : undefined;
@@ -2688,12 +2699,15 @@
         planAdd.disabled = planSubmitting || draft.length >= 12;
         planEdit.hidden = !!editing || !planState;
         planEdit.disabled = planSubmitting || planReloading;
-        planEdit.textContent = planState?.status === 'complete' ? 'New plan' : 'Edit plan';
+        planEdit.textContent = planState?.status === 'complete' && !canEditCompletePlan() ? 'New plan' : 'Edit plan';
+        planNew.hidden = !!editing || !canEditCompletePlan();
+        planNew.disabled = planSubmitting || planReloading;
         planCancelEdit.hidden = !editing || (!planState && editing === 'new');
         planCancelEdit.disabled = planSubmitting;
         planClose.disabled = planSubmitting;
         planSave.hidden = !editing && (!planState || planState.status === 'complete');
-        planSave.disabled = planSubmitting || planReloading || (!!editing && !draft.length) ||
+        const clearingCompletedPlan = planEditBase?.status === 'complete' && removedCompletedIndexes.length > 0;
+        planSave.disabled = planSubmitting || planReloading || (!!editing && !draft.length && !clearingCompletedPlan) ||
             (editing === 'update' && ((!planDraftDirty() && !planReview) || planConflict));
         planSave.textContent = editing === 'update' ? planReview ? 'Save reviewed settings' : 'Save changes' : editing ? planBot ? 'Start plan' : 'Create bot and start'
             : planState?.status === 'running' ? 'Pause plan' : 'Resume plan';
@@ -2710,14 +2724,30 @@
             if (saved.childElementCount) planReviewSettings.append(node('small', 'Saved settings'), saved);
         }
         const list = editing ? draft : planState?.steps ?? [];
-        const current = (planEditBase ?? planState)?.index;
+        const current = planEditBase ? draftCurrentIndex() : planState?.index;
+        const completedIndexes = planEditBase?.steps.slice(0, planEditBase.index).map((_, index) => index)
+            .filter(index => !removedCompletedIndexes.includes(index));
         planSteps.replaceChildren(...list.map((step, index) => {
             const state = index < current ? 'done' : index === current ? 'current' : 'queued';
             const canEdit = editing && (editing !== 'update' || state !== 'done' && (!planReview || index === planReview.index));
             const row = canEdit ? renderStep(step, index) : node('li', '', 'plan-step plan-readonly');
             if (canEdit && planReview) row.dataset.review = 'true';
             if (!canEdit) {
-                row.append(node('strong', labelFor(step.task)), node('small', finishLabel(step.finish)));
+                const heading = node('strong', labelFor(step.task));
+                if (editing === 'update' && state === 'done' && planCanRemoveCompleted && !planReview) {
+                    const title = node('div', '', 'plan-completed-heading');
+                    const remove = planButton('Remove', () => {
+                        removedCompletedIndexes.push(completedIndexes[index]);
+                        draft.splice(index, 1);
+                        renderPlan();
+                        const next = planSteps.children[index] ?? planSteps.children[index - 1];
+                        (next?.querySelector('[data-remove-completed], select') ?? planSave).focus();
+                    }, `Remove completed activity ${labelFor(step.task)}`);
+                    remove.dataset.removeCompleted = 'true';
+                    title.append(heading, remove);
+                    row.append(title);
+                } else row.append(heading);
+                row.append(node('small', finishLabel(step.finish)));
                 for (const option of checkboxOptionsFor(step.task)) {
                     if (step.options?.[option.id] === true) row.append(node('small', option.label));
                 }
@@ -2749,6 +2779,7 @@
             planCatalog = data.catalog;
             planSkills = data.skills;
             planState = data.plan;
+            planCanRemoveCompleted = data.canRemoveCompleted === true;
             let reviewChanged = false;
             if (initialLoad) {
                 editing = planState ? null : 'new';
@@ -2778,8 +2809,10 @@
         planReview = review;
         planReviewBaseline = undefined;
         planState = null;
+        planCanRemoveCompleted = false;
         draft = [];
         editing = planEditBase = null;
+        removedCompletedIndexes = [];
         planChanged = planConflict = planSubmitting = planReloading = planSaved = false;
         planName.value = '';
         planTitle.textContent = planBot ? `Activity plan · ${planBot}` : 'New bot';
@@ -2789,14 +2822,14 @@
         void refreshPlan(++planVersion, true);
     }
 
-    function beginPlanEdit() {
+    function beginPlanEdit(replacing = false) {
         if (!planState || planSubmitting) return;
         clearTimeout(planWatch);
         planVersion++;
-        const replacing = planState.status === 'complete';
         editing = replacing ? 'new' : 'update';
         planEditBase = replacing ? null : planState;
         draft = replacing ? [defaultStep()] : structuredClone(planState.steps);
+        removedCompletedIndexes = [];
         if (planReview) {
             const step = draft[planReview.index];
             if (step.options) {
@@ -2819,10 +2852,12 @@
     });
 
     planAdd.addEventListener('click', () => { draft.push(defaultStep()); renderPlan(); });
-    planEdit.addEventListener('click', beginPlanEdit);
+    planEdit.addEventListener('click', () => beginPlanEdit(planState?.status === 'complete' && !canEditCompletePlan()));
+    planNew.addEventListener('click', () => beginPlanEdit(true));
     planCancelEdit.addEventListener('click', async () => {
         if (planSubmitting) return;
         editing = planEditBase = null;
+        removedCompletedIndexes = [];
         planReview = undefined;
         planConflict = false;
         planReloading = true;
@@ -2861,6 +2896,7 @@
         const action = editing === 'update' ? 'update' : editing ? planBot ? 'start' : 'create'
             : planState.status === 'running' ? 'pause' : 'resume';
         const payload = action === 'update' ? { action, steps: draft, expectedRevision: planEditBase.revision,
+            ...(removedCompletedIndexes.length && { removedCompletedIndexes }),
             ...(planReview && { reviewedStep: planReview.index, reviewedRevision: planReview.revision }) }
             : editing ? { action, steps: draft, ...(!planBot ? { name: planName.value.trim() } : {}) } : { action };
         planSubmitting = true;
@@ -2870,10 +2906,12 @@
             if (version !== planVersion) return;
             planBot = data.bot;
             planState = data.plan;
+            planCanRemoveCompleted = data.canRemoveCompleted === true;
             planChanged = true;
             planSaved = action === 'update';
             planTitle.textContent = `Activity plan · ${planBot}`;
             editing = planEditBase = null;
+            removedCompletedIndexes = [];
             planReview = undefined;
             planConflict = false;
             renderPlan();
