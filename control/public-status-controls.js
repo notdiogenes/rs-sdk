@@ -1584,6 +1584,7 @@
 
     const monitorField = name => monitorDialog.querySelector(`#monitor-${name}`);
     const monitorSubject = monitorField('subject');
+    const monitorOverlay = monitorField('overlay-pathfinder');
     const monitorCanvas = monitorField('chart');
     const monitorHover = monitorField('chart-hover');
     const monitorTable = monitorDialog.querySelector('.monitor-table');
@@ -1591,11 +1592,11 @@
         timeZone: controlsScript.dataset.timeZone, hourCycle: 'h23', hour: '2-digit', minute: '2-digit', second: '2-digit',
     });
     const monitorTimestamp = at => `${monitorClock.format(at)}.${String(at % 1000).padStart(3, '0')}`;
-    const monitorLabels = { client: 'Lite client', task: 'SDK task', pathfinder: 'Pathfinder' };
-    const monitorColors = { client: '#a6d185', task: '#e1b56b', pathfinder: '#91badd' };
+    const monitorLabels = { client: 'Lite client', task: 'SDK task', pathfinder: 'Pathfinder', all: 'All bots' };
+    const monitorColors = { client: '#a6d185', task: '#e1b56b', pathfinder: '#91badd', all: '#a6d185' };
     const monitorKinds = ['client', 'task', 'pathfinder'];
     const monitorKey = process => process.kind === 'pathfinder' ? 'shared' : `bot:${process.bot}`;
-    const monitorGroup = key => key === 'shared' ? 'Shared pathfinder' : key.slice(4);
+    const monitorGroup = key => key === 'shared' ? 'Shared pathfinder' : key === 'all' ? monitorLabels.all : key.slice(4);
     const monitorRss = bytes => Number.isFinite(bytes) ? `${num.format(Math.round(bytes / 1048576))} MiB` : '—';
     const monitorCpu = percent => Number.isFinite(percent) ? `${percent.toFixed(1)}%` : '—';
     let monitorData;
@@ -1676,13 +1677,15 @@
         for (const sample of monitorData?.history ?? []) {
             for (const process of sample.processes) keys.add(monitorKey(process));
         }
-        const groups = [...keys].sort((a, b) => Number(a === 'shared') - Number(b === 'shared') || a.localeCompare(b));
+        const groups = [...keys].filter(key => key !== 'shared').sort((a, b) => a.localeCompare(b));
+        if (groups.length) groups.push('all');
+        if (keys.has('shared')) groups.push('shared');
         const options = groups.map(key => `<option value="${escape(key)}">${escape(monitorGroup(key))}</option>`).join('') || '<option>No process data</option>';
         if (options !== monitorSubject.dataset.rendered) {
             const selected = monitorSubject.value;
             monitorSubject.innerHTML = options;
             monitorSubject.dataset.rendered = options;
-            if (keys.has(selected)) monitorSubject.value = selected;
+            if (groups.includes(selected)) monitorSubject.value = selected;
         }
         monitorSubject.disabled = groups.length === 0;
         renderMonitorSummary(processes);
@@ -1691,10 +1694,17 @@
     }
 
     function monitorReading(sample, kind) {
-        const process = sample.processes.find(row => row.kind === kind && monitorKey(row) === monitorSubject.value);
-        const value = monitorMetric === 'cpu' ? process?.cpuPercent : process?.rssBytes;
-        if (!Number.isFinite(value)) return null;
-        return { pid: process.pid, value: monitorMetric === 'cpu' ? value : value / 1048576 };
+        const field = monitorMetric === 'cpu' ? 'cpuPercent' : 'rssBytes';
+        const units = monitorMetric === 'cpu' ? 1 : 1048576;
+        if (kind === 'all') {
+            const bots = sample.processes.filter(row => row.kind === 'client' || row.kind === 'task');
+            const total = monitorTotal(bots, field);
+            return bots.length && Number.isFinite(total) ? { value: total / units } : null;
+        }
+        const process = sample.processes.find(row => row.kind === kind &&
+            (kind === 'pathfinder' || monitorKey(row) === monitorSubject.value));
+        const value = process?.[field];
+        return Number.isFinite(value) ? { pid: process.pid, startedAt: process.startedAt, value: value / units } : null;
     }
 
     function monitorBankTrips(events) {
@@ -1724,8 +1734,11 @@
         const end = monitorData?.sampledAt;
         const start = end - monitorWindow * 1000;
         const samples = (monitorData?.history ?? []).filter(sample => sample.at >= start && sample.at <= end);
-        const kinds = (monitorSubject.value === 'shared' ? ['pathfinder'] : ['client', 'task'])
-            .filter(kind => samples.some(sample => monitorReading(sample, kind)));
+        const selection = monitorSubject.value;
+        monitorOverlay.disabled = selection === 'shared' || !monitorSubject.querySelector('option[value="shared"]');
+        const series = selection === 'shared' ? ['pathfinder'] : selection === 'all' ? ['all'] : ['client', 'task'];
+        if (!monitorOverlay.disabled && monitorOverlay.checked) series.push('pathfinder');
+        const kinds = series.filter(kind => samples.some(sample => monitorReading(sample, kind)));
         const readings = samples.map(sample => kinds.map(kind => monitorReading(sample, kind)));
         const chartEmpty = monitorField('chart-empty');
         setText(chartEmpty, monitorData ? `No ${chartName} samples for this selection.` : 'Waiting for samples…');
@@ -1733,7 +1746,7 @@
         const subject = monitorSubject.selectedOptions[0]?.textContent;
         monitorCanvas.setAttribute('aria-label', kinds.length ? `${chartName} history for ${subject}` : `${chartName} history, no samples`);
         const events = (monitorData?.events ?? []).filter(event => event.at >= start && event.at <= end &&
-            (monitorSubject.value === 'shared' || `bot:${event.bot}` === monitorSubject.value));
+            (selection === 'shared' || selection === 'all' || `bot:${event.bot}` === selection));
         const bankTrips = monitorBankTrips(events);
         monitorField('legend').innerHTML = kinds.map(kind => `<span><i style="--monitor-color:${monitorColors[kind]}"></i>${monitorLabels[kind]}</span>`).join('') +
             (kinds.length && bankTrips.length ? '<span><i class="monitor-bank-key"></i>Bank trip</span>' : '');
@@ -1821,9 +1834,10 @@
                     return;
                 }
                 const point = [x(sample.at), y(reading.value)];
-                if (!prior || prior.pid !== reading.pid || sample.at - prior.at > spacing * 3) context.moveTo(...point);
+                if (!prior || prior.pid !== reading.pid || prior.startedAt !== reading.startedAt ||
+                    sample.at - prior.at > spacing * 3) context.moveTo(...point);
                 else context.lineTo(...point);
-                prior = { pid: reading.pid, at: sample.at };
+                prior = { pid: reading.pid, startedAt: reading.startedAt, at: sample.at };
                 lastPoint = point;
             });
             context.stroke();
@@ -1851,8 +1865,11 @@
         if (!chart || index < 0 || index >= chart.samples.length) return;
         const { at } = chart.samples[index];
         monitorCursorAt = at;
-        const readings = chart.readings[index].map((reading, series) => reading
-            ? `${monitorLabels[chart.kinds[series]]} PID ${reading.pid} · ${chart.format(reading.value)}` : null).filter(Boolean);
+        const readings = chart.readings[index].map((reading, series) => {
+            if (!reading) return null;
+            const pid = reading.pid === undefined ? '' : ` PID ${reading.pid}`;
+            return `${monitorLabels[chart.kinds[series]]}${pid} · ${chart.format(reading.value)}`;
+        }).filter(Boolean);
         const point = chart.x(at);
         const marker = chart.events.find(event => Math.abs(chart.x(event.at) - point) < 7);
         const trip = chart.bankTrips.find(trip => trip.start <= at && at <= trip.end);
@@ -1917,7 +1934,7 @@
         monitorData = undefined;
         monitorCursorAt = undefined;
         monitorHover.hidden = true;
-        setText(monitorField('copy-status'), 'RSS is resident memory.');
+        setText(monitorField('copy-status'), '');
         renderMonitor();
         scheduleRefresh();
     });
@@ -1942,6 +1959,7 @@
         renderMonitorTable(monitorData?.processes ?? []);
         drawMonitorChart();
     });
+    monitorOverlay.addEventListener('change', drawMonitorChart);
     monitorCanvas.addEventListener('pointermove', event => {
         if (!monitorChart) return;
         const point = event.clientX - monitorCanvas.getBoundingClientRect().left;
@@ -1974,7 +1992,7 @@
         } catch {
             if (monitorDialog.open) setText(status, `PID ${pid}.`);
         }
-        if (monitorDialog.open) monitorCopyTimer = setTimeout(() => setText(status, 'RSS is resident memory.'), 2500);
+        if (monitorDialog.open) monitorCopyTimer = setTimeout(() => setText(status, ''), 2500);
     });
     new ResizeObserver(drawMonitorChart).observe(monitorCanvas);
 

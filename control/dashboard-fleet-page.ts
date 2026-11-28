@@ -223,19 +223,20 @@ export function fleetPage({ nonce, revision = '', data, taskActivity, questCatal
   <section class="monitor-summary" aria-label="Resource totals">
     <article class="metric monitor-bots"><span>Bot processes</span><strong id="monitor-bot-rss">—</strong><small id="monitor-bot-detail">Lite clients and SDK tasks</small></article>
     <article class="metric monitor-shared"><span>Shared pathfinder</span><strong id="monitor-shared-rss">—</strong><small id="monitor-shared-detail">—</small></article>
-    <article class="metric"><span>Fleet process RSS</span><strong id="monitor-fleet-rss">—</strong><small id="monitor-fleet-detail">—</small></article>
+    <article class="metric"><span>Fleet process MEM</span><strong id="monitor-fleet-rss">—</strong><small id="monitor-fleet-detail">—</small></article>
   </section>
   <div class="monitor-workspace">
     <section class="monitor-panel" aria-labelledby="monitor-history-title">
       <div class="monitor-panel-header"><div><h3 id="monitor-history-title">Resource history</h3><p id="monitor-chart-info">CPU as a percentage of one core</p></div><span id="monitor-peak"></span></div>
       <div class="monitor-chart-controls">
-        <select id="monitor-subject" aria-label="Select a bot or shared process" disabled><option>No process data</option></select>
+        <select id="monitor-subject" aria-label="Select processes for resource history" disabled><option>No process data</option></select>
         <div class="monitor-segment" role="group" aria-label="Metric">
-          <button type="button" data-monitor-metric="cpu" aria-pressed="true">CPU</button><button type="button" data-monitor-metric="rss" aria-pressed="false">RSS</button>
+          <button type="button" data-monitor-metric="cpu" aria-pressed="true">CPU</button><button type="button" data-monitor-metric="rss" aria-pressed="false">MEM</button>
         </div>
         <div class="monitor-segment" role="group" aria-label="Time range">
           <button type="button" data-monitor-window="30" aria-pressed="true">30s</button><button type="button" data-monitor-window="300" aria-pressed="false">5m</button><button type="button" data-monitor-window="3600" aria-pressed="false">1h</button>
         </div>
+        <label class="monitor-overlay"><input id="monitor-overlay-pathfinder" type="checkbox" disabled>Overlay pathfinder</label>
       </div>
       <div class="monitor-chart-frame">
         <canvas id="monitor-chart" role="img" aria-label="Process resource history" tabindex="0"></canvas>
@@ -245,14 +246,13 @@ export function fleetPage({ nonce, revision = '', data, taskActivity, questCatal
       <div class="monitor-chart-footer"><div id="monitor-legend" aria-label="Chart legend"></div><span id="monitor-resolution"></span></div>
     </section>
     <section class="monitor-panel" aria-labelledby="monitor-process-title">
-      <div class="monitor-panel-header"><div><h3 id="monitor-process-title">Process breakdown</h3><p>Copy a PID for <code>atop</code></p></div></div>
+      <div class="monitor-panel-header"><h3 id="monitor-process-title">Process breakdown</h3><span id="monitor-copy-status" role="status"></span></div>
       <div class="monitor-table" tabindex="0" aria-labelledby="monitor-process-title">
         <table aria-label="Process PID, resident memory, CPU, and start time">
-          <thead><tr><th scope="col">Process</th><th scope="col">PID</th><th scope="col">RSS</th><th scope="col">CPU</th><th scope="col">Started</th></tr></thead>
+          <thead><tr><th scope="col">Process</th><th scope="col">PID</th><th scope="col">MEM</th><th scope="col">CPU</th><th scope="col">Started</th></tr></thead>
           <tbody><tr><td colspan="5">Waiting for samples…</td></tr></tbody>
         </table>
       </div>
-      <p id="monitor-copy-status" role="status">RSS is resident memory.</p>
     </section>
   </div>
 </div></dialog>
