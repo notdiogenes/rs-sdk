@@ -806,6 +806,12 @@
         if (Number.isInteger(saved?.sort?.key) && saved.sort.key >= 0 && saved.sort.key < skills.length + 5) sort = saved.sort;
         selectTab(tabs.find(tab => tab.getAttribute('aria-controls') === saved?.view) || tabs[0]);
         document.querySelector('#refresh').addEventListener('click', () => void refreshFleet());
+        document.addEventListener('keydown', event => {
+            if (!event.cancelable || event.defaultPrevented || event.isComposing || !event.ctrlKey ||
+                event.shiftKey || event.altKey || event.metaKey || event.key.toLowerCase() !== 'r') return;
+            event.preventDefault();
+            if (!event.repeat) void refreshFleet();
+        });
         window.addEventListener('resize', () => {
             if (view !== 'quests-panel') return;
             const panel = document.getElementById(view);

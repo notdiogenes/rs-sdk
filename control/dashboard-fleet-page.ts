@@ -189,7 +189,7 @@ export function fleetPage({ nonce, revision = '', data, taskActivity, questCatal
     <button type="button" id="new-bot">New bot</button>
     <button type="button" id="banks">Check banks</button>
     <button type="button" id="audit-open">Audit history</button>
-    <button type="button" id="refresh">Refresh</button>
+    <button type="button" id="refresh" aria-keyshortcuts="Control+R">Refresh</button>
     <button type="button" id="auto" aria-pressed="true">Auto</button>
     <button type="button" id="dashboard-account">Sign in</button>
     <small id="fleet-refresh-status" role="status" hidden></small>
