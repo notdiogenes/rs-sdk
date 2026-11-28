@@ -11,6 +11,13 @@ const harrysShop = { name: 'Harry’s Fishing Shop', x: 2834, z: 3445 };
 const beach = { name: 'the Catherby fishing spots', x: 2845, z: 3433 };
 // Land tiles beside the four groups of NPC movement tiles on the beach.
 const shoreline = [{ x: 2837, z: 3432 }, beach, { x: 2853, z: 3425 }, { x: 2859, z: 3427 }];
+const guildEntrance = { name: 'the Fishing Guild entrance', x: 2611, z: 3393 };
+const guildDocks = { name: 'the Fishing Guild docks', x: 2611, z: 3414 };
+const guildToolSpawns: Partial<Record<number, Tile & { approachX?: number }>> = {
+    305: { x: 2605, z: 3395 },
+    311: { x: 2605, z: 3396, approachX: 2606 },
+    301: { x: 2608, z: 3397 },
+};
 const shorelineSearchTimeout = 240_000;
 const banks = [catherbyBank, { name: 'the bank', x: 2655, z: 3284 }, ...Object.values(bankLocations)];
 const capacity = 28;
@@ -27,6 +34,7 @@ type Stage = {
     label: string;
     level: number;
     spot: number;
+    guildSpot?: number;
     option: RegExp;
     tool: { id: number; name: string; stock: number };
     fish: (typeof rawFish)[keyof typeof rawFish];
@@ -37,37 +45,64 @@ type Stage = {
 const stages: Stage[] = [
     { label: 'shrimp and anchovies', level: 1, spot: 320, option: /^net$/i,
         tool: { id: 303, name: 'small fishing net', stock: 5 }, fish: rawFish.shrimp },
-    { label: 'mackerel and cod', level: 16, spot: 322, option: /^net$/i,
+    { label: 'mackerel and cod', level: 16, spot: 322, guildSpot: 313, option: /^net$/i,
         tool: { id: 305, name: 'big fishing net', stock: 5 }, fish: rawFish.mackerel },
-    { label: 'tuna', level: 35, spot: 321, option: /^harpoon$/i,
+    { label: 'tuna', level: 35, spot: 321, guildSpot: 312, option: /^harpoon$/i,
         tool: { id: 311, name: 'harpoon', stock: 2 }, fish: rawFish.tuna },
-    { label: 'lobsters', level: 40, spot: 321, option: /^cage$/i,
+    { label: 'lobsters', level: 40, spot: 321, guildSpot: 312, option: /^cage$/i,
         tool: { id: 301, name: 'lobster pot', stock: 2 }, fish: rawFish.lobster },
-    { label: 'sharks', level: 76, spot: 322, option: /^harpoon$/i,
+    { label: 'sharks', level: 76, spot: 322, guildSpot: 313, option: /^harpoon$/i,
         tool: { id: 311, name: 'harpoon', stock: 2 }, fish: rawFish.shark },
 ];
+
+const guildStages = stages.flatMap(({ guildSpot, ...stage }) => guildSpot === undefined
+    ? [] : [{ ...stage, level: Math.max(68, stage.level), spot: guildSpot }]);
+
+const locations = {
+    catherby: {
+        name: 'Catherby', bank: catherbyBank, range: catherbyRange, rangeApproach: catherbyRange, rangeTolerance: 3,
+        start: beach, search: shoreline, stages,
+    },
+    guild: {
+        name: 'the Fishing Guild', bank: { name: 'Fishing Guild Bank', x: 2586, z: 3419 },
+        range: { name: 'the Fishing Guild range', x: 2616, z: 3396 },
+        rangeApproach: { name: 'the Fishing Guild range', x: 2616, z: 3398 }, rangeTolerance: 0,
+        start: guildDocks, search: [
+            guildDocks, { x: 2611, z: 3412 }, { x: 2603, z: 3413 }, { x: 2607, z: 3415 },
+            { x: 2604, z: 3420 }, { x: 2604, z: 3425 }, { x: 2599, z: 3420 },
+        ], stages: guildStages,
+    },
+};
+
+type FishingArea = keyof typeof locations;
 
 function skill(state: BotWorldState, name: 'Fishing' | 'Cooking') {
     return state.skills.find(entry => entry.name === name);
 }
 
-export function selectFishingStage(state: BotWorldState, cook: boolean) {
+export function selectFishingStage(state: BotWorldState, cook: boolean, area: FishingArea = 'catherby') {
     const fishing = skill(state, 'Fishing')?.level;
     const cooking = cook ? skill(state, 'Cooking')?.level : undefined;
     if (fishing === undefined || (cook && cooking === undefined)) throw new Error('Fishing or Cooking level is unavailable.');
     // If Cooking has fallen behind, keep catching a fish that can grant
     // Cooking XP, including when Fishing already qualifies for sharks.
-    const stage = stages.findLast(entry => fishing >= entry.level && (cooking === undefined || cooking >= entry.fish.cooking));
-    if (!stage) throw new Error('No Catherby fishing method is available at the current levels.');
+    const site = locations[area];
+    const stage = site.stages.findLast(entry => fishing >= entry.level && (cooking === undefined || cooking >= entry.fish.cooking));
+    if (!stage) throw new Error(`No fishing method at ${site.name} is available at the current levels.`);
     return stage;
 }
 
 const quantity = (state: BotWorldState, id: number) =>
     state.inventory.reduce((count, item) => count + (item.id === id ? item.count : 0), 0);
 
-export async function fishSharks({ bot, sdk }: ScriptContext, cook = process.env.RS_ACTIVITY === 'fish-sharks-cook',
-    checkpoint?: TaskCheckpoint) {
+const activity = process.env.RS_ACTIVITY;
+const cookingActivity = activity === 'fish-sharks-cook' || activity === 'fish-sharks-guild-cook';
+const guildActivity = activity === 'fish-sharks-guild' || activity === 'fish-sharks-guild-cook';
+
+export async function fishSharks({ bot, sdk }: ScriptContext, cook = cookingActivity,
+    checkpoint?: TaskCheckpoint, area: FishingArea = guildActivity ? 'guild' : 'catherby') {
     await sdk.waitForReady();
+    const site = locations[area];
 
     function current() {
         const state = sdk.getState();
@@ -95,6 +130,27 @@ export async function fishSharks({ bot, sdk }: ScriptContext, cook = process.env
             reportTaskActivity(`Walking to ${target.name}`);
         }
         await requireAction(label, bot.walkTo(target.x, target.z, tolerance));
+    }
+
+    function insideGuild(state: BotWorldState) {
+        const player = state.player;
+        return !!player && player.level === 0 && player.worldX >= 2584 && player.worldX <= 2619
+            && player.worldZ >= 3394 && player.worldZ <= 3426;
+    }
+
+    async function enterGuild() {
+        if (insideGuild(current())) return;
+        if (current().bank.isOpen) await requireAction('Close the bank', bot.closeBank());
+        if (current().shop.isOpen) await requireAction('Close the shop', bot.closeShop());
+        await walk(guildEntrance, 0, 'Reach the Fishing Guild entrance');
+        for (let attempt = 0; attempt < 3; attempt++) {
+            const door = current().nearbyLocs.find(loc => loc.id === 2025 && loc.x === guildEntrance.x && loc.z === 3394);
+            const action = door ? await sdk.sendInteractLoc(door.x, door.z, door.id, 1)
+                : await sdk.sendWalk(guildEntrance.x, 3395);
+            if (action.success && await observe(insideGuild, 4_000) && insideGuild(current())) return;
+            if (insideGuild(current())) return;
+        }
+        throw new Error('Crossing the Fishing Guild entrance was not confirmed.');
     }
 
     async function openBank(target: (typeof banks)[number]) {
@@ -152,14 +208,24 @@ export async function fishSharks({ bot, sdk }: ScriptContext, cook = process.env
     }
 
     async function prepareTool(tool: Stage['tool']) {
-        await openBank(catherbyBank);
+        await openBank(site.bank);
         await bankBackpack(tool.id);
         const stored = current().bank.items.find(item => item.id === tool.id);
         if (!quantity(current(), tool.id) && stored) {
             await requireAction(`Withdraw a ${tool.name}`, bot.withdrawItem(stored, 1));
         }
         await requireAction('Close the bank', bot.closeBank());
-        if (!quantity(current(), tool.id)) {
+        if (!quantity(current(), tool.id) && area === 'guild') {
+            const spawn = guildToolSpawns[tool.id];
+            if (!spawn) throw new Error(`No Fishing Guild spawn for a ${tool.name}.`);
+            await walk({ name: `the ${tool.name} spawn`, x: spawn.approachX ?? spawn.x, z: spawn.z }, 0,
+                `Reach the Fishing Guild ${tool.name} spawn`);
+            for (let attempt = 0; attempt < 3 && !quantity(current(), tool.id); attempt++) {
+                const item = (await sdk.scanGroundItems(3)).find(item => item.id === tool.id && item.x === spawn.x && item.z === spawn.z);
+                if (item) await bot.pickupItem(item);
+                if (!quantity(current(), tool.id)) await sdk.waitForTicks(3);
+            }
+        } else if (!quantity(current(), tool.id)) {
             try {
                 await buyTool(tool);
             } finally {
@@ -183,16 +249,16 @@ export async function fishSharks({ bot, sdk }: ScriptContext, cook = process.env
         }
 
         if (!nextFish()) return;
-        await walk(catherbyRange, 3, 'Reach the Catherby range');
-        const range = current().nearbyLocs.find(loc => loc.id === 2728 && loc.x === catherbyRange.x && loc.z === catherbyRange.z);
-        if (!range) throw new Error('The Catherby range was not visible.');
+        await walk(site.rangeApproach, site.rangeTolerance, `Reach ${site.range.name}`);
+        const range = current().nearbyLocs.find(loc => loc.id === 2728 && loc.x === site.range.x && loc.z === site.range.z);
+        if (!range) throw new Error(`${site.range.name} was not visible.`);
         const startingXp = skill(current(), 'Cooking')?.experience ?? 0;
         let processed = 0;
         let misses = 0;
         for (let item = nextFish(); item; item = nextFish()) {
             const { id, name } = item;
             const count = quantity(current(), id);
-            reportTaskActivity('Cooking fish at the Catherby range');
+            reportTaskActivity(`Cooking fish at ${site.range.name}`);
             const result = await bot.useItemOnLoc(item, range, { timeout: 5_000 });
             // Both a cook and a burn consume the raw fish. Reconcile the
             // inventory even when the SDK could not confirm the interaction.
@@ -211,30 +277,30 @@ export async function fishSharks({ bot, sdk }: ScriptContext, cook = process.env
             }
             const message = result.success ? 'No raw fish was consumed.' : result.message;
             auditEvent('setback', 'cooking-action-unconfirmed', { fish: id, remaining, attempt: ++misses, message });
-            if (misses >= 4) throw new Error(`Cooking ${name} at the Catherby range made no progress after ${misses} attempts. ${message}`);
+            if (misses >= 4) throw new Error(`Cooking ${name} at ${site.range.name} made no progress after ${misses} attempts. ${message}`);
         }
         auditEvent('milestone', 'cooking-batch-completed', {
-            processed, xpGained: (skill(current(), 'Cooking')?.experience ?? 0) - startingXp,
+            processed, area, xpGained: (skill(current(), 'Cooking')?.experience ?? 0) - startingXp,
         });
     }
 
     async function fishBackpack(stage: Stage) {
-        await walk(beach, 3, 'Reach the Catherby fishing spots');
+        await walk(site.start, area === 'guild' ? 0 : 3, `Reach ${site.start.name}`);
         let missed = 0;
         let searchStarted: number | undefined;
         const batchComplete = (state: BotWorldState) =>
-            state.inventory.length >= capacity || selectFishingStage(state, cook) !== stage;
+            state.inventory.length >= capacity || selectFishingStage(state, cook, area) !== stage;
         function availableSpot(state: BotWorldState) {
             const nearby = state.nearbyNpcs
                 .filter(npc => npc.id === stage.spot && npc.reachable !== false && npc.optionsWithIndex.some(option => stage.option.test(option.text)))
                 .sort((a, b) => a.distance - b.distance);
             return nearby[missed % nearby.length];
         }
-        async function searchShoreline() {
+        async function searchSpots() {
             const { player } = current();
             const distance = (from: typeof player, point: Tile) =>
                 Math.max(Math.abs(from.worldX - point.x), Math.abs(from.worldZ - point.z));
-            const points = [...shoreline].sort((a, b) => distance(player, a) - distance(player, b));
+            const points = [...site.search].sort((a, b) => distance(player, a) - distance(player, b));
             for (const point of points) {
                 const state = current();
                 if (availableSpot(state) || batchComplete(state)) return;
@@ -254,21 +320,21 @@ export async function fishSharks({ bot, sdk }: ScriptContext, cook = process.env
             if (!spot || !option) {
                 if (searchStarted === undefined) {
                     searchStarted = Date.now();
-                    reportTaskActivity(`Searching the Catherby shore for ${stage.label}`);
+                    reportTaskActivity(`Searching for ${stage.label} at ${site.name}`);
                     const state = current();
                     auditEvent('setback', 'fishing-spot-unavailable', {
-                        fish: stage.label, x: state.player.worldX, z: state.player.worldZ,
+                        fish: stage.label, area, x: state.player.worldX, z: state.player.worldZ,
                         spots: state.nearbyNpcs.filter(npc => npc.id === stage.spot)
                             .map(npc => ({ x: npc.tileX ?? npc.x, z: npc.tileZ ?? npc.z, reachable: npc.reachable })),
                     });
                 }
-                await searchShoreline();
+                await searchSpots();
                 const state = current();
                 if (availableSpot(state) || batchComplete(state)) continue;
                 // Finish a partial load while waiting for the next spot.
                 if (state.inventory.some(item => item.id !== stage.tool.id)) return;
                 if (Date.now() - searchStarted >= shorelineSearchTimeout) {
-                    throw new Error(`No reachable Catherby fishing spot for ${stage.label} after searching the shoreline.`);
+                    throw new Error(`No reachable fishing spot for ${stage.label} at ${site.name}.`);
                 }
                 await sdk.waitForTicks(8);
                 continue;
@@ -286,7 +352,7 @@ export async function fishSharks({ bot, sdk }: ScriptContext, cook = process.env
             // Clicking a fishing spot clears a level-up dialog and starts a
             // new cast. The high-level interaction would click Continue first.
             const action = await sdk.sendInteractNpc(spot.index, option.opIndex);
-            const activityLabel = `Fishing for ${stage.label} at Catherby`;
+            const activityLabel = `Fishing for ${stage.label} at ${site.name}`;
             if (action.success) reportTaskActivity(activityLabel);
             let closingPreviousDialog = before.dialog.isOpen;
             let xp = skill(before, 'Fishing')?.experience ?? 0;
@@ -320,14 +386,21 @@ export async function fishSharks({ bot, sdk }: ScriptContext, cook = process.env
 
     const { player } = current();
     if (player.level !== 0) throw new Error('Start this activity on the surface.');
+    if (area === 'guild') {
+        selectFishingStage(current(), cook, area);
+        auditEvent('phase', 'fishing-travel-to-guild');
+        await enterGuild();
+        if (current().bank.isOpen) await requireAction('Close the bank', bot.closeBank());
+        if (current().shop.isOpen) await requireAction('Close the shop', bot.closeShop());
+    }
     // A restarted cook task can still be carrying the batch it was working on.
-    if (cook && Math.max(Math.abs(player.worldX - catherbyRange.x), Math.abs(player.worldZ - catherbyRange.z)) <= 3) {
+    if (cook && (area === 'guild' || Math.max(Math.abs(player.worldX - catherbyRange.x), Math.abs(player.worldZ - catherbyRange.z)) <= 3)) {
         await cookBackpack();
     }
-    const nearestBank = banks.reduce((nearest, candidate) =>
+    const nearestBank = area === 'guild' ? site.bank : banks.reduce((nearest, candidate) =>
         Math.max(Math.abs(candidate.x - player.worldX), Math.abs(candidate.z - player.worldZ)) <
         Math.max(Math.abs(nearest.x - player.worldX), Math.abs(nearest.z - player.worldZ)) ? candidate : nearest);
-    auditEvent('phase', 'fishing-bank-starting-items');
+    auditEvent('phase', 'fishing-bank-starting-items', { area });
     await openBank(nearestBank);
     await bankBackpack();
     const worn = current().equipment;
@@ -339,16 +412,18 @@ export async function fishSharks({ bot, sdk }: ScriptContext, cook = process.env
     }
     if (current().inventory.length || current().equipment.length) throw new Error('Starting items were not fully banked.');
     await requireAction('Close the bank', bot.closeBank());
-    auditEvent('milestone', 'fishing-starting-items-banked');
-    auditEvent('phase', 'fishing-travel-to-catherby');
-    await walk(catherbyBank, 3, 'Reach Catherby');
+    auditEvent('milestone', 'fishing-starting-items-banked', { area });
+    if (area === 'catherby') {
+        auditEvent('phase', 'fishing-travel-to-catherby');
+        await walk(catherbyBank, 3, 'Reach Catherby');
+    }
 
     let previousStage: Stage | undefined;
     for (;;) {
-        const stage = selectFishingStage(current(), cook);
+        const stage = selectFishingStage(current(), cook, area);
         if (stage !== previousStage) {
             auditEvent('phase', stage.fish === rawFish.shark ? 'fishing-sharks' : 'fishing-training',
-                { fish: stage.label, cook });
+                { fish: stage.label, cook, area });
             previousStage = stage;
         }
         await prepareTool(stage.tool);
@@ -361,5 +436,6 @@ export async function fishSharks({ bot, sdk }: ScriptContext, cook = process.env
 
 if (import.meta.main) {
     await runScript(withTaskUpdateCheckpoints((context, checkpoint) => fishSharks(context,
-        process.env.RS_ACTIVITY === 'fish-sharks-cook' || process.argv.includes('--cook'), checkpoint)));
+        cookingActivity || process.argv.includes('--cook'), checkpoint,
+        guildActivity || process.argv.includes('--guild') ? 'guild' : 'catherby')));
 }

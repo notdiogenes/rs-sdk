@@ -126,6 +126,14 @@ export const activityCatalog = {
         label: 'Fish sharks and cook them', category: 'Fishing', usage: 'repeatable',
         script: 'fish-sharks.ts', trains: ['Fishing', 'Cooking'],
     },
+    'fish-sharks-guild': {
+        label: 'Fish sharks at the Fishing Guild', category: 'Fishing', usage: 'repeatable',
+        script: 'fish-sharks.ts', requirements: [level('Fishing', 68)], trains: ['Fishing'],
+    },
+    'fish-sharks-guild-cook': {
+        label: 'Fish and cook sharks at the Fishing Guild', category: 'Fishing', usage: 'repeatable',
+        script: 'fish-sharks.ts', requirements: [level('Fishing', 68), level('Cooking', 10)], trains: ['Fishing', 'Cooking'],
+    },
     'skip-tutorial': { label: 'Skip Tutorial Island', category: 'Setup', usage: 'once', script: 'skip-tutorial.ts' },
     'train-hp-pickpocket': {
         label: 'Train Hitpoints, then pickpocket', category: 'Legacy', usage: 'repeatable', script: 'train-hp-pickpocket.ts',

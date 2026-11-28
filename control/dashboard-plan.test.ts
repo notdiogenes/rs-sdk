@@ -8,6 +8,7 @@ import { createPlanManager, PlanEditConflict, type PlanBackend } from './dashboa
 import { dashboardRoster } from './dashboard-roster';
 import { planCatalog } from './dashboard-task-catalog';
 import * as builtInPolicy from './dashboard-worker-policy';
+import { selectFishingStage } from './tasks/fish-sharks';
 
 function world(thieving: number, hp: number, cook = false, tutorial = false) {
     return {
@@ -42,6 +43,35 @@ test('a Paladin activity uses Knights up to 70 Thieving and then targets Paladin
     const [step] = parseSteps([{ task: 'pickpocket-paladins', finish: { type: 'minutes', minutes: 45 } }]);
     expect(nextWork(step!, world(69, 50))?.task).toBe('pickpocket-knights');
     expect(nextWork(step!, world(70, 50))?.task).toBe('pickpocket-paladins');
+});
+
+test('trains at Catherby until a Fishing Guild activity is available', () => {
+    const finish = { type: 'forever' };
+    const [fish] = parseSteps([{ task: 'fish-sharks-guild', finish }]);
+    const [cook] = parseSteps([{ task: 'fish-sharks-guild-cook', finish }]);
+    const state = (fishing: number, cooking: number) => ({
+        ...world(1, 10),
+        skills: [
+            { name: 'Fishing', baseLevel: fishing, level: fishing },
+            { name: 'Cooking', baseLevel: cooking, level: cooking },
+        ] as BotWorldState['skills'],
+    });
+    expect(nextWork(fish!, state(67, 1))).toMatchObject({
+        task: 'fish-sharks', finish: { type: 'level', skill: 'Fishing', level: 68 },
+    });
+    expect(nextWork(cook!, state(68, 9))).toMatchObject({
+        task: 'fish-sharks-cook', finish: { type: 'level', skill: 'Cooking', level: 10 },
+    });
+    expect(nextWork(fish!, state(68, 1))).toMatchObject({ task: 'fish-sharks-guild', inserted: false });
+    expect(nextWork(cook!, state(68, 10))).toMatchObject({ task: 'fish-sharks-guild-cook', inserted: false });
+
+    expect(() => selectFishingStage(state(67, 99), false, 'guild')).toThrow('Fishing Guild');
+    expect(selectFishingStage(state(68, 10), true, 'guild')).toMatchObject({ label: 'mackerel and cod', spot: 313 });
+    expect(selectFishingStage(state(68, 30), true, 'guild')).toMatchObject({ label: 'tuna', spot: 312 });
+    expect(selectFishingStage(state(75, 80), true, 'guild')).toMatchObject({ label: 'lobsters', spot: 312 });
+    expect(selectFishingStage(state(76, 79), true, 'guild')).toMatchObject({ label: 'lobsters', spot: 312 });
+    expect(selectFishingStage(state(76, 80), true, 'guild')).toMatchObject({ label: 'sharks', spot: 313 });
+    expect(selectFishingStage(state(76, 1), false)).toMatchObject({ label: 'sharks', spot: 322 });
 });
 
 test('checks tutorial, quest prerequisites, and timed completion in order', () => {
