@@ -61,6 +61,11 @@ dialog{border:1px solid var(--line);border-radius:11px;padding:0;background:var(
 #updates-all{border-color:#6e5731;background:#3b3020;color:#fae4bd;font-weight:700}
 #updates-dialog button:disabled{opacity:.52;cursor:default}
 #updates-list{display:grid;gap:8px;margin:0;padding:0;list-style:none}
+.worker-restart{display:flex;align-items:center;gap:8px 12px;flex-wrap:wrap;margin-top:12px;padding-top:12px;border-top:1px solid var(--line)}
+#worker-restart-button{border-color:#85504b;color:#ffbdb4}
+#worker-restart-status{font-size:13px;color:var(--muted)}
+#worker-restart-status[data-error=true]{color:#ffbdb4}
+#worker-restart-status:empty{display:none}
 .update-row{display:grid;gap:6px;min-width:0;padding:11px 12px;border:1px solid var(--line);border-radius:8px;background:#25221e;overflow-wrap:anywhere}
 .update-heading{justify-content:space-between;align-items:baseline}
 .update-heading h3{font-size:14px}

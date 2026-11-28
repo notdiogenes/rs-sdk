@@ -222,6 +222,10 @@ export function fleetPage({ nonce, revision = '', data, taskActivity, questCatal
   </div>
   <p id="updates-status" role="status" aria-atomic="true"></p>
   <ul id="updates-list" aria-label="Running and queued activities"></ul>
+  <div id="worker-restart" class="worker-restart" hidden>
+    <button type="button" id="worker-restart-button" hidden>Restart Fleet Desk worker</button>
+    <p id="worker-restart-status" role="status" aria-atomic="true"></p>
+  </div>
 </div></dialog>
 <dialog id="monitor-dialog" aria-labelledby="monitor-title"><div class="dialog-body">
   <div class="dialog-header monitor-header">

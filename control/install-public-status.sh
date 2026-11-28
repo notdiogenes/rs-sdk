@@ -1,6 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+enable_worker_restart=false
+if [[ $# == 1 && $1 == --enable-worker-restart ]]; then
+    enable_worker_restart=true
+elif [[ $# != 0 ]]; then
+    echo 'Usage: bash control/install-public-status.sh [--enable-worker-restart]' >&2
+    exit 2
+fi
+
 source_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 config="$HOME/.config/rs-sdk-control"
 runtime="$HOME/.config/rs-sdk-public-status"
@@ -10,6 +18,7 @@ service=rs-sdk-public-status
 refresh=rs-sdk-public-status-refresh
 worker=rs-sdk-fleet-workers
 worker_refresh=rs-sdk-fleet-workers-refresh
+maintenance=rs-sdk-fleet-maintenance
 socket=/run/rs-sdk-fleet-workers/worker.sock
 site=/etc/nginx/sites-enabled/rs-sdk-control-hostname
 include_dir=/etc/nginx/rs-sdk-control/https
@@ -48,6 +57,54 @@ sudo -v
 
 scratch=$(mktemp -d)
 trap 'rm -rf -- "$scratch"' EXIT
+
+install_maintenance_units() {
+    cat > "$scratch/$maintenance.socket" <<EOF
+[Unit]
+Description=RS-SDK Fleet Desk worker maintenance socket
+
+[Socket]
+ListenStream=/run/rs-sdk-fleet-maintenance.sock
+SocketUser=$owner
+SocketMode=0600
+Accept=yes
+MaxConnections=1
+RemoveOnStop=yes
+
+[Install]
+WantedBy=sockets.target
+EOF
+    cat > "$scratch/$maintenance@.service" <<'EOF'
+[Unit]
+Description=Restart the RS-SDK Fleet Desk worker
+
+[Service]
+Type=oneshot
+TimeoutStartSec=3min
+ExecStart=/bin/sh -c 'if /usr/bin/systemctl restart rs-sdk-fleet-workers.service >&2; then echo restarted; else echo failed; exit 1; fi'
+StandardInput=socket
+StandardOutput=socket
+StandardError=journal
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+EOF
+    sudo install -o root -g root -m 0644 "$scratch/$maintenance.socket" "$scratch/$maintenance@.service" /etc/systemd/system/
+}
+
+if [[ "$enable_worker_restart" == true ]]; then
+    if [[ $(systemctl show "$worker.service" --property=LoadState --value) != loaded ]]; then
+        echo 'Install the Fleet Desk worker before enabling dashboard restarts.' >&2
+        exit 1
+    fi
+    install_maintenance_units
+    sudo systemctl daemon-reload
+    sudo systemctl enable --now "$maintenance.socket"
+    printf '\nFleet Desk worker restart is enabled.\n'
+    exit 0
+fi
+
 install -d -m 0700 "$runtime"
 web_revision="$runtime/web.sha256"
 worker_revision="$runtime/workers.sha256"
@@ -125,6 +182,7 @@ write_refresh_units "$worker_refresh" "$worker" "$worker_revision" worker
 sudo install -m 0644 "$scratch/$service.service" "$scratch/$worker.service" /etc/systemd/system/
 sudo install -m 0644 "$scratch/$refresh.service" "$scratch/$refresh.path" \
     "$scratch/$worker_refresh.service" "$scratch/$worker_refresh.path" /etc/systemd/system/
+install_maintenance_units
 sudo systemctl daemon-reload
 
 if ! systemctl is-active --quiet "$worker"; then
@@ -168,5 +226,5 @@ url="https://$hostname/bots"
 curl --fail --silent --show-error --max-time 15 --resolve "$hostname:443:127.0.0.1" "$url" >/dev/null
 [[ $(curl --silent --show-error --max-time 15 --resolve "$hostname:443:127.0.0.1" \
     --output /dev/null --write-out '%{http_code}' "$url/activity") == 401 ]]
-sudo systemctl enable --now "$refresh.path" "$worker_refresh.path"
+sudo systemctl enable --now "$refresh.path" "$worker_refresh.path" "$maintenance.socket"
 printf '\nPublic bot status page: %s\n' "$url"

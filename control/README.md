@@ -310,11 +310,29 @@ increase the activity's `settingsVersion`. Declare a `settingsMigrations`
 entry only when it can preserve the previous behavior.
 
 On an existing host, the first update to this worker leaves the old process
-and its bots running. Activate the checkpoint-capable worker during a maintenance window by
-restarting `rs-sdk-fleet-workers.service` once after the checkout syncs.
-Fleet Desk restores saved running plans after that restart. Subsequent
+and its bots running. The normal Fleet Desk install provisions the worker
+restart control. To enable it on a host that already uses separate web and
+worker services, run this once from the synced checkout as the Fleet Desk
+service user.
+
+```bash
+bash control/install-public-status.sh --enable-worker-restart
+```
+
+The installer uses `sudo` to install root-owned systemd units for the private
+socket and restart service.
+Enabling the socket leaves the current worker running. Open **Updates** and
+use **Restart Fleet Desk worker** during a maintenance window to activate the
+checkpoint-capable worker. The control restarts `rs-sdk-fleet-workers.service`.
+Fleet Desk restores saved running plans after the restart. Subsequent
 changes to the process supervisor, game client, or shared pathfinder still
 use a worker restart.
+
+Use `GET /bots/activity?view=worker-restart` to read the restart request state.
+To request a restart, POST `{"action":"restart"}` as `application/json` to the
+same URL. Both methods require a signed-in Fleet Desk session. Include the
+dashboard's HTTPS `Origin` on POST. This endpoint only controls the Fleet
+Desk worker service.
 
 ### Activity audit history
 

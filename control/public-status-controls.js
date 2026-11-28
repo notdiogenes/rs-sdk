@@ -49,6 +49,9 @@
     const updatesStatus = document.querySelector('#updates-status');
     const updatesAll = document.querySelector('#updates-all');
     const updatesList = document.querySelector('#updates-list');
+    const workerRestart = document.querySelector('#worker-restart');
+    const workerRestartButton = document.querySelector('#worker-restart-button');
+    const workerRestartStatus = document.querySelector('#worker-restart-status');
     const auto = document.querySelector('#auto');
     const banks = document.querySelector('#banks');
     const banksDialog = document.querySelector('#banks-dialog');
@@ -949,7 +952,7 @@
         const displayedSnapshot = document.querySelector('.brand time')?.dateTime;
         if (fleetRefresh) {
             return afterChange || displayedSnapshot !== requestedSnapshot
-                ? fleetRefresh.then(() => refreshFleet()) : fleetRefresh;
+                ? fleetRefresh.then(() => refreshFleet(afterChange)) : fleetRefresh;
         }
         requestedSnapshot = displayedSnapshot;
         clearTimeout(refresh);
@@ -963,7 +966,7 @@
             const next = new DOMParser().parseFromString(await response.text(), 'text/html');
             const nextScript = next.querySelector('script[data-revision]');
             if (!nextScript) throw new Error('Fleet presentation is unavailable');
-            if (document.querySelector('dialog[open]')) return;
+            if (document.querySelector('dialog[open]:not(#updates-dialog)') || (updatesDialog.open && !afterChange)) return;
             if (nextScript.dataset.revision !== controlsScript.dataset.revision) {
                 window.location.reload();
                 return;
@@ -1014,6 +1017,13 @@
             updatesRead?.abort();
             updatesRead = undefined;
             setActivityUpdates(undefined);
+            clearTimeout(workerRestartPoll);
+            workerRestartRead?.abort();
+            workerRestartRead = undefined;
+            workerRestartWrite = undefined;
+            workerRestartData = undefined;
+            workerRestartError = '';
+            renderWorkerRestart();
             dataVersion++;
             updating = false;
             stats.clear();
@@ -1601,13 +1611,27 @@
     }
 
     const updatesUrl = '/bots/activity?view=updates';
+    const workerRestartUrl = '/bots/activity?view=worker-restart';
     const updateLabels = { review: 'Review required', available: 'Update available', current: 'Current' };
+    const workerRestartMessages = {
+        idle: '',
+        restarting: 'Restarting the Fleet Desk worker…',
+        restarted: 'Fleet Desk worker restarted.',
+        failed: 'Fleet Desk could not confirm that the worker restarted.',
+    };
+    const workerRestartReadError = 'Could not check the worker restart status.';
     let updatesData;
     let updatesRendered;
     let updatesRead;
     let updatesPoll;
     let updatesBusy = false;
     let updatesLoadFailed = false;
+    let workerActivationNeeded = false;
+    let workerRestartData;
+    let workerRestartRead;
+    let workerRestartWrite;
+    let workerRestartPoll;
+    let workerRestartError = '';
 
     const canRequestUpdate = row => row.state === 'running' && row.status === 'available' && row.checkpoint === 'supported';
 
@@ -1646,10 +1670,12 @@
 
     function renderUpdates() {
         const rows = updatesData?.rows ?? [];
-        updatesAll.disabled = updatesBusy || !rows.some(canRequestUpdate);
-        updatesList.setAttribute('aria-busy', String(updatesBusy));
+        const busy = updatesBusy || workerRestartPending();
+        updatesAll.disabled = busy || !rows.some(canRequestUpdate);
+        updatesList.setAttribute('aria-busy', String(busy));
+        renderWorkerRestart();
         if (updatesRendered === updatesData) {
-            for (const button of updatesList.querySelectorAll('button')) button.disabled = updatesBusy;
+            for (const button of updatesList.querySelectorAll('button')) button.disabled = busy;
             return;
         }
         updatesRendered = updatesData;
@@ -1682,7 +1708,7 @@
                 const button = planButton(label, run, `${label} for ${row.bot}, step ${row.index + 1}`);
                 button.dataset.updateAction = command;
                 button.dataset.updateRow = JSON.stringify([row.bot, row.index, row.state]);
-                button.disabled = updatesBusy;
+                button.disabled = busy;
                 actions.append(button);
             };
             if (row.status === 'review' && row.checkpoint !== 'waiting') {
@@ -1712,7 +1738,9 @@
     }
 
     function setActivityUpdates(data) {
-        if (data && (typeof data.revision !== 'string' || !Array.isArray(data.rows))) {
+        workerActivationNeeded = Boolean(data && (typeof data.revision !== 'string' || !Array.isArray(data.rows)));
+        if (workerActivationNeeded) {
+            renderWorkerRestart();
             throw new Error('Activity updates become available after the Fleet Desk worker is activated.');
         }
         if (JSON.stringify(data) !== JSON.stringify(updatesData)) updatesData = data;
@@ -1734,7 +1762,7 @@
     }
 
     async function loadActivityUpdates() {
-        if (!signedIn || updatesBusy || updatesRead) return;
+        if (!signedIn || updatesBusy || updatesRead || workerRestartPending()) return;
         const read = new AbortController();
         updatesRead = read;
         try {
@@ -1756,7 +1784,7 @@
     }
 
     async function submitActivityUpdate(action, row) {
-        if (updatesBusy || !updatesData) return;
+        if (updatesBusy || !updatesData || workerRestartPending()) return;
         const payload = { action, revision: updatesData.revision,
             ...(row && { bot: row.bot, index: row.index, planRevision: row.planRevision, runId: row.runId }) };
         updatesRead?.abort();
@@ -1780,6 +1808,101 @@
         }
     }
 
+    function workerRestartPending() {
+        return Boolean(workerRestartWrite) || workerRestartData?.state === 'restarting';
+    }
+
+    function renderWorkerRestart() {
+        const available = signedIn && workerRestartData?.available;
+        const state = workerRestartData?.state ?? 'idle';
+        const note = signedIn ? workerRestartError || (available ? workerRestartMessages[state]
+            : workerActivationNeeded && workerRestartData
+                ? 'The restart button needs to be enabled on this host.' : '') : '';
+        setHidden(workerRestart, !(available || note));
+        setHidden(workerRestartButton, !available);
+        workerRestartButton.disabled = workerRestartPending() || updatesBusy;
+        workerRestartStatus.dataset.error = String(Boolean(workerRestartError) || state === 'failed');
+        setText(workerRestartStatus, note);
+    }
+
+    function acceptWorkerRestartStatus(data) {
+        if (typeof data.available !== 'boolean' || !Object.hasOwn(workerRestartMessages, data.state)) {
+            throw new Error('Worker restart status is unavailable.');
+        }
+        const wasRestarting = workerRestartData?.state === 'restarting';
+        if (workerRestartData?.state !== data.state || workerRestartData?.available !== data.available ||
+            workerRestartError === workerRestartReadError) workerRestartError = '';
+        workerRestartData = data;
+        if (updatesDialog.open) renderUpdates();
+        if (wasRestarting && data.state !== 'restarting') {
+            if (data.state === 'restarted') void refreshFleet(true);
+            void loadActivityUpdates();
+        }
+    }
+
+    function scheduleWorkerRestartPoll() {
+        clearTimeout(workerRestartPoll);
+        if (!signedIn) return;
+        if (workerRestartData?.state === 'restarting') workerRestartPoll = setTimeout(loadWorkerRestart, 2000);
+        else if (updatesDialog.open) workerRestartPoll = setTimeout(loadWorkerRestart, refreshMs);
+    }
+
+    async function loadWorkerRestart() {
+        if (!signedIn || workerRestartRead || workerRestartWrite) return;
+        const read = new AbortController();
+        workerRestartRead = read;
+        try {
+            const data = await request(workerRestartUrl, undefined, read.signal);
+            if (workerRestartRead === read && signedIn) acceptWorkerRestartStatus(data);
+        } catch (error) {
+            if (workerRestartRead !== read || read.signal.aborted) return;
+            if (error.status === 401) activityUpdateError(error);
+            else if (updatesDialog.open) {
+                workerRestartError ||= workerRestartReadError;
+                renderWorkerRestart();
+            }
+        } finally {
+            if (workerRestartRead === read) {
+                workerRestartRead = undefined;
+                scheduleWorkerRestartPoll();
+            }
+        }
+    }
+
+    async function restartWorker() {
+        if (!signedIn || !workerRestartData?.available || workerRestartPending() || updatesBusy) return;
+        if (!window.confirm('Restart the Fleet Desk worker? Active bot tasks will be interrupted. Saved running plans resume after the worker starts.')) return;
+        clearTimeout(workerRestartPoll);
+        workerRestartRead?.abort();
+        workerRestartRead = undefined;
+        clearTimeout(updatesPoll);
+        updatesRead?.abort();
+        updatesRead = undefined;
+        const write = {};
+        workerRestartWrite = write;
+        workerRestartError = '';
+        renderUpdates();
+        setText(workerRestartStatus, 'Requesting a worker restart…');
+        try {
+            const data = await request(workerRestartUrl, { action: 'restart' });
+            if (workerRestartWrite === write && signedIn) acceptWorkerRestartStatus(data);
+        } catch (error) {
+            if (workerRestartWrite !== write || !signedIn) return;
+            if (error.status === 401) activityUpdateError(error);
+            else workerRestartError = error.message;
+        } finally {
+            if (workerRestartWrite === write) {
+                workerRestartWrite = undefined;
+                if (updatesDialog.open) renderUpdates();
+                if (workerRestartData?.state === 'restarting') scheduleWorkerRestartPoll();
+                else {
+                    void loadWorkerRestart();
+                    void loadActivityUpdates();
+                }
+            }
+        }
+    }
+
     updatesButton.addEventListener('click', async () => {
         await sessionReady;
         if (!signedIn) { openSignIn(updatesButton); return; }
@@ -1790,11 +1913,14 @@
         updatesDialog.showModal();
         renderUpdates();
         void loadActivityUpdates();
+        void loadWorkerRestart();
     });
     updatesAll.addEventListener('click', () => void submitActivityUpdate('compatible'));
+    workerRestartButton.addEventListener('click', () => void restartWorker());
     updatesDialog.querySelector('#updates-close').addEventListener('click', () => updatesDialog.close());
     updatesDialog.addEventListener('close', () => {
         clearTimeout(updatesPoll);
+        scheduleWorkerRestartPoll();
         scheduleRefresh();
     });
 

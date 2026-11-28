@@ -8,6 +8,8 @@ import { dashboardPresentation } from './dashboard-presentation';
 import { loadQuestCatalog, type QuestColumn } from './dashboard-quests';
 import { readTaskActivity } from './dashboard-task-activity';
 import type { LastActivity } from './dashboard-last-activity';
+import { dashboardSessions } from './dashboard-session';
+import { dashboardWorkerRestart } from './dashboard-worker-restart';
 
 type CallSupervisor = (request: Request) => Promise<Response>;
 type LoadPresentation = ReturnType<typeof dashboardPresentation>;
@@ -58,7 +60,8 @@ async function supervisorRequest(path: string, request?: Request) {
 }
 
 export function dashboardWebHandler(worker: CallSupervisor, presentation: LoadPresentation,
-    auditDatabase: () => Database, questCatalog: QuestColumn[], readPlan: ReadPlan = () => null) {
+    auditDatabase: () => Database, questCatalog: QuestColumn[], readPlan: ReadPlan = () => null,
+    restartWorker?: ReturnType<typeof dashboardWorkerRestart>) {
     const call = async (path: string, request?: Request) => worker(await supervisorRequest(path, request));
 
     async function audit(request: Request, params: URLSearchParams) {
@@ -99,6 +102,7 @@ export function dashboardWebHandler(worker: CallSupervisor, presentation: LoadPr
                 const view = searchParams.get('view');
                 const dataView = !searchParams.has('demo') && !searchParams.get('session');
                 if (dataView && view === 'audit') return await audit(request, searchParams);
+                if (dataView && view === 'worker-restart' && restartWorker) return await restartWorker(request);
 
                 const response = await call('/bots/activity' + search, request);
                 if (!dataView || !response.ok) return response;
@@ -200,8 +204,12 @@ export async function startDashboardWeb(runtimeDir: string, worker: CallSupervis
             return null;
         }
     };
+    const { authenticate } = dashboardSessions(runtimeDir, async () => {
+        throw new Error('Dashboard enrollment is managed by the worker.');
+    }, join(import.meta.dir, 'dashboard-enrollment.json'));
     const handle = dashboardWebHandler(worker, presentation, () =>
-        db ??= new Database(join(runtimeDir, 'activity-audit.sqlite'), { readonly: true }), questCatalog, readPlan);
+        db ??= new Database(join(runtimeDir, 'activity-audit.sqlite'), { readonly: true }), questCatalog, readPlan,
+        dashboardWorkerRestart(authenticate));
     return Bun.serve({ hostname: '127.0.0.1', port: 3721, maxRequestBodySize: 16_384, fetch: handle });
 }
 
