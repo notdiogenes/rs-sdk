@@ -59,6 +59,22 @@ function timeAgo(now: number, value?: number) {
     return hours < 24 ? `${hours}h` : `${Math.floor(hours / 24)}d`;
 }
 
+function elapsedTime(now: number, startedAt?: string) {
+    const seconds = Math.max(0, Math.floor((now - Date.parse(startedAt ?? '')) / 1000));
+    if (!Number.isFinite(seconds)) return '—';
+    if (seconds < 60) return `${seconds}s`;
+    const minutes = Math.floor(seconds / 60);
+    if (minutes < 60) return `${minutes}m`;
+    const hours = Math.floor(minutes / 60);
+    if (hours < 24) {
+        const remaining = minutes % 60;
+        return remaining ? `${hours}h ${remaining}m` : `${hours}h`;
+    }
+    const days = Math.floor(hours / 24);
+    const remaining = hours % 24;
+    return remaining ? `${days}d ${remaining}h` : `${days}d`;
+}
+
 function fact(label: string, value: string, className = '') {
     return `<div><dt>${label}</dt><dd class="${className}">${escape(value)}</dd></div>`;
 }
@@ -95,7 +111,7 @@ function card(bot: Bot, category: Group, reason: string, managed: ControlActivit
     </div>
     <dl class="facts">
       ${fact('Heartbeat', timeAgo(now, bot.heartbeat))}
-      ${fact('Progress', managed?.startedAt ? timeAgo(now, Date.parse(managed.startedAt)) + ' running' : '—', 'progress-value')}
+      ${fact('Elapsed', elapsedTime(now, managed?.startedAt), 'elapsed-value')}
       ${fact('Effect', timeAgo(now, bot.lastActivity ? Date.parse(bot.lastActivity.at) : undefined))}
       ${fact('Client', bot.status, 'status-' + bot.status.toLowerCase())}
     </dl>
