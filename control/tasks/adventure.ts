@@ -9,16 +9,15 @@ const swords = [
     [30, 'Adamant longsword'], [20, 'Mithril longsword'], [5, 'Steel longsword'], [1, 'Iron longsword'],
 ] as const;
 const heal = /^(?:bread|cake|2\/3 cake|slice of cake|chocolate slice|cooked chicken|cooked meat|shrimp|trout|salmon|jug of wine)$/i;
-// Coins, runes, fire orb, diamond, gold ore, and empty jugs from Hero wine.
-const pickpocketLoot = new Set([995, 562, 560, 565, 569, 1601, 444, 1935]);
+const coins = 995;
 const wine = 1993;
 // Bank items lack inventory options. Use unnoted IDs so raw or noted supplies are never mistaken for food.
 const bankFood = new Set([
     315, 319, 325, 329, 333, 339, 347, 351, 355, 361, 365, 373, 379, 385, 391, 397, // Cooked fish.
     1891, 1893, 1895, 1897, 1899, 1901, wine, 2140, 2142, 2309, // Cakes, wine, cooked meat, and bread.
 ]);
-const isPickpocketFood = (item: InventoryItem) =>
-    bankFood.has(item.id) && item.optionsWithIndex.some(option => /^(eat|drink)$/i.test(option.text));
+const isEdible = (item: InventoryItem) => item.optionsWithIndex.some(option => /^(eat|drink)$/i.test(option.text));
+const isPickpocketFood = (item: InventoryItem) => bankFood.has(item.id) && isEdible(item);
 const foodTarget = 8;
 const inventoryCapacity = 28;
 const bankAt = inventoryCapacity - 2;
@@ -321,65 +320,45 @@ export function adventure({ bot, sdk }: ScriptContext, checkpoint?: TaskCheckpoi
             await auditOperation('close-food-shop', 'Leave the shop and restore access to the inventory', {}, world, () => bot.closeShop(), actionResult);
         }
     };
-    const bankLoot = async (auditing = false) => {
-        if (!await travel(2656, 3283, 4, 40_000, auditing, 'Reach the bank to free inventory slots for pickpocket loot')) return;
-        const opened = await auditOperation('open-bank', 'Open the bank to deposit loot', {}, world, () => bot.openBank(), actionResult);
-        if (!opened.success) {
-            if (auditing) auditEvent('setback', 'thieving-bank-unavailable', { message: opened.message, state: auditFrame(sdk.getState()) });
-            return;
-        }
-        const slotsBefore = auditing ? sdk.getInventory().length : 0;
-        try {
-            for (const name of new Set(sdk.getInventory().map(item => item.name))) {
-                if (/^coins$/i.test(name) || heal.test(name)) {
-                    if (auditing) auditEvent('decision', 'bank-deposit', { intent: 'Keep coins and food available for recovery', outcome: 'skipped', item: name });
-                    continue;
-                }
-                const deposited = await auditOperation('bank-deposit', 'Free slots by depositing all copies of this item',
-                    { item: name, amount: 'all' }, world, () => bot.depositItem(name, -1), result => ({
-                        ...actionResult(result), outcome: result.partial ? 'partially-deposited' : result.success ? 'confirmed' : 'failed',
-                        amountDeposited: result.amountDeposited,
-                    }));
-                if (auditing && !deposited.success) auditEvent('setback', 'thieving-deposit-failed', { item: name, message: deposited.message });
-            }
-            if (auditing) {
-                const slotsAfter = sdk.getInventory().length;
-                const freed = slotsAfter < slotsBefore;
-                auditEvent(freed ? 'milestone' : 'setback', freed ? 'thieving-bank-freed-slots' : 'thieving-bank-no-slots-freed',
-                    { slotsBefore, slotsAfter, after: auditFrame(sdk.getState()) });
-            }
-        } finally {
-            await auditOperation('close-bank', 'Close the bank to resume normal actions', {}, world, () => bot.closeBank(), actionResult);
-        }
-    };
     const foodSlots = () => sdk.getInventory().filter(isPickpocketFood).length;
-    const lootAmount = (id: number) => sdk.getInventory().filter(item => item.id === id).reduce((sum, item) => sum + item.count, 0);
-    const bankableLoot = (item: InventoryItem) =>
-        pickpocketLoot.has(item.id) || (item.id === wine && foodSlots() > foodTarget);
-    async function bankPickpocketSupplies(lumbridge: boolean, auditing: boolean) {
+    const inventoryAmount = (id: number) => sdk.getInventory().filter(item => item.id === id).reduce((sum, item) => sum + item.count, 0);
+    function depositAmount(item: InventoryItem, restockFromBank: boolean) {
+        if (!restockFromBank) return item.id === coins || (heal.test(item.name) && isEdible(item)) ? 0 : -1;
+        if (!isPickpocketFood(item)) return -1;
+        return Math.min(inventoryAmount(item.id), Math.max(0, foodSlots() - foodTarget));
+    }
+
+    async function bankPickpocketSupplies(lumbridge: boolean, restockFromBank: boolean, auditing: boolean) {
         if (!world()?.bank.isOpen) {
             const [x, z] = lumbridge ? [3092, 3243] : [2656, 3283];
             const timeout = Math.min(480_000, Math.max(40_000, 25_000 + distance(x, z) * 1000));
-            if (!await travel(x, z, 4, timeout, auditing, 'Reach the bank to deposit loot and withdraw food')) {
+            if (!await travel(x, z, 4, timeout, auditing, 'Reach the bank to clear backpack space')) {
                 throw new Error('Could not reach the pickpocket supply bank.');
             }
-            const opened = await auditOperation('open-bank', 'Open the bank to deposit loot and withdraw food', {}, world,
+            const opened = await auditOperation('open-bank', 'Open the bank to deposit spare items', {}, world,
                 () => bot.openBank(), actionResult);
             if (!world()?.bank.isOpen) throw new Error(`Could not open the pickpocket supply bank: ${opened.message}`);
         }
         try {
-            const loot = new Set(sdk.getInventory().filter(bankableLoot).map(item => item.id));
-            for (const id of loot) {
+            const itemIds = new Set(sdk.getInventory().map(item => item.id));
+            const slotsBefore = sdk.getInventory().length;
+            for (const id of itemIds) {
                 const item = sdk.getInventory().find(entry => entry.id === id);
                 if (!item) continue;
-                const before = lootAmount(id);
-                const amount = id === wine ? Math.min(foodSlots() - foodTarget, before) : -1;
-                const deposited = await auditOperation('bank-deposit', 'Deposit pickpocket loot', { id, item: item.name, amount }, world,
+                const amount = depositAmount(item, restockFromBank);
+                if (amount === 0) continue;
+                const before = inventoryAmount(id);
+                const deposited = await auditOperation('bank-deposit', 'Deposit items that pickpocketing does not need', { id, item: item.name, amount }, world,
                     () => bot.depositItem(item, amount), result => ({ ...actionResult(result), amountDeposited: result.amountDeposited }));
-                if (lootAmount(id) > (amount === -1 ? 0 : before - amount)) {
+                if (inventoryAmount(id) > (amount === -1 ? 0 : before - amount)) {
                     throw new Error(`Could not confirm the ${item.name} deposit: ${deposited.message}`);
                 }
             }
+            const slotsAfter = sdk.getInventory().length;
+            if (auditing && slotsAfter < slotsBefore) {
+                auditEvent('milestone', 'thieving-bank-freed-slots', { slotsBefore, slotsAfter, after: auditFrame(world()) });
+            }
+            if (!restockFromBank) return;
             const before = foodSlots();
             for (const item of world()?.bank.items ?? []) {
                 if (!bankFood.has(item.id)) continue;
@@ -410,6 +389,7 @@ export function adventure({ bot, sdk }: ScriptContext, checkpoint?: TaskCheckpoi
         const closestPickpocket = (name: RegExp) => closest(name, pocket, false, npc => !rejectedTargets.has(targetKey(npc)));
         let nextFood = 0;
         let nextBank = 0;
+        let backpackReady = false;
         let successes = 0;
         let successesAtBank = 0;
         let attemptSettled = true;
@@ -445,43 +425,51 @@ export function adventure({ bot, sdk }: ScriptContext, checkpoint?: TaskCheckpoi
             if (!await travel(3222, 3222, 5, 150_000, auditing, 'Reach Lumbridge to look for Men')) throw new Error('Could not verify Lumbridge arrival');
         };
         const visitSupplyBank = async () => {
-            if (Date.now() < nextBank) return;
+            if (Date.now() < nextBank) return false;
             phase('thieving-banking');
+            let banked = false;
             try {
-                await bankPickpocketSupplies(lumbridge, auditing);
+                await bankPickpocketSupplies(lumbridge, banking, auditing);
                 successesAtBank = successes;
+                banked = true;
             } catch (error) {
                 throwIfExecutionAborted();
                 if (world()?.bank.isOpen) throw error;
                 reportError('thieving-banking-error', error);
                 nextBank = Date.now() + 45_000;
             }
-            if (foodSlots() <= 2) nextFood = Date.now() + foodRetryMs;
+            if (banking && foodSlots() <= 2) nextFood = Date.now() + foodRetryMs;
+            return banked;
         };
+        const hasBankableItems = (items: InventoryItem[]) => items.some(item => depositAmount(item, banking) !== 0);
         for (;;) {
             const respawnRequired = !!world()?.player?.isDead;
             if (respawnRequired) phase('thieving-respawn');
             await waitAlive(auditing);
+            // A timed predecessor can stop halfway through an inventory load.
+            if (!backpackReady) {
+                if ((world()?.bank.isOpen || hasBankableItems(sdk.getInventory())) && !await visitSupplyBank()) {
+                    await waitTicks(12, 'Wait to retry banking the starting backpack', auditing);
+                    continue;
+                }
+                backpackReady = true;
+            }
             const inventory = sdk.getInventory();
             const slots = inventory.length;
             const bankForFood = banking && foodSlots() <= 2 && Date.now() >= nextFood;
-            const hasLoot = banking && inventory.some(bankableLoot);
-            const bankForLoot = slots >= bankAt && (banking ? hasLoot : !lumbridge);
-            const bankForBatch = hasLoot && successes - successesAtBank >= lootBatch;
+            const hasItemsToBank = hasBankableItems(inventory);
+            const bankForSpace = slots >= bankAt && hasItemsToBank && (banking || !lumbridge);
+            const bankForBatch = banking && hasItemsToBank && successes - successesAtBank >= lootBatch;
             if (auditing) {
                 auditEvent('decision', 'thieving-readiness', {
                     intent: 'Check whether the bot needs to respawn, travel, or bank before selecting a target',
                     outcome: 'evaluated', respawnRequired, slots, bankAt: banking || !lumbridge ? bankAt : null,
-                    bankThresholdMet: bankForLoot, bankForFood, bankForBatch, area: lumbridge ? 'Lumbridge' : 'East Ardougne',
+                    bankThresholdMet: bankForSpace, bankForFood, bankForBatch, area: lumbridge ? 'Lumbridge' : 'East Ardougne',
                     travelRequired: lumbridge ? distance(3222, 3222) > 25 : distance(2662, 3305) > 50,
                 });
             }
             if (!banking) await goToArea();
-            if (banking && (bankForLoot || bankForFood || bankForBatch)) await visitSupplyBank();
-            else if (!banking && bankForLoot) {
-                phase('thieving-banking');
-                await bankLoot(auditing).catch(error => reportError('thieving-banking-error', error));
-            }
+            if (bankForSpace || bankForFood || bankForBatch) await visitSupplyBank();
             const p = sdk.getState()?.player;
             if (!p) throw new Error('Player state unavailable in pickpocket phase');
             const low = lumbridge ? 3 : Math.max(8, Math.floor(p.maxHp / 3));
@@ -506,7 +494,7 @@ export function adventure({ bot, sdk }: ScriptContext, checkpoint?: TaskCheckpoi
             }
             if (banking) {
                 if (sdk.getInventory().length >= inventoryCapacity) {
-                    if (Date.now() >= nextBank) throw new Error('The backpack is still full after banking pickpocket loot. Clear a slot to continue.');
+                    if (Date.now() >= nextBank) throw new Error('The backpack is still full after banking. Clear a slot to continue.');
                     await waitTicks(3, 'Wait for the bank retry before pickpocketing with a full backpack', auditing);
                     continue;
                 }

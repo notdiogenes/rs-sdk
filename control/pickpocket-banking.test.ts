@@ -6,7 +6,7 @@ import { adventure } from './tasks/adventure';
 const finished = 'Fixture has observed enough pickpockets';
 const edible = [{ text: 'Eat', opIndex: 1 }];
 const item = (id: number, name: string, count: number, slot = 0): InventoryItem =>
-    ({ id, name, count, slot, optionsWithIndex: id === 385 ? edible : [] });
+    ({ id, name, count, slot, optionsWithIndex: id === 385 || id === 2309 ? edible : [] });
 
 function account(town: 'Lumbridge' | 'Ardougne', inventory: InventoryItem[], stock: BankItem[] = [], hp = 60, attempts = 0) {
     const [x, z] = town === 'Lumbridge' ? [3222, 3222] : [2652, 3318];
@@ -47,10 +47,17 @@ function account(town: 'Lumbridge' | 'Ardougne', inventory: InventoryItem[], sto
             openBank: async () => { state.bank.isOpen = true; visits++; return result; },
             closeBank: async () => { state.bank.isOpen = false; return result; },
             depositItem: async (entry: InventoryItem, amount: number) => {
-                expect(amount).toBe(-1);
                 deposited.push(entry.id);
-                state.inventory = state.inventory.filter(other => other.id !== entry.id);
-                return { ...result, amountDeposited: entry.count };
+                let remaining = amount === -1 ? Infinity : amount;
+                let amountDeposited = 0;
+                state.inventory = state.inventory.flatMap(other => {
+                    if (other.id !== entry.id || remaining === 0) return [other];
+                    const moved = Math.min(other.count, remaining);
+                    remaining -= moved;
+                    amountDeposited += moved;
+                    return moved === other.count ? [] : [{ ...other, count: other.count - moved }];
+                });
+                return { ...result, amountDeposited };
             },
             withdrawItem: async (entry: BankItem, amount: number, { asNote }: { asNote: boolean }) => {
                 withdrawn.push({ id: entry.id, amount, asNote });
@@ -77,17 +84,43 @@ function account(town: 'Lumbridge' | 'Ardougne', inventory: InventoryItem[], sto
     return { ctx, state, deposited, withdrawn, eaten, walks, visits: () => visits };
 }
 
-test('banks loot, withdraws unnoted food, and uses it to recover before pickpocketing', async () => {
+test('banks carried items, withdraws unnoted food, and uses it to recover before pickpocketing', async () => {
     const a = account('Ardougne', [
         item(995, 'Coins', 1000), item(560, 'Death rune', 2, 1), item(565, 'Blood rune', 1, 2),
         item(590, 'Tinderbox', 1, 3), item(1935, 'Jug', 1, 4),
     ], [item(383, 'Raw shark', 40), item(386, 'Shark', 40, 1), item(385, 'Shark', 10, 2)], 20);
     await expect(adventure(a.ctx).pickpocket('heroes', true)).rejects.toThrow(finished);
-    expect(a.deposited).toEqual([995, 560, 565, 1935]);
+    expect(a.deposited).toEqual([995, 560, 565, 590, 1935]);
     expect(a.withdrawn).toEqual([{ id: 385, amount: 8, asNote: false }]);
     expect(a.eaten).toEqual([385]);
-    expect(a.state.inventory.find(entry => entry.id === 590)?.count).toBe(1);
+    expect(a.state.inventory.find(entry => entry.id === 590)).toBeUndefined();
     expect(a.walks).toEqual([[2656, 3283]]);
+});
+
+for (const banking of [true, false]) {
+    test(`banks fishing carryover before the first pickpocket with bank restocking ${banking ? 'enabled' : 'disabled'}`, async () => {
+        const [foodId, foodName] = banking ? [385, 'Shark'] as const : [2309, 'Bread'] as const;
+        const a = account('Ardougne', [
+            item(311, 'Harpoon', 1), item(383, 'Raw shark', 1, 1), item(383, 'Raw shark', 1, 2),
+            item(995, 'Coins', 10, 3), item(foodId + 1, foodName, 5, 4),
+            ...Array.from({ length: 4 }, (_, slot) => item(foodId, foodName, 1, slot + 5)),
+        ]);
+        Object.assign(a.state.player!, { worldX: 2853, worldZ: 3424 });
+        await expect(adventure(a.ctx).pickpocket('heroes', banking)).rejects.toThrow(finished);
+        expect(a.deposited).toEqual(banking ? [311, 383, 995, 386] : [311, 383, 2310]);
+        expect(a.state.inventory.map(entry => entry.id)).toEqual(banking ? Array(4).fill(385) : [995, 2309, 2309, 2309, 2309]);
+        expect(a.withdrawn).toEqual([]);
+        expect(a.walks).toEqual([[2656, 3283]]);
+    });
+}
+
+test('keeps eight usable food items and banks surplus and notes by item ID', async () => {
+    const a = account('Ardougne', [
+        ...Array.from({ length: 10 }, (_, slot) => item(385, 'Shark', 1, slot)), item(386, 'Shark', 20, 10),
+    ]);
+    await expect(adventure(a.ctx).pickpocket('heroes', true)).rejects.toThrow(finished);
+    expect(a.deposited).toEqual([385, 386]);
+    expect(a.state.inventory.map(entry => entry.id)).toEqual(Array(8).fill(385));
 });
 
 test('banks a batch of stackable loot and returns to Lumbridge', async () => {
