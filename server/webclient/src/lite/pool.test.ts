@@ -3,8 +3,6 @@ import { expect, test } from 'bun:test';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import IfType from '#/config/IfType.js';
-import Packet from '#/io/Packet.js';
 import WordFilter from '#/wordfilter/WordFilter.js';
 import { LiteClient } from './LiteClient.js';
 import { createLitePool } from './pool.js';
@@ -20,15 +18,13 @@ async function until(ready: () => boolean) {
 
 test('each Lite client activates its own profanity setting', () => {
     const previousFilter = WordFilter.enabled;
-    const previousInterfaces = IfType.list;
-    const client = (username: string, profanityFilter: boolean) => new LiteClient({
-        connection: { out: Packet.alloc(1), isClosed: false } as never,
-        locIndex: {} as never,
-        username, password: 'x', profanityFilter,
+    // The filter assertion needs the wrapped method and activation, not a game cache.
+    const client = (profanityFilter: boolean): LiteClient => Object.assign(Object.create(LiteClient.prototype), {
+        profanityFilter, interfaces: { activate() {} },
     });
     try {
-        const a = client('BotOne', false);
-        const b = client('BotTwo', true);
+        const a = client(false);
+        const b = client(true);
         a.isDialogOpen();
         expect(WordFilter.enabled).toBe(false);
         b.isDialogOpen();
@@ -37,7 +33,6 @@ test('each Lite client activates its own profanity setting', () => {
         expect(WordFilter.enabled).toBe(false);
     } finally {
         WordFilter.enabled = previousFilter;
-        IfType.list = previousInterfaces;
     }
 });
 
